@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Config & Credentials
+.env
+config.json
+*.db
+*.sqlite
+*.log
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store

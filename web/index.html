@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoTrade - Dashboard Premium</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Custom Style -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="glass-bg"></div>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo-area">
+                <span class="logo-icon">▲</span>
+                <div class="logo-text">
+                    <h1>Auto<span>Trade</span></h1>
+                    <p>Trading Bot Dashboard</p>
+                </div>
+            </div>
+            
+            <div class="status-panel">
+                <div class="status-indicator">
+                    <span id="bot-status-dot" class="dot offline"></span>
+                    <span id="bot-status-text" class="status-text">Cargando...</span>
+                </div>
+                <div class="mode-badge" id="bot-mode">SIMULACIÓN</div>
+            </div>
+        </header>
+
+        <!-- Main Layout -->
+        <main class="dashboard-grid">
+            
+            <!-- Column 1: Controls & Portfolio -->
+            <section class="grid-col controls-portfolio">
+                
+                <!-- Bot Controls Card -->
+                <div class="card glass-card control-card">
+                    <h2 class="card-title">Panel de Control</h2>
+                    <div class="control-actions">
+                        <button id="btn-start" class="btn btn-primary">Iniciar Bot</button>
+                        <button id="btn-stop" class="btn btn-danger disabled" disabled>Detener Bot</button>
+                    </div>
+                    <div class="ticker-box">
+                        <span class="ticker-label">Precio Actual (BTC/USDT)</span>
+                        <div id="ticker-price" class="ticker-price">$0.00</div>
+                    </div>
+                </div>
+
+                <!-- Portfolio Card -->
+                <div class="card glass-card portfolio-card">
+                    <h2 class="card-title" id="portfolio-title">Portafolio (Simulación)</h2>
+                    <div class="portfolio-stats">
+                        <div class="stat-card">
+                            <span class="stat-label" id="label-quote">Saldo USDT</span>
+                            <div id="balance-usdt" class="stat-value">$0.00</div>
+                        </div>
+                        <div class="stat-card">
+                            <span class="stat-label" id="label-base">Saldo BTC</span>
+                            <div id="balance-btc" class="stat-value">0.000000</div>
+                        </div>
+                        <div class="stat-card total-value-card">
+                            <span class="stat-label">Valor Total Estimado</span>
+                            <div id="portfolio-total" class="stat-value highlight">$0.00</div>
+                        </div>
+                    </div>
+                </div>
+                
+            </section>
+
+            <!-- Column 2: Chart -->
+            <section class="grid-col chart-section">
+                <div class="card glass-card main-chart-card">
+                    <div class="chart-header">
+                        <h2 class="card-title">Cotización en Tiempo Real</h2>
+                        <span class="chart-subtitle" id="chart-symbol">-</span>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="priceChart"></canvas>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Row 3: Trades History -->
+            <section class="grid-col trades-section">
+                <div class="card glass-card table-card">
+                    <h2 class="card-title">Historial de Operaciones</h2>
+                    <div class="table-container">
+                        <table class="custom-table">
+                            <thead>
+                                <tr>
+                                    <th>Fecha</th>
+                                    <th>Activo</th>
+                                    <th>Operación</th>
+                                    <th>Precio</th>
+                                    <th>Cantidad</th>
+                                    <th>Total</th>
+                                    <th>Estado</th>
+                                </tr>
+                            </thead>
+                            <tbody id="trades-table-body">
+                                <tr>
+                                    <td colspan="7" class="text-center">Cargando transacciones...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Row 4: Terminal Logs -->
+            <section class="grid-col logs-section">
+                <div class="card glass-card terminal-card">
+                    <div class="terminal-header">
+                        <h2 class="card-title">Consola de Eventos y Logs</h2>
+                        <span class="pulse-icon"></span>
+                    </div>
+                    <div id="log-console" class="terminal-console">
+                        <!-- Logs injectados aquí -->
+                    </div>
+                </div>
+            </section>
+
+        </main>
+
+        <!-- Footer -->
+        <footer class="app-footer">
+            <p>&copy; 2026 AutoTrade Bot. Desarrollado con Python, FastAPI y PostgreSQL.</p>
+        </footer>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

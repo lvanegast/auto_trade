@@ -1,0 +1,19 @@
+[project]
+name = "auto-trade"
+version = "0.1.0"
+description = "Bot de trading event-driven con Dashboard UI en FastAPI y PostgreSQL"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.22.0",
+    "psycopg2-binary>=2.9.0",
+    "pandas>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+    "trading-ig>=0.0.1",
+    "alpaca-py>=0.43.4",
+]
+
+[tool.uv]
+dev-dependencies = []
