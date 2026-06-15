@@ -258,5 +258,65 @@ async def cancel_order(body: dict):
         db.log("WARNING", f"Fallo al cancelar orden en Alpaca: {e}. Se forzó cancelación local en base de datos.", worker_id)
         return {"message": f"Orden marcada como cancelada. Nota: {e}"}
 
+@app.post("/api/worker/config")
+async def configure_worker(body: dict):
+    """Permite cambiar el símbolo del worker dinámicamente."""
+    worker_id = body.get("worker_id", "worker_1")
+    symbol = body.get("symbol")
+    
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Se requiere especificar el nuevo símbolo")
+        
+    if worker_id not in engine.workers:
+        raise HTTPException(status_code=404, detail="Worker no encontrado")
+        
+    worker = engine.workers[worker_id]
+    
+    # Detener el worker si está corriendo
+    was_running = worker.is_running
+    if was_running:
+        await engine.stop(worker_id)
+        
+    try:
+        # Actualizar el símbolo del worker
+        worker.symbol = symbol.upper()
+        worker.base_asset, worker.quote_asset = worker._parse_symbol()
+        
+        # Inicializar el feeder correspondiente con el nuevo símbolo
+        from src.feeders.mock_feeder import MockFeeder
+        from src.feeders.oanda_feeder import OandaFeeder
+        from src.feeders.ig_feeder import IGFeeder
+        from src.feeders.alpaca_feeder import AlpacaFeeder
+        from src.feeders.kalshi_feeder import KalshiFeeder
+        
+        if worker.feeder_type == "oanda":
+            worker.feeder = OandaFeeder(worker.symbol, worker.queue)
+        elif worker.feeder_type == "ig":
+            worker.feeder = IGFeeder(worker.symbol, worker.queue)
+        elif worker.feeder_type == "alpaca":
+            worker.feeder = AlpacaFeeder(worker.symbol, worker.queue)
+        elif worker.feeder_type == "kalshi":
+            worker.feeder = KalshiFeeder(worker.symbol, worker.queue)
+        else:
+            worker.feeder = MockFeeder(worker.symbol, worker.queue, interval=1.0)
+            
+        # Re-inicializar la estrategia con el nuevo símbolo
+        from src.strategy.ema_rsi import EmaRsiStrategy
+        worker.strategy = EmaRsiStrategy(worker.symbol)
+        
+        # Si tiene cliente Alpaca y la ejecución es real/paper (no simulación), pre-cargar historial
+        if worker.alpaca_client:
+            await worker._warm_up_strategy()
+            
+        # Si estaba corriendo, volver a iniciar
+        if was_running:
+            await engine.start(worker_id)
+            
+        db.log("INFO", f"Símbolo del worker {worker_id} cambiado dinámicamente a {worker.symbol}", worker_id)
+        return {"message": f"Símbolo del worker cambiado con éxito a {worker.symbol}"}
+    except Exception as e:
+        db.log("ERROR", f"Error al cambiar símbolo del worker {worker_id}: {e}", worker_id)
+        raise HTTPException(status_code=500, detail=f"Fallo al reconfigurar el activo: {e}")
+
 # Servir archivos estáticos del frontend en la raíz
 app.mount("/", StaticFiles(directory="web", html=True), name="web")

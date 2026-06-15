@@ -94,6 +94,9 @@ const botCardWorkerName = document.getElementById("bot-card-worker-name");
 const botBadgeStatus = document.getElementById("bot-badge-status");
 const paramSymbol = document.getElementById("param-symbol");
 const paramSource = document.getElementById("param-source");
+const selectCryptoAsset = document.getElementById("select-crypto-asset");
+const inputCustomSymbol = document.getElementById("input-custom-symbol");
+const btnChangeSymbol = document.getElementById("btn-change-symbol");
 
 // Lables de base y quote asset
 const quoteAssetLabels = document.querySelectorAll(".quote-asset-lbl");
@@ -442,6 +445,23 @@ async function fetchStatus() {
         quoteAsset = data.quote_asset || "USD";
         baseAsset = data.base_asset || "BTC";
         isForexOrEvent = quoteAsset === "USD" && baseAsset !== "BTC" && baseAsset !== "ETH";
+        
+        // Configurar selector dinámico según el origen de datos (feeder_type)
+        if (data.feeder_type === "alpaca") {
+            selectCryptoAsset.style.display = "block";
+            inputCustomSymbol.style.display = "none";
+            // Sincronizar el dropdown si coincide con las opciones
+            if (Array.from(selectCryptoAsset.options).some(opt => opt.value === data.symbol)) {
+                selectCryptoAsset.value = data.symbol;
+            }
+        } else {
+            selectCryptoAsset.style.display = "none";
+            inputCustomSymbol.style.display = "block";
+            // Evitar sobrescribir si el usuario está escribiendo
+            if (document.activeElement !== inputCustomSymbol) {
+                inputCustomSymbol.value = data.symbol;
+            }
+        }
         
         // Actualizar etiquetas de la interfaz
         quoteAssetLabels.forEach(lbl => lbl.textContent = quoteAsset);
@@ -1010,6 +1030,65 @@ function updatePortfolioTable() {
     `;
     portfolioWalletTableBody.appendChild(rowBase);
 }
+
+
+// --- CAMBIAR ACTIVO/SÍMBOLO DINÁMICAMENTE ---
+async function changeAssetSymbol() {
+    let newSymbol = "";
+    if (selectCryptoAsset.style.display === "block") {
+        newSymbol = selectCryptoAsset.value;
+    } else {
+        newSymbol = inputCustomSymbol.value.trim();
+    }
+    
+    if (!newSymbol) {
+        alert("Por favor ingresa o selecciona un símbolo válido.");
+        return;
+    }
+    
+    btnChangeSymbol.disabled = true;
+    btnChangeSymbol.textContent = "Cambiando...";
+    btnChangeSymbol.style.background = "#848e9c";
+    
+    try {
+        const res = await fetch(`${API_BASE}/worker/config`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                worker_id: activeWorkerId,
+                symbol: newSymbol
+            })
+        });
+        
+        if (res.ok) {
+            alert(`Símbolo cambiado con éxito a: ${newSymbol.toUpperCase()}`);
+            // Limpiar datos del gráfico para refrescar con el nuevo histórico
+            chartLabels = [];
+            chartData = [];
+            if (priceChart) {
+                priceChart.data.labels = [];
+                priceChart.data.datasets[0].data = [];
+                priceChart.update();
+            }
+            fetchStatus();
+            fetchLogs();
+            fetchTrades();
+        } else {
+            const err = await res.json();
+            alert(`Error al cambiar símbolo: ${err.detail || "Error desconocido"}`);
+        }
+    } catch (err) {
+        console.error("Error al cambiar símbolo:", err);
+        alert("Ocurrió un error de conexión al cambiar el símbolo.");
+    } finally {
+        btnChangeSymbol.disabled = false;
+        btnChangeSymbol.textContent = "Confirmar Cambio";
+        btnChangeSymbol.style.background = "#02c076";
+    }
+}
+btnChangeSymbol.addEventListener("click", changeAssetSymbol);
 
 
 // --- INICIALIZAR LA APLICACIÓN ---
