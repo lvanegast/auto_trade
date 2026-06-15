@@ -20,15 +20,17 @@ class PriceUpdateEvent(TradingEvent):
 
 
 class SignalEvent(TradingEvent):
-    def __init__(self, symbol: str, side: str, price: float, reason: str = ""):
+    def __init__(self, symbol: str, side: str, price: float, reason: str = "", amount: float = None):
         super().__init__("SIGNAL")
         self.symbol = symbol
         self.side = side.upper()  # 'BUY' o 'SELL'
         self.price = price
         self.reason = reason
+        self.amount = amount
 
     def __str__(self):
-        return f"[Signal] {self.symbol} -> {self.side} @ {self.price:.4f} (Reason: {self.reason})"
+        amount_str = f" x {self.amount}" if self.amount is not None else ""
+        return f"[Signal] {self.symbol} -> {self.side}{amount_str} @ {self.price:.4f} (Reason: {self.reason})"
 
 
 class OrderEvent(TradingEvent):

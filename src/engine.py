@@ -1,6 +1,8 @@
 import asyncio
 import os
 import requests
+import uuid
+import datetime
 from src.database import DatabaseManager
 from src.events import SignalEvent
 from src.strategy.ema_rsi import EmaRsiStrategy
@@ -8,293 +10,254 @@ from src.feeders.mock_feeder import MockFeeder
 from src.feeders.oanda_feeder import OandaFeeder
 from src.feeders.ig_feeder import IGFeeder
 from src.feeders.alpaca_feeder import AlpacaFeeder
+from src.feeders.kalshi_feeder import KalshiFeeder
 
-
-class TradingEngine:
-    def __init__(self, db: DatabaseManager):
+class TradingWorker:
+    def __init__(self, worker_id: str, name: str, symbol: str, feeder_type: str, db: DatabaseManager):
+        self.worker_id = worker_id
+        self.name = name
+        self.symbol = symbol.upper()
+        self.feeder_type = feeder_type.lower()
         self.db = db
         self.queue = asyncio.Queue()
-
-        # Cargar configuración desde el entorno
-        self.feeder_type = os.getenv("FEEDER_TYPE", "mock").lower()
-        self.symbol = os.getenv("TRADING_SYMBOL", "BTCUSDT").upper()
-
-        # Desglosar base y quote asset (ej: BTC_USDT -> BTC y USDT)
+        
         self.base_asset, self.quote_asset = self._parse_symbol()
-
-        # Inicializar componentes
+        
+        # Inicializar estrategia
         self.strategy = EmaRsiStrategy(self.symbol)
-
+        
+        # Inicializar alimentador de datos
         if self.feeder_type == "oanda":
             self.feeder = OandaFeeder(self.symbol, self.queue)
         elif self.feeder_type == "ig":
             self.feeder = IGFeeder(self.symbol, self.queue)
         elif self.feeder_type == "alpaca":
             self.feeder = AlpacaFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "kalshi":
+            self.feeder = KalshiFeeder(self.symbol, self.queue)
         else:
             self.feeder = MockFeeder(self.symbol, self.queue, interval=1.0)
-
-        # Estado del motor
+            
         self.is_running = False
         self.engine_task = None
         self.feeder_task = None
-
+        self.sync_task = None
+        
         # Cliente de ejecución para Alpaca
         self.alpaca_client = None
-        if self.feeder_type == "alpaca":
+        self.execution_type = os.getenv("EXECUTION_TYPE", "alpaca").lower()
+        if self.feeder_type == "alpaca" and self.execution_type == "alpaca":
             from alpaca.trading.client import TradingClient
-
             api_key = os.getenv("ALPACA_API_KEY")
             secret_key = os.getenv("ALPACA_SECRET_KEY")
             trading_mode = os.getenv("ALPACA_TRADING_MODE", "paper").lower()
-            is_paper = trading_mode == "paper"
-
+            is_paper = (trading_mode == "paper")
+            
             if api_key and secret_key and "your_alpaca" not in api_key:
                 self.alpaca_client = TradingClient(api_key, secret_key, paper=is_paper)
-                self.db.log(
-                    "INFO",
-                    f"Cliente de ejecución de Alpaca inicializado (Modo: {trading_mode.upper()}).",
-                )
+                self.db.log("INFO", f"Cliente de ejecución de Alpaca inicializado (Modo: {trading_mode.upper()}).", self.worker_id)
             else:
-                self.db.log(
-                    "WARNING",
-                    "Cliente de ejecución de Alpaca no configurado debido a credenciales faltantes o por defecto.",
-                )
-
-        # Credenciales e URL para OANDA
+                self.db.log("WARNING", "Cliente de ejecución de Alpaca no configurado debido a credenciales faltantes o por defecto.", self.worker_id)
+                
+        # Credenciales de OANDA
         self.oanda_account_id = os.getenv("OANDA_ACCOUNT_ID")
         self.oanda_token = os.getenv("OANDA_API_TOKEN")
         self.oanda_env = os.getenv("OANDA_ENV", "practice").lower()
         if self.oanda_env == "trade":
-            self.oanda_rest_url = (
-                f"https://api-fxtrade.oanda.com/v3/accounts/{self.oanda_account_id}"
-            )
+            self.oanda_rest_url = f"https://api-fxtrade.oanda.com/v3/accounts/{self.oanda_account_id}"
         else:
-            self.oanda_rest_url = (
-                f"https://api-fxpractice.oanda.com/v3/accounts/{self.oanda_account_id}"
-            )
-
-        # Saldo virtual inicial en base de datos para simulación
+            self.oanda_rest_url = f"https://api-fxpractice.oanda.com/v3/accounts/{self.oanda_account_id}"
+            
+        # Credenciales de Kalshi
+        self.kalshi_api_key_id = os.getenv("KALSHI_API_KEY_ID")
+        self.kalshi_private_key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH")
+        self.kalshi_env = os.getenv("KALSHI_ENV", "demo").lower()
+        if self.kalshi_env == "prod":
+            self.kalshi_rest_url = "https://trading-api.kalshi.com/trade-api/v2"
+        else:
+            self.kalshi_rest_url = "https://demo-api.kalshi.co/trade-api/v2"
+            
+        # Saldo virtual inicial
         self._init_portfolio()
 
     def _parse_symbol(self) -> tuple:
-        """Separa el símbolo en activo base y activo cotizado (base, quote)."""
         symbol = self.symbol
-
-        # Soporte para epics de IG Group (ej: CS.D.EURUSD.TODAY.IP)
         if "EURUSD" in symbol:
             return "EUR", "USD"
         elif "GBPUSD" in symbol:
             return "GBP", "USD"
-
+            
         if "_" in symbol:
             parts = symbol.split("_")
             return parts[0], parts[1]
-
+        
         if "/" in symbol:
             parts = symbol.split("/")
             return parts[0], parts[1]
-
-        # Reglas comunes para separar sin guión bajo
+        
         if symbol.startswith("BTC"):
-            return "BTC", "USDT"
+            return "BTC", "USD" if self.feeder_type == "alpaca" else "USDT"
         elif symbol.startswith("EUR"):
             return "EUR", "USD"
         elif symbol.startswith("GBP"):
             return "GBP", "USD"
-
-        # Fallback genérico: mitad y mitad
+            
+        # Para Kalshi (ej. INFLATION-26 o FED-26)
+        if "-" in symbol:
+            parts = symbol.split("-")
+            return parts[0], "USD"
+            
         mid = len(symbol) // 2
         return symbol[:mid], symbol[mid:]
 
     def _init_portfolio(self):
-        """Inicializa un balance virtual en PostgreSQL si no existe."""
-        # Si usamos Alpaca u OANDA, la sincronización real se hará al iniciar (start)
-        if self.alpaca_client or (
-            self.feeder_type == "oanda" and self.oanda_account_id and self.oanda_token
-        ):
+        # Si usamos cuentas reales/demo conectadas con APIs, la sincronización se hace al iniciar (start)
+        if self.alpaca_client:
             return
-
+        if self.feeder_type == "oanda" and self.oanda_account_id and self.oanda_token:
+            return
+        if self.feeder_type == "kalshi" and self.kalshi_api_key_id and self.kalshi_private_key_path:
+            return
+            
         portfolio = self.db.get_portfolio()
-        assets = [item["asset"] for item in portfolio]
-
-        # Cargar saldo inicial si no está registrado
+        assets = [item['asset'] for item in portfolio]
+        
         if self.quote_asset not in assets:
-            self.db.update_portfolio(
-                self.quote_asset, 10000.0
-            )  # 10,000 unidades virtuales de la divisa cotizada
-            self.db.log(
-                "INFO",
-                f"Portafolio inicializado con 10,000 {self.quote_asset} para simulación.",
-            )
+            self.db.update_portfolio(self.quote_asset, 10000.0)
+            self.db.log("INFO", f"Portafolio inicializado con 10,000 {self.quote_asset} para simulación.", self.worker_id)
         if self.base_asset not in assets:
             self.db.update_portfolio(self.base_asset, 0.0)
 
     async def start(self):
-        """Inicia el motor de trading en segundo plano."""
         if self.is_running:
             return
-
+            
         self.is_running = True
-        self.db.set_state("bot_running", "true")
-        self.db.log(
-            "INFO",
-            f"Iniciando motor de trading ({self.feeder_type.upper()}) para {self.symbol}...",
-        )
-
-        # Sincronizar balances reales si usamos Alpaca u OANDA
+        self.db.log("INFO", f"Iniciando Worker '{self.name}' ({self.feeder_type.upper()}) para {self.symbol}...", self.worker_id)
+        
+        # Sincronizar balances reales según corresponda
         if self.alpaca_client:
             await self._sync_alpaca_portfolio()
         elif self.feeder_type == "oanda" and self.oanda_account_id and self.oanda_token:
             await self._sync_oanda_portfolio()
-
-        # Pre-cargar datos históricos para evitar arranque en frío (cold start)
+        elif self.feeder_type == "kalshi" and self.kalshi_api_key_id and self.kalshi_private_key_path:
+            await self._sync_kalshi_portfolio()
+            
+        # Pre-cargar historial para evitar arranque en frío
         if self.feeder_type == "alpaca":
             await self._warm_up_strategy()
-
-        # Arrancar loops asíncronos
+            
         self.engine_task = asyncio.create_task(self._event_loop())
         self.feeder_task = asyncio.create_task(self.feeder.start())
+        self.sync_task = asyncio.create_task(self._periodic_sync())
 
     async def stop(self):
-        """Detiene el motor de trading."""
         if not self.is_running:
             return
-
+            
         self.is_running = False
-        self.db.set_state("bot_running", "false")
-        self.db.log("INFO", "Deteniendo motor de trading...")
-
-        # Detener alimentador
+        self.db.log("INFO", f"Deteniendo Worker '{self.name}'...", self.worker_id)
         self.feeder.stop()
-
-        # Cancelar tareas asíncronas
+        
         if self.feeder_task:
             self.feeder_task.cancel()
         if self.engine_task:
             self.engine_task.cancel()
-
+        if self.sync_task:
+            self.sync_task.cancel()
+            
         self.feeder_task = None
         self.engine_task = None
+        self.sync_task = None
 
-    async def _event_loop(self):
-        """Loop asíncrono principal que procesa la cola de eventos."""
-        print(f"[Engine] Loop de eventos iniciado para {self.symbol}.")
+    async def _periodic_sync(self):
+        print(f"[Worker {self.worker_id}] Tarea de sincronización periódica iniciada.")
         try:
             while self.is_running:
-                # Leer el siguiente evento de la cola
-                event = await self.queue.get()
+                await asyncio.sleep(10)
+                if not self.is_running:
+                    break
+                try:
+                    if self.alpaca_client:
+                        await self._sync_alpaca_portfolio()
+                    elif self.feeder_type == "oanda" and self.oanda_account_id and self.oanda_token:
+                        await self._sync_oanda_portfolio()
+                    elif self.feeder_type == "kalshi" and self.kalshi_api_key_id and self.kalshi_private_key_path:
+                        await self._sync_kalshi_portfolio()
+                except Exception as e:
+                    print(f"[Sync Error] Error en sincronización periódica: {e}")
+        except asyncio.CancelledError:
+            print(f"[Worker {self.worker_id}] Tarea de sincronización periódica cancelada.")
 
+    async def _event_loop(self):
+        print(f"[Worker {self.worker_id}] Loop de eventos iniciado para {self.symbol}.")
+        try:
+            while self.is_running:
+                event = await self.queue.get()
                 try:
                     if event.event_type == "PRICE_UPDATE":
-                        # Pasar precio actual a la estrategia
                         signal = self.strategy.on_price_update(event)
                         if signal:
-                            # Meter señal generada a la cola
                             await self.queue.put(signal)
-
                     elif event.event_type == "SIGNAL":
-                        # Procesar señal para ejecución
                         await self._execute_order(event)
-
                 except Exception as e:
-                    self.db.log(
-                        "ERROR",
-                        f"Error en event_loop procesando evento {event.event_type}: {e}",
-                    )
+                    self.db.log("ERROR", f"Error en event_loop: {e}", self.worker_id)
                 finally:
                     self.queue.task_done()
         except asyncio.CancelledError:
-            print("[Engine] Loop de eventos cancelado.")
+            print(f"[Worker {self.worker_id}] Loop de eventos cancelado.")
 
     async def _execute_order(self, signal: SignalEvent):
-        """Maneja la ejecución de órdenes (reales/demo en Alpaca, OANDA o simulación local)."""
-        self.db.log("INFO", f"Procesando señal: {signal}")
-
-        # Cargar balances actuales de base de datos
-        balances = {
-            item["asset"]: float(item["free_balance"])
-            for item in self.db.get_portfolio()
-        }
+        self.db.log("INFO", f"Procesando señal: {signal}", self.worker_id)
+        
+        # Cargar balances actuales de la base de datos
+        balances = {item['asset']: float(item['free_balance']) for item in self.db.get_portfolio()}
         quote_balance = balances.get(self.quote_asset, 0.0)
         base_balance = balances.get(self.base_asset, 0.0)
-
+        
         price = signal.price
-
-        # 1. EJECUCIÓN CON ALPACA (Demo/Real)
+        
+        # 1. EJECUCIÓN CON ALPACA (Acciones / Criptomonedas)
         if self.alpaca_client:
             from alpaca.trading.requests import MarketOrderRequest
             from alpaca.trading.enums import OrderSide, TimeInForce
-
             try:
-                # Determinar cantidad para colocar la orden
                 if signal.side == "BUY":
-                    # Comprar con el 50% de la divisa cotizada disponible
                     spend_amount = quote_balance * 0.5
                     amount_to_buy = spend_amount / price
-
-                    # Criptomonedas aceptan fracciones altas; acciones suelen ser más limitadas
                     is_crypto_symbol = "/" in self.feeder.symbol
-                    qty = (
-                        round(amount_to_buy, 6)
-                        if is_crypto_symbol
-                        else round(amount_to_buy, 4)
-                    )
-
+                    qty = round(amount_to_buy, 6) if is_crypto_symbol else round(amount_to_buy, 4)
+                    
                     if qty <= 0:
-                        self.db.log(
-                            "WARNING",
-                            "Cantidad a comprar calculada es 0. Abortando orden en Alpaca.",
-                        )
+                        self.db.log("WARNING", "Cantidad a comprar es 0 o insuficiente. Abortando orden.", self.worker_id)
                         return
-
+                        
                     order_data = MarketOrderRequest(
-                        symbol=self.feeder.symbol.replace(
-                            "/", ""
-                        ),  # Ej. BTC/USD -> BTCUSD
+                        symbol=self.feeder.symbol.replace("/", ""),
                         qty=qty,
                         side=OrderSide.BUY,
-                        time_in_force=TimeInForce.GTC,
+                        time_in_force=TimeInForce.GTC
                     )
                 else:
-                    # Vender el 100% del activo base
                     is_crypto_symbol = "/" in self.feeder.symbol
-                    qty = (
-                        round(base_balance, 6)
-                        if is_crypto_symbol
-                        else round(base_balance, 4)
-                    )
-
+                    qty = round(base_balance, 6) if is_crypto_symbol else round(base_balance, 4)
+                    
                     if qty <= 0:
-                        self.db.log(
-                            "WARNING",
-                            "Cantidad a vender es 0 o insuficiente. Abortando orden en Alpaca.",
-                        )
+                        self.db.log("WARNING", "Cantidad a vender es 0 o insuficiente. Abortando orden.", self.worker_id)
                         return
-
+                        
                     order_data = MarketOrderRequest(
                         symbol=self.feeder.symbol.replace("/", ""),
                         qty=qty,
                         side=OrderSide.SELL,
-                        time_in_force=TimeInForce.GTC,
+                        time_in_force=TimeInForce.GTC
                     )
-
-                self.db.log(
-                    "INFO",
-                    f"Enviando orden de mercado a Alpaca: {order_data.side} {order_data.qty} {order_data.symbol}",
-                )
-
-                # Ejecutar llamada API en hilo secundario para no bloquear
-                order = await asyncio.to_thread(
-                    self.alpaca_client.submit_order, order_data=order_data
-                )
-
-                # Registrar en base de datos local
-                order_status = (
-                    str(order.status.value).upper()
-                    if hasattr(order.status, "value")
-                    else str(order.status).upper()
-                )
+                    
+                self.db.log("INFO", f"Enviando orden a Alpaca: {order_data.side} {order_data.qty} {order_data.symbol}", self.worker_id)
+                order = await asyncio.to_thread(self.alpaca_client.submit_order, order_data=order_data)
+                
+                order_status = str(order.status.value).upper() if hasattr(order.status, 'value') else str(order.status).upper()
                 self.db.save_trade(
                     symbol=self.symbol,
                     side=signal.side,
@@ -302,60 +265,45 @@ class TradingEngine:
                     amount=float(order.qty),
                     external_order_id=str(order.id),
                     status=order_status,
+                    worker_id=self.worker_id
                 )
-                self.db.log(
-                    "INFO",
-                    f"Orden enviada con éxito. ID externo: {order.id}, Estado: {order.status}",
-                )
-
-                # Sincronizar balances locales con los de la cuenta de Alpaca después del trade
                 await self._sync_alpaca_portfolio()
-
             except Exception as e:
-                self.db.log("ERROR", f"Fallo al enviar orden a Alpaca: {e}")
+                self.db.log("ERROR", f"Fallo al enviar orden a Alpaca: {e}", self.worker_id)
             return
 
-        # 2. EJECUCIÓN CON OANDA (Demo/Real)
+        # 2. EJECUCIÓN CON OANDA (Forex)
         if self.feeder_type == "oanda" and self.oanda_account_id and self.oanda_token:
             try:
-                # OANDA unidades: tamaño de posición.
-                # Calculamos las unidades a operar usando el balance disponible de la divisa cotizada.
                 units = int(quote_balance * 0.5)
                 if units <= 0:
-                    units = 1000  # Micro lote por defecto
-
+                    units = 1000
                 if signal.side == "SELL":
                     units = -units
-
+                    
                 url = f"{self.oanda_rest_url}/orders"
                 headers = {
                     "Authorization": f"Bearer {self.oanda_token}",
-                    "Content-Type": "application/json",
+                    "Content-Type": "application/json"
                 }
-
                 data = {
                     "order": {
                         "instrument": self.feeder.symbol,
                         "units": str(units),
                         "type": "MARKET",
                         "timeInForce": "FOK",
-                        "positionFill": "DEFAULT",
+                        "positionFill": "DEFAULT"
                     }
                 }
-
-                self.db.log(
-                    "INFO",
-                    f"Enviando orden a OANDA: {signal.side} {abs(units)} unidades de {self.feeder.symbol}",
-                )
-                response = await asyncio.to_thread(
-                    requests.post, url, headers=headers, json=data
-                )
-
+                
+                self.db.log("INFO", f"Enviando orden a OANDA: {signal.side} {abs(units)} unidades", self.worker_id)
+                response = await asyncio.to_thread(requests.post, url, headers=headers, json=data)
+                
                 if response.status_code in [200, 201]:
                     res_data = response.json()
                     order_fill = res_data.get("orderFillTransaction", {})
                     trade_id = order_fill.get("id", "N/A")
-
+                    
                     self.db.save_trade(
                         symbol=self.symbol,
                         side=signal.side,
@@ -363,191 +311,308 @@ class TradingEngine:
                         amount=float(abs(units)),
                         external_order_id=str(trade_id),
                         status="COMPLETED",
-                    )
-                    self.db.log(
-                        "INFO",
-                        f"Orden ejecutada en OANDA con éxito. ID Transacción: {trade_id}",
+                        worker_id=self.worker_id
                     )
                     await self._sync_oanda_portfolio()
                 else:
-                    self.db.log(
-                        "ERROR",
-                        f"Fallo al ejecutar orden en OANDA. Status: {response.status_code}, Detalle: {response.text}",
-                    )
-
+                    self.db.log("ERROR", f"Fallo en orden OANDA. Status: {response.status_code}", self.worker_id)
             except Exception as e:
-                self.db.log("ERROR", f"Error al ejecutar orden en OANDA: {e}")
+                self.db.log("ERROR", f"Error en ejecución OANDA: {e}", self.worker_id)
             return
 
-        # 3. EJECUCIÓN SIMULADA LOCAL (Fallback si no hay Alpaca ni OANDA)
-        if signal.side == "BUY":
-            spend_amount = quote_balance * 0.5
-            min_spend = 10.0 if self.quote_asset in ["USDT", "USD"] else 1.0
-            if spend_amount < min_spend:
-                self.db.log(
-                    "WARNING",
-                    f"Saldo {self.quote_asset} insuficiente para realizar compra simulada.",
-                )
+        # 3. EJECUCIÓN CON KALSHI (Eventos)
+        if self.feeder_type == "kalshi":
+            # Si hay llaves reales, ejecutamos orden firmada
+            if self.kalshi_api_key_id and self.kalshi_private_key_path:
+                try:
+                    # En Kalshi, operamos contratos (YES/NO).
+                    # Por defecto compraremos contratos YES.
+                    # Calculamos contratos a comprar gastando el 50% del balance de USD
+                    spend_amount = quote_balance * 0.5
+                    # El precio del contrato está expresado en centavos (ej. 50 = $0.50). 
+                    # El precio de la señal está en dólares.
+                    price_cents = int(price * 100)
+                    contracts_count = int(spend_amount / price)
+                    
+                    if contracts_count <= 0:
+                        contracts_count = 10  # Lote mínimo por defecto
+                        
+                    # Cargar llave privada RSA para firmar
+                    from cryptography.hazmat.primitives import hashes, serialization
+                    from cryptography.hazmat.primitives.asymmetric import padding
+                    import base64
+                    
+                    with open(self.kalshi_private_key_path, "rb") as key_file:
+                        private_key = serialization.load_pem_private_key(
+                            key_file.read(),
+                            password=None
+                        )
+                        
+                    path = "/portfolio/orders"
+                    timestamp = str(int(datetime.datetime.now().timestamp() * 1000))
+                    method = "POST"
+                    
+                    # Generar firma: timestamp + method + path
+                    message = f"{timestamp}{method}{path}".encode('utf-8')
+                    signature = private_key.sign(
+                        message,
+                        padding.PSS(
+                            mgf=padding.MGF1(hashes.SHA256()),
+                            salt_length=padding.PSS.MAX_LENGTH
+                        ),
+                        hashes.SHA256()
+                    )
+                    b64_sig = base64.b64encode(signature).decode('utf-8')
+                    
+                    url = f"{self.kalshi_rest_url}{path}"
+                    headers = {
+                        'KALSHI-ACCESS-KEY': self.kalshi_api_key_id,
+                        'KALSHI-ACCESS-SIGNATURE': b64_sig,
+                        'KALSHI-ACCESS-TIMESTAMP': timestamp,
+                        'Content-Type': 'application/json'
+                    }
+                    
+                    # Estructura del cuerpo del POST Kalshi v2
+                    side_to_place = "yes" if signal.side == "BUY" else "no"
+                    order_data = {
+                        "ticker": self.symbol,
+                        "side": side_to_place,
+                        "count": contracts_count,
+                        "price": price_cents,  # Precio límite en centavos (0-99)
+                        "type": "limit",
+                        "action": "buy" if signal.side == "BUY" else "sell",
+                        "client_order_id": str(uuid.uuid4())
+                    }
+                    
+                    self.db.log("INFO", f"Enviando orden a Kalshi: {signal.side} {contracts_count} contratos de {self.symbol}", self.worker_id)
+                    response = await asyncio.to_thread(requests.post, url, headers=headers, json=order_data)
+                    
+                    if response.status_code in [200, 201]:
+                        res_json = response.json()
+                        order_id = res_json.get("order", {}).get("order_id", "N/A")
+                        self.db.save_trade(
+                            symbol=self.symbol,
+                            side=signal.side,
+                            price=price,
+                            amount=float(contracts_count),
+                            external_order_id=str(order_id),
+                            status="COMPLETED",
+                            worker_id=self.worker_id
+                        )
+                        await self._sync_kalshi_portfolio()
+                    else:
+                        self.db.log("ERROR", f"Fallo al enviar orden a Kalshi: {response.status_code} - {response.text}", self.worker_id)
+                except Exception as e:
+                    self.db.log("ERROR", f"Error en ejecución Kalshi: {e}", self.worker_id)
+                return
+            else:
+                # Simulación local para Kalshi si no hay keys
+                if signal.side == "BUY":
+                    spend_amount = quote_balance * 0.5
+                    contracts_count = spend_amount / price
+                    new_quote = quote_balance - spend_amount
+                    new_base = base_balance + contracts_count
+                    
+                    self.db.save_trade(
+                        symbol=self.symbol,
+                        side="BUY",
+                        price=price,
+                        amount=contracts_count,
+                        status="COMPLETED",
+                        worker_id=self.worker_id
+                    )
+                    self.db.update_portfolio(self.quote_asset, new_quote)
+                    self.db.update_portfolio(self.base_asset, new_base)
+                    self.db.log("INFO", f"Compra de eventos simulada (Kalshi). Nuevo saldo: {new_quote:.2f} {self.quote_asset}, {new_base:.2f} contratos YES.", self.worker_id)
+                else:
+                    if base_balance <= 0:
+                        self.db.log("WARNING", "Sin contratos en portafolio para vender.", self.worker_id)
+                        return
+                    revenue = base_balance * price
+                    new_quote = quote_balance + revenue
+                    new_base = 0.0
+                    
+                    self.db.save_trade(
+                        symbol=self.symbol,
+                        side="SELL",
+                        price=price,
+                        amount=base_balance,
+                        status="COMPLETED",
+                        worker_id=self.worker_id
+                    )
+                    self.db.update_portfolio(self.quote_asset, new_quote)
+                    self.db.update_portfolio(self.base_asset, new_base)
+                    self.db.log("INFO", f"Venta de contratos simulada (Kalshi). Nuevo saldo: {new_quote:.2f} {self.quote_asset}, {new_base:.2f} contratos.", self.worker_id)
                 return
 
-            amount_to_buy = spend_amount / price
+        # 4. SIMULACIÓN LOCAL MOCK / FALLBACK GENERAL
+        if signal.side == "BUY":
+            if getattr(signal, "amount", None) is not None:
+                amount_to_buy = signal.amount
+                spend_amount = amount_to_buy * price
+            else:
+                spend_amount = quote_balance * 0.5
+                amount_to_buy = spend_amount / price
+                
+            if quote_balance < spend_amount:
+                self.db.log("WARNING", f"Saldo insuficiente. Requerido: {spend_amount:.2f} {self.quote_asset}, Disponible: {quote_balance:.2f} {self.quote_asset}.", self.worker_id)
+                return
+                
             new_quote = quote_balance - spend_amount
             new_base = base_balance + amount_to_buy
-
+            
             self.db.save_trade(
                 symbol=self.symbol,
                 side="BUY",
                 price=price,
                 amount=amount_to_buy,
                 status="COMPLETED",
+                worker_id=self.worker_id
             )
-
             self.db.update_portfolio(self.quote_asset, new_quote)
             self.db.update_portfolio(self.base_asset, new_base)
-            self.db.log(
-                "INFO",
-                f"Compra simulada completada. Nuevo saldo: {new_quote:.2f} {self.quote_asset}, {new_base:.6f} {self.base_asset}",
-            )
-
+            self.db.log("INFO", f"Compra simulada completada. Nuevo saldo: {new_quote:.2f} {self.quote_asset}, {new_base:.6f} {self.base_asset}", self.worker_id)
         elif signal.side == "SELL":
-            min_sell = 0.0001 if self.base_asset == "BTC" else 1.0
-            if base_balance < min_sell:
-                self.db.log(
-                    "WARNING",
-                    f"Sin {self.base_asset} suficiente en cartera para realizar venta simulada.",
-                )
+            if getattr(signal, "amount", None) is not None:
+                amount_to_sell = signal.amount
+            else:
+                amount_to_sell = base_balance
+                
+            if base_balance < amount_to_sell:
+                self.db.log("WARNING", f"Sin {self.base_asset} suficiente en cartera. Requerido: {amount_to_sell:.6f}, Disponible: {base_balance:.6f}.", self.worker_id)
                 return
-
-            revenue = base_balance * price
+                
+            revenue = amount_to_sell * price
             new_quote = quote_balance + revenue
-            new_base = 0.0
-
+            new_base = base_balance - amount_to_sell
+            
             self.db.save_trade(
                 symbol=self.symbol,
                 side="SELL",
                 price=price,
-                amount=base_balance,
+                amount=amount_to_sell,
                 status="COMPLETED",
+                worker_id=self.worker_id
             )
-
             self.db.update_portfolio(self.quote_asset, new_quote)
             self.db.update_portfolio(self.base_asset, new_base)
-            self.db.log(
-                "INFO",
-                f"Venta simulada completada. Nuevo saldo: {new_quote:.2f} {self.quote_asset}, {new_base:.6f} {self.base_asset}",
-            )
+            self.db.log("INFO", f"Venta simulada completada. Nuevo saldo: {new_quote:.2f} {self.quote_asset}, {new_base:.6f} {self.base_asset}", self.worker_id)
 
     async def _sync_alpaca_portfolio(self):
-        """Sincroniza los balances del portafolio local con los reales de la cuenta de Alpaca."""
         if not self.alpaca_client:
             return
-
         try:
-            self.db.log("INFO", "Sincronizando portafolio con Alpaca...")
-
-            # Obtener datos de la cuenta (Efectivo disponible)
+            self.db.log("INFO", "Sincronizando portafolio con Alpaca...", self.worker_id)
             account = await asyncio.to_thread(self.alpaca_client.get_account)
             cash = float(account.cash)
-
-            # Actualizar el balance del quote asset (ej. USD o USDT) en Postgres
             self.db.update_portfolio(self.quote_asset, cash)
-
-            # Obtener posiciones abiertas
+            
             positions = await asyncio.to_thread(self.alpaca_client.get_all_positions)
-
-            # Por defecto, asumimos que no hay tenencias del activo base
             base_qty = 0.0
-
-            # Formato esperado del ticker en las posiciones de Alpaca (ej. BTCUSD o AAPL)
             alpaca_target_symbol = self.feeder.symbol.replace("/", "").upper()
-
+            
             for position in positions:
                 if position.symbol.upper() == alpaca_target_symbol:
                     base_qty = float(position.qty)
                     break
-
-            # Actualizar balance del base asset (ej. BTC) en Postgres
             self.db.update_portfolio(self.base_asset, base_qty)
-            self.db.log(
-                "INFO",
-                f"Sincronización de Alpaca exitosa. Balances actualizados en base de datos. {self.quote_asset}: {cash:.2f}, {self.base_asset}: {base_qty:.6f}",
-            )
-
+            self.db.log("INFO", f"Sincronización de Alpaca exitosa. {self.quote_asset}: {cash:.2f}, {self.base_asset}: {base_qty:.6f}", self.worker_id)
+            
+            # Sincronizar estado de órdenes pendientes con Alpaca
+            pending_trades = self.db.get_pending_trades(self.worker_id)
+            for trade in pending_trades:
+                ext_id = trade.get("external_order_id")
+                if ext_id:
+                    try:
+                        order_detail = await asyncio.to_thread(self.alpaca_client.get_order_by_id, ext_id)
+                        current_status = str(order_detail.status.value).upper() if hasattr(order_detail.status, 'value') else str(order_detail.status).upper()
+                        if current_status == "FILLED":
+                            self.db.update_trade_status(ext_id, "COMPLETED")
+                            self.db.log("INFO", f"Orden {ext_id} completada y marcada como COMPLETED en la base de datos.", self.worker_id)
+                        elif current_status in ["CANCELED", "EXPIRED", "REJECTED"]:
+                            self.db.update_trade_status(ext_id, current_status)
+                            self.db.log("INFO", f"Orden {ext_id} cancelada/expirada en Alpaca. Estado DB: {current_status}.", self.worker_id)
+                    except Exception as order_ex:
+                        pass
         except Exception as e:
-            self.db.log("ERROR", f"Error al sincronizar balances con Alpaca: {e}")
+            self.db.log("ERROR", f"Error al sincronizar con Alpaca: {e}", self.worker_id)
 
     async def _sync_oanda_portfolio(self):
-        """Sincroniza los balances del portafolio local con los reales de la cuenta de OANDA."""
         if not self.oanda_account_id or not self.oanda_token:
             return
-
         try:
-            self.db.log("INFO", "Sincronizando portafolio con OANDA...")
-            url = self.oanda_rest_url
-            headers = {
+            self.db.log("INFO", "Sincronizando portafolio con OANDA...", self.worker_id)
+            response = await asyncio.to_thread(requests.get, self.oanda_rest_url, headers={
                 "Authorization": f"Bearer {self.oanda_token}",
-                "Content-Type": "application/json",
-            }
-
-            response = await asyncio.to_thread(requests.get, url, headers=headers)
-
+                "Content-Type": "application/json"
+            })
             if response.status_code == 200:
                 data = response.json()
                 account = data.get("account", {})
                 balance = float(account.get("balance", 0.0))
                 self.db.update_portfolio(self.quote_asset, balance)
-
+                
                 positions = account.get("positions", [])
                 base_qty = 0.0
-
                 for pos in positions:
                     if pos.get("instrument") == self.feeder.symbol:
                         long_units = float(pos.get("long", {}).get("units", 0.0))
                         short_units = float(pos.get("short", {}).get("units", 0.0))
                         base_qty = long_units - short_units
                         break
-
                 self.db.update_portfolio(self.base_asset, base_qty)
-                self.db.log(
-                    "INFO",
-                    f"Sincronización de OANDA exitosa. {self.quote_asset}: {balance:.2f}, {self.base_asset}: {base_qty:.2f}",
-                )
+                self.db.log("INFO", f"Sincronización de OANDA exitosa. {self.quote_asset}: {balance:.2f}, {self.base_asset}: {base_qty:.2f}", self.worker_id)
             else:
-                self.db.log(
-                    "ERROR",
-                    f"Fallo al sincronizar portafolio con OANDA. Status: {response.status_code}",
-                )
-
+                self.db.log("ERROR", f"Fallo al sincronizar portafolio con OANDA. Status: {response.status_code}", self.worker_id)
         except Exception as e:
-            self.db.log("ERROR", f"Error al sincronizar balances con OANDA: {e}")
+            self.db.log("ERROR", f"Error al sincronizar con OANDA: {e}", self.worker_id)
+
+    async def _sync_kalshi_portfolio(self):
+        if not self.kalshi_api_key_id or not self.kalshi_private_key_path:
+            return
+        try:
+            # Sincronización real de balance de la cuenta de Kalshi v2
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import padding
+            import base64
+            
+            with open(self.kalshi_private_key_path, "rb") as key_file:
+                private_key = serialization.load_pem_private_key(key_file.read(), password=None)
+                
+            path = "/portfolio/balance"
+            timestamp = str(int(datetime.datetime.now().timestamp() * 1000))
+            message = f"{timestamp}GET{path}".encode('utf-8')
+            signature = private_key.sign(message, padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH), hashes.SHA256())
+            b64_sig = base64.b64encode(signature).decode('utf-8')
+            
+            response = await asyncio.to_thread(requests.get, f"{self.kalshi_rest_url}{path}", headers={
+                'KALSHI-ACCESS-KEY': self.kalshi_api_key_id,
+                'KALSHI-ACCESS-SIGNATURE': b64_sig,
+                'KALSHI-ACCESS-TIMESTAMP': timestamp,
+                'Content-Type': 'application/json'
+            })
+            if response.status_code == 200:
+                data = response.json()
+                balance_cents = float(data.get("balance", 0.0))
+                balance = balance_cents / 100.0
+                self.db.update_portfolio(self.quote_asset, balance)
+                self.db.log("INFO", f"Sincronización de Kalshi exitosa. USD: {balance:.2f}", self.worker_id)
+            else:
+                self.db.log("ERROR", f"Fallo al sincronizar con Kalshi. Status: {response.status_code}", self.worker_id)
+        except Exception as e:
+            self.db.log("ERROR", f"Error al sincronizar con Kalshi: {e}", self.worker_id)
 
     async def _warm_up_strategy(self):
-        """Pre-carga datos históricos en la estrategia para evitar el arranque en frío (cold start)."""
         if self.feeder_type != "alpaca":
             return
-
         try:
-            self.db.log(
-                "INFO", f"Pre-cargando historial de {self.symbol} desde Alpaca..."
-            )
+            self.db.log("INFO", f"Pre-cargando historial de {self.symbol} desde Alpaca...", self.worker_id)
             api_key = os.getenv("ALPACA_API_KEY")
             secret_key = os.getenv("ALPACA_SECRET_KEY")
-
-            # Determinar si es crypto o stock
-            is_crypto = (
-                self.feeder.is_crypto if hasattr(self.feeder, "is_crypto") else True
-            )
-
-            # Obtener intervalo de barra (por defecto 60 segundos)
-            bar_interval = (
-                self.strategy.bar_interval
-                if hasattr(self.strategy, "bar_interval")
-                else 60
-            )
-
-            # Mapear bar_interval a timeframe de Alpaca
+            is_crypto = self.feeder.is_crypto if hasattr(self.feeder, 'is_crypto') else True
+            bar_interval = self.strategy.bar_interval if hasattr(self.strategy, 'bar_interval') else 60
+            
             from alpaca.data.timeframe import TimeFrame
-
             if bar_interval <= 60:
                 tf = TimeFrame.Minute
                 minutes_back = 100
@@ -557,65 +622,107 @@ class TradingEngine:
             else:
                 tf = TimeFrame.Hour
                 minutes_back = 2400
-
-            from datetime import datetime, timedelta, timezone
-
-            start_time = datetime.now(timezone.utc) - timedelta(minutes=minutes_back)
-
-            # Crear cliente de datos históricos
+                
+            from datetime import timedelta, timezone
+            start_time = datetime.datetime.now(timezone.utc) - timedelta(minutes=minutes_back)
+            
             import pandas as pd
-
             if is_crypto:
                 from alpaca.data.historical import CryptoHistoricalDataClient
                 from alpaca.data.requests import CryptoBarsRequest
-
                 client = CryptoHistoricalDataClient(api_key, secret_key)
                 request_params = CryptoBarsRequest(
                     symbol_or_symbols=self.feeder.symbol,
                     timeframe=tf,
                     start=start_time,
-                    end=datetime.now(timezone.utc),
+                    end=datetime.datetime.now(timezone.utc)
                 )
-                # Ejecutar en hilo secundario para no bloquear
                 bars = await asyncio.to_thread(client.get_crypto_bars, request_params)
             else:
                 from alpaca.data.historical import StockHistoricalDataClient
                 from alpaca.data.requests import StockBarsRequest
-
                 client = StockHistoricalDataClient(api_key, secret_key)
                 request_params = StockBarsRequest(
                     symbol_or_symbols=self.feeder.symbol,
                     timeframe=tf,
                     start=start_time,
-                    end=datetime.now(timezone.utc),
+                    end=datetime.datetime.now(timezone.utc)
                 )
                 bars = await asyncio.to_thread(client.get_stock_bars, request_params)
-
+                
             if bars and self.feeder.symbol in bars.data:
                 symbol_bars = bars.data[self.feeder.symbol]
-
-                # Convertir a filas en prices_df
                 rows = []
                 for b in symbol_bars:
-                    # Convertir timestamp a local naive
                     dt = b.timestamp.astimezone()
                     dt_naive = dt.replace(tzinfo=None)
                     rows.append({"timestamp": dt_naive, "price": float(b.close)})
-
-                # Crear DataFrame y agregarlo a la estrategia
                 hist_df = pd.DataFrame(rows)
-                self.strategy.prices_df = hist_df.sort_values("timestamp").reset_index(
-                    drop=True
-                )
-                self.db.log(
-                    "INFO",
-                    f"Pre-carga completada. {len(self.strategy.prices_df)} barras históricas cargadas en la estrategia.",
-                )
+                self.strategy.prices_df = hist_df.sort_values("timestamp").reset_index(drop=True)
+                self.db.log("INFO", f"Pre-carga completada. {len(self.strategy.prices_df)} velas cargadas.", self.worker_id)
             else:
-                self.db.log(
-                    "WARNING",
-                    "No se recibieron datos históricos de Alpaca para pre-cargar.",
-                )
-
+                self.db.log("WARNING", "No se recibieron barras históricas para pre-cargar.", self.worker_id)
         except Exception as e:
-            self.db.log("ERROR", f"Error al pre-cargar datos históricos: {e}")
+            self.db.log("ERROR", f"Error al pre-cargar datos históricos: {e}", self.worker_id)
+
+
+class TradingEngine:
+    def __init__(self, db: DatabaseManager):
+        self.db = db
+        self.workers = {}
+        self._load_workers()
+
+    def _load_workers(self):
+        # Intentar leer configuraciones de múltiples workers de .env
+        w1_enabled = os.getenv("WORKER1_ENABLED", "true").lower() == "true"
+        w2_enabled = os.getenv("WORKER2_ENABLED", "true").lower() == "true"
+        
+        if w1_enabled:
+            w1_type = os.getenv("WORKER1_FEEDER_TYPE", os.getenv("FEEDER_TYPE", "alpaca"))
+            w1_sym = os.getenv("WORKER1_SYMBOL", os.getenv("TRADING_SYMBOL", "BTC/USD"))
+            self.workers["worker_1"] = TradingWorker("worker_1", "Alpaca Ventana", w1_sym, w1_type, self.db)
+            
+        if w2_enabled:
+            w2_type = os.getenv("WORKER2_FEEDER_TYPE", "kalshi")
+            w2_sym = os.getenv("WORKER2_SYMBOL", "INFLATION-26")
+            self.workers["worker_2"] = TradingWorker("worker_2", "Kalshi Ventana", w2_sym, w2_type, self.db)
+
+    @property
+    def is_running(self):
+        return any(w.is_running for w in self.workers.values())
+        
+    @property
+    def symbol(self):
+        return self.workers.get("worker_1").symbol if "worker_1" in self.workers else "-"
+        
+    @property
+    def feeder_type(self):
+        return self.workers.get("worker_1").feeder_type if "worker_1" in self.workers else "mock"
+        
+    @property
+    def base_asset(self):
+        return self.workers.get("worker_1").base_asset if "worker_1" in self.workers else "-"
+
+    @property
+    def quote_asset(self):
+        return self.workers.get("worker_1").quote_asset if "worker_1" in self.workers else "-"
+        
+    @property
+    def strategy(self):
+        return self.workers.get("worker_1").strategy if "worker_1" in self.workers else None
+
+    async def start(self, worker_id: str = None):
+        if worker_id:
+            if worker_id in self.workers:
+                await self.workers[worker_id].start()
+        else:
+            for w in self.workers.values():
+                await w.start()
+                
+    async def stop(self, worker_id: str = None):
+        if worker_id:
+            if worker_id in self.workers:
+                await self.workers[worker_id].stop()
+        else:
+            for w in self.workers.values():
+                await w.stop()

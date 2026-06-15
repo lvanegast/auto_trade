@@ -49,8 +49,9 @@ class DatabaseManager:
                 price NUMERIC(18, 8) NOT NULL,
                 amount NUMERIC(18, 8) NOT NULL,
                 total NUMERIC(18, 8) NOT NULL,
-                status VARCHAR(20) NOT NULL,     -- 'PENDING', 'COMPLETED', 'FAILED'
-                external_order_id VARCHAR(100)
+                status VARCHAR(100) NOT NULL,     -- 'PENDING', 'COMPLETED', 'FAILED'
+                external_order_id VARCHAR(100),
+                worker_id VARCHAR(50) NOT NULL DEFAULT 'worker_1'
             );
             """,
             # Tabla de logs persistentes
@@ -59,7 +60,8 @@ class DatabaseManager:
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 level VARCHAR(10) NOT NULL,       -- 'INFO', 'WARNING', 'ERROR'
-                message TEXT NOT NULL
+                message TEXT NOT NULL,
+                worker_id VARCHAR(50) NOT NULL DEFAULT 'system'
             );
             """,
             # Tabla de estado del portafolio (balance virtual o real)
@@ -131,19 +133,19 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    def log(self, level: str, message: str):
+    def log(self, level: str, message: str, worker_id: str = "system"):
         """Guarda un log en la consola y en PostgreSQL."""
         now = datetime.now()
-        print(f"[{now.isoformat()}] {level}: {message}")
+        print(f"[{now.isoformat()}] {level} ({worker_id}): {message}")
         query = """
-        INSERT INTO logs (timestamp, level, message)
-        VALUES (%s, %s, %s);
+        INSERT INTO logs (timestamp, level, message, worker_id)
+        VALUES (%s, %s, %s, %s);
         """
         conn = None
         try:
             conn = self._get_connection()
             with conn.cursor() as cursor:
-                cursor.execute(query, (now, level, message))
+                cursor.execute(query, (now, level, message, worker_id))
                 conn.commit()
         except Exception as e:
             print(f"[Error de Logs] No se pudo guardar log en DB: {e}")
@@ -161,11 +163,12 @@ class DatabaseManager:
         amount: float,
         external_order_id: str = None,
         status: str = "COMPLETED",
+        worker_id: str = "worker_1",
     ) -> int:
         """Guarda un registro de trade en la base de datos."""
         query = """
-        INSERT INTO trades (timestamp, symbol, side, price, amount, total, status, external_order_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
+        INSERT INTO trades (timestamp, symbol, side, price, amount, total, status, external_order_id, worker_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
         """
         now = datetime.now()
         total = price * amount
@@ -184,6 +187,7 @@ class DatabaseManager:
                         total,
                         status,
                         external_order_id,
+                        worker_id,
                     ),
                 )
                 trade_id = cursor.fetchone()[0]
@@ -191,10 +195,11 @@ class DatabaseManager:
                 self.log(
                     "INFO",
                     f"Trade guardado - {side.upper()} {amount} {symbol} @ {price}",
+                    worker_id,
                 )
                 return trade_id
         except Exception as e:
-            self.log("ERROR", f"Error al guardar trade: {e}")
+            self.log("ERROR", f"Error al guardar trade: {e}", worker_id)
             if conn:
                 conn.rollback()
             return -1
@@ -202,14 +207,19 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    def get_trades(self, limit=50):
+    def get_trades(self, limit=50, worker_id: str = None):
         """Obtiene el historial de transacciones."""
-        query = "SELECT * FROM trades ORDER BY timestamp DESC LIMIT %s;"
+        if worker_id:
+            query = "SELECT * FROM trades WHERE worker_id = %s ORDER BY timestamp DESC LIMIT %s;"
+            args = (worker_id, limit)
+        else:
+            query = "SELECT * FROM trades ORDER BY timestamp DESC LIMIT %s;"
+            args = (limit,)
         conn = None
         try:
             conn = self._get_connection()
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute(query, (limit,))
+                cursor.execute(query, args)
                 return cursor.fetchall()
         except Exception as e:
             self.log("ERROR", f"Error al recuperar trades: {e}")
@@ -218,14 +228,70 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    def get_logs(self, limit=50):
-        """Obtiene el historial de logs de auditoría."""
-        query = "SELECT * FROM logs ORDER BY timestamp DESC LIMIT %s;"
+    def get_pending_trades(self, worker_id: str = None):
+        """Obtiene todos los trades pendientes (PENDING_NEW, NEW, ACCEPTED)."""
+        if worker_id:
+            query = "SELECT * FROM trades WHERE worker_id = %s AND status IN ('PENDING_NEW', 'NEW', 'ACCEPTED') ORDER BY timestamp DESC;"
+            args = (worker_id,)
+        else:
+            query = "SELECT * FROM trades WHERE status IN ('PENDING_NEW', 'NEW', 'ACCEPTED') ORDER BY timestamp DESC;"
+            args = ()
         conn = None
         try:
             conn = self._get_connection()
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute(query, (limit,))
+                cursor.execute(query, args)
+                return cursor.fetchall()
+        except Exception as e:
+            self.log("ERROR", f"Error al recuperar trades pendientes: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
+
+    def update_trade_status(self, external_order_id: str, status: str):
+        """Actualiza el estado de una orden por su id externo o id local."""
+        is_numeric = False
+        try:
+            int(external_order_id)
+            is_numeric = True
+        except (ValueError, TypeError):
+            pass
+            
+        if is_numeric:
+            query = "UPDATE trades SET status = %s WHERE id = %s;"
+            args = (status.upper(), int(external_order_id))
+        else:
+            query = "UPDATE trades SET status = %s WHERE external_order_id = %s;"
+            args = (status.upper(), external_order_id)
+            
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(query, args)
+                conn.commit()
+        except Exception as e:
+            self.log("ERROR", f"Error al actualizar estado del trade {external_order_id} a {status}: {e}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+                conn.close()
+
+    def get_logs(self, limit=50, worker_id: str = None):
+        """Obtiene el historial de logs de auditoría."""
+        if worker_id:
+            query = "SELECT * FROM logs WHERE worker_id = %s ORDER BY timestamp DESC LIMIT %s;"
+            args = (worker_id, limit)
+        else:
+            query = "SELECT * FROM logs ORDER BY timestamp DESC LIMIT %s;"
+            args = (limit,)
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, args)
                 return cursor.fetchall()
         except Exception as e:
             print(f"[Error de DB] Error al recuperar logs: {e}")

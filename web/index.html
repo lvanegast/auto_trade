@@ -3,138 +3,390 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AutoTrade - Dashboard Premium</title>
+    <title>AutoTrade - Terminal de Trading</title>
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <!-- Chart.js CDN -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- Custom Style -->
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="glass-bg"></div>
-    <div class="app-container">
-        <!-- Header -->
-        <header class="app-header">
-            <div class="logo-area">
-                <span class="logo-icon">▲</span>
-                <div class="logo-text">
-                    <h1>Auto<span>Trade</span></h1>
-                    <p>Trading Bot Dashboard</p>
+    <div class="terminal-app">
+        <!-- TOP HEADER: TICKER BAR -->
+        <header class="ticker-header">
+            <div class="header-left">
+                <div class="logo">
+                    <span class="logo-accent">▲</span> Auto<span>Trade</span>
+                </div>
+                <div class="divider"></div>
+                <!-- Worker Selector Tabs -->
+                <div class="symbol-tabs" id="worker-tabs-container">
+                    <!-- Dynamic worker buttons here -->
                 </div>
             </div>
             
-            <div class="status-panel">
-                <div class="status-indicator">
-                    <span id="bot-status-dot" class="dot offline"></span>
-                    <span id="bot-status-text" class="status-text">Cargando...</span>
+            <div class="header-middle" id="ticker-info-bar">
+                <div class="ticker-item">
+                    <span class="ticker-label">Precio</span>
+                    <span class="ticker-val highlight-blue" id="header-price">$0.00</span>
+                </div>
+                <div class="ticker-item">
+                    <span class="ticker-label">Cambio 24h</span>
+                    <span class="ticker-val text-success" id="header-change">+0.00%</span>
+                </div>
+                <div class="ticker-item">
+                    <span class="ticker-label">Máx 24h</span>
+                    <span class="ticker-val" id="header-high">$0.00</span>
+                </div>
+                <div class="ticker-item">
+                    <span class="ticker-label">Mín 24h</span>
+                    <span class="ticker-val" id="header-low">$0.00</span>
+                </div>
+                <div class="ticker-item hide-mobile">
+                    <span class="ticker-label">Volumen 24h</span>
+                    <span class="ticker-val" id="header-volume">0.00 BTC</span>
+                </div>
+            </div>
+
+            <div class="header-right">
+                <div class="connection-status">
+                    <span id="bot-status-dot" class="status-dot offline"></span>
+                    <span id="bot-status-text" class="status-lbl">Cargando...</span>
                 </div>
                 <div class="mode-badge" id="bot-mode">SIMULACIÓN</div>
             </div>
         </header>
 
-        <!-- Main Layout -->
-        <main class="dashboard-grid">
+        <!-- MAIN LAYOUT GRID -->
+        <div class="main-workspace">
             
-            <!-- Column 1: Controls & Portfolio -->
-            <section class="grid-col controls-portfolio">
+            <!-- LEFT COLUMN: ORDER BOOK & RECENT TRADES -->
+            <aside class="workspace-panel order-book-panel">
+                <div class="panel-tabs">
+                    <button class="panel-tab-btn active" id="tab-book">Libro de Órdenes</button>
+                    <button class="panel-tab-btn" id="tab-market-trades">Recientes</button>
+                </div>
                 
-                <!-- Bot Controls Card -->
-                <div class="card glass-card control-card">
-                    <h2 class="card-title">Panel de Control</h2>
-                    <div class="control-actions">
-                        <button id="btn-start" class="btn btn-primary">Iniciar Bot</button>
-                        <button id="btn-stop" class="btn btn-danger disabled" disabled>Detener Bot</button>
+                <div class="panel-content" id="order-book-container">
+                    <!-- Order Book Header -->
+                    <div class="ob-grid-header">
+                        <span>Precio (<span class="quote-asset-lbl">USD</span>)</span>
+                        <span class="text-right">Cantidad (<span class="base-asset-lbl">BTC</span>)</span>
+                        <span class="text-right">Total</span>
                     </div>
-                    <div class="ticker-box">
-                        <span class="ticker-label">Precio Actual (BTC/USDT)</span>
-                        <div id="ticker-price" class="ticker-price">$0.00</div>
+                    
+                    <!-- Asks (Sells) - Red -->
+                    <div class="ob-section asks-section" id="ob-asks">
+                        <!-- Dynamic asks here -->
+                    </div>
+                    
+                    <!-- Spread / Current Price -->
+                    <div class="ob-mid-price">
+                        <span class="mid-price-val" id="ob-mid-val">$0.00</span>
+                        <span class="mid-price-dir text-success" id="ob-mid-dir">▲</span>
+                    </div>
+                    
+                    <!-- Bids (Buys) - Green -->
+                    <div class="ob-section bids-section" id="ob-bids">
+                        <!-- Dynamic bids here -->
                     </div>
                 </div>
 
-                <!-- Portfolio Card -->
-                <div class="card glass-card portfolio-card">
-                    <h2 class="card-title" id="portfolio-title">Portafolio (Simulación)</h2>
-                    <div class="portfolio-stats">
-                        <div class="stat-card">
-                            <span class="stat-label" id="label-quote">Saldo USDT</span>
-                            <div id="balance-usdt" class="stat-value">$0.00</div>
-                        </div>
-                        <div class="stat-card">
-                            <span class="stat-label" id="label-base">Saldo BTC</span>
-                            <div id="balance-btc" class="stat-value">0.000000</div>
-                        </div>
-                        <div class="stat-card total-value-card">
-                            <span class="stat-label">Valor Total Estimado</span>
-                            <div id="portfolio-total" class="stat-value highlight">$0.00</div>
-                        </div>
+                <div class="panel-content hidden" id="market-trades-container">
+                    <div class="ob-grid-header">
+                        <span>Hora</span>
+                        <span class="text-right">Precio</span>
+                        <span class="text-right">Cantidad</span>
+                    </div>
+                    <div class="trades-list" id="ob-live-trades">
+                        <!-- Dynamic live trades list -->
                     </div>
                 </div>
-                
-            </section>
+            </aside>
 
-            <!-- Column 2: Chart -->
-            <section class="grid-col chart-section">
-                <div class="card glass-card main-chart-card">
-                    <div class="chart-header">
-                        <h2 class="card-title">Cotización en Tiempo Real</h2>
-                        <span class="chart-subtitle" id="chart-symbol">-</span>
+            <!-- CENTER COLUMN: CHART & DETAILS & BOTTOM TABS -->
+            <main class="center-workspace">
+                <!-- Upper: Chart Container -->
+                <div class="workspace-card chart-card">
+                    <div class="chart-controls">
+                        <div class="chart-title-area">
+                            <span class="chart-pair-name" id="chart-symbol-name">BTC/USD</span>
+                            <span class="chart-resolution">1m</span>
+                            <span class="chart-source-badge" id="chart-source-name">Alpaca API</span>
+                        </div>
+                        <div class="indicator-quick-view">
+                            <span>EMA(9): <span id="view-ema9" class="text-primary">-</span></span>
+                            <span>EMA(21): <span id="view-ema21" class="text-secondary">-</span></span>
+                            <span>RSI(14): <span id="view-rsi" class="text-cyan">-</span></span>
+                        </div>
                     </div>
-                    <div class="chart-container">
+                    <div class="chart-wrapper">
                         <canvas id="priceChart"></canvas>
                     </div>
                 </div>
-            </section>
 
-            <!-- Row 3: Trades History -->
-            <section class="grid-col trades-section">
-                <div class="card glass-card table-card">
-                    <h2 class="card-title">Historial de Operaciones</h2>
-                    <div class="table-container">
-                        <table class="custom-table">
-                            <thead>
-                                <tr>
-                                    <th>Fecha</th>
-                                    <th>Activo</th>
-                                    <th>Operación</th>
-                                    <th>Precio</th>
-                                    <th>Cantidad</th>
-                                    <th>Total</th>
-                                    <th>Estado</th>
-                                </tr>
-                            </thead>
-                            <tbody id="trades-table-body">
-                                <tr>
-                                    <td colspan="7" class="text-center">Cargando transacciones...</td>
-                                </tr>
-                            </tbody>
-                        </table>
+                <!-- Middle: Fast Strategy Stats Bar -->
+                <div class="workspace-card strategy-stats-bar">
+                    <div class="stat-item">
+                        <span class="stat-lbl">Estado de Posición</span>
+                        <span id="strategy-position" class="pos-badge neutral">SIN POSICIÓN</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-lbl">Disponible Quote (<span class="quote-asset-lbl">USD</span>)</span>
+                        <span id="balance-quote" class="stat-val">$0.00</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-lbl">Disponible Base (<span class="base-asset-lbl">BTC</span>)</span>
+                        <span id="balance-base" class="stat-val">0.000000</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-lbl">Ganancia No Realizada (PnL)</span>
+                        <span id="strategy-pnl" class="stat-val font-mono">-</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-lbl">Balance Total</span>
+                        <span id="portfolio-total" class="stat-val text-blue">$0.00</span>
                     </div>
                 </div>
-            </section>
 
-            <!-- Row 4: Terminal Logs -->
-            <section class="grid-col logs-section">
-                <div class="card glass-card terminal-card">
-                    <div class="terminal-header">
-                        <h2 class="card-title">Consola de Eventos y Logs</h2>
-                        <span class="pulse-icon"></span>
+                <!-- Lower: Multi-Tab Information Area -->
+                <div class="workspace-card bottom-tabs-card">
+                    <div class="bottom-tabs-header">
+                        <button class="bottom-tab-btn active" data-target="tab-panel-open-orders">Órdenes Abiertas</button>
+                        <button class="bottom-tab-btn" data-target="tab-panel-portfolio">Mi Portafolio</button>
+                        <button class="bottom-tab-btn" data-target="tab-panel-trades">Historial de Operaciones</button>
+                        <button class="bottom-tab-btn" data-target="tab-panel-logs">Consola de Eventos</button>
+                        <button class="bottom-tab-btn" data-target="tab-panel-indicators">Indicadores Técnicos</button>
                     </div>
-                    <div id="log-console" class="terminal-console">
-                        <!-- Logs injectados aquí -->
+
+                    <!-- Tab 0: Open Orders Table -->
+                    <div class="bottom-tab-panel" id="tab-panel-open-orders">
+                        <div class="table-scroller">
+                            <table class="trading-table">
+                                <thead>
+                                    <tr>
+                                        <th>Fecha / Hora</th>
+                                        <th>Par</th>
+                                        <th>Tipo</th>
+                                        <th>Precio</th>
+                                        <th>Monto</th>
+                                        <th>Total</th>
+                                        <th>Acción</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="open-orders-table-body">
+                                    <tr>
+                                        <td colspan="7" class="text-center text-muted">Cargando órdenes abiertas...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Tab: Portfolio Wallet Table -->
+                    <div class="bottom-tab-panel hidden" id="tab-panel-portfolio">
+                        <div class="table-scroller">
+                            <table class="trading-table">
+                                <thead>
+                                    <tr>
+                                        <th>Activo</th>
+                                        <th>Disponible</th>
+                                        <th>En Orden (Bloqueado)</th>
+                                        <th>Valor Estimado (USD)</th>
+                                        <th>Distribución (%)</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="portfolio-wallet-table-body">
+                                    <tr>
+                                        <td colspan="5" class="text-center text-muted">Cargando portafolio...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Tab 1: Trades Table -->
+                    <div class="bottom-tab-panel hidden" id="tab-panel-trades">
+                        <div class="table-scroller">
+                            <table class="trading-table">
+                                <thead>
+                                    <tr>
+                                        <th>Fecha / Hora</th>
+                                        <th>Par</th>
+                                        <th>Tipo</th>
+                                        <th>Precio</th>
+                                        <th>Monto</th>
+                                        <th>Total</th>
+                                        <th>Estado</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="trades-table-body">
+                                    <tr>
+                                        <td colspan="7" class="text-center text-muted">Cargando transacciones...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Tab 2: Terminal Logs -->
+                    <div class="bottom-tab-panel hidden" id="tab-panel-logs">
+                        <div class="terminal-console" id="log-console">
+                            <!-- Terminal lines here -->
+                        </div>
+                    </div>
+
+                    <!-- Tab 3: Detailed Indicators -->
+                    <div class="bottom-tab-panel hidden" id="tab-panel-indicators">
+                        <div class="indicators-details-grid">
+                            <div class="ind-detail-card">
+                                <span class="ind-name">Media Móvil Exponencial Rápida (EMA 9)</span>
+                                <div class="ind-value" id="detail-ema9">-</div>
+                                <span class="ind-desc">Mide el impulso a corto plazo. Cruza por encima de la EMA 21 para una compra.</span>
+                            </div>
+                            <div class="ind-detail-card">
+                                <span class="ind-name">Media Móvil Exponencial Lenta (EMA 21)</span>
+                                <div class="ind-value" id="detail-ema21">-</div>
+                                <span class="ind-desc">Determina el soporte y resistencia de la tendencia a mediano plazo.</span>
+                            </div>
+                            <div class="ind-detail-card">
+                                <span class="ind-name">Índice de Fuerza Relativa (RSI 14)</span>
+                                <div class="ind-value-row">
+                                    <span class="ind-value" id="detail-rsi-val">-</span>
+                                    <span class="ind-badge" id="detail-rsi-badge">NORMAL</span>
+                                </div>
+                                <div class="rsi-slider-container">
+                                    <div class="rsi-track">
+                                        <div class="rsi-pointer" id="rsi-pointer" style="left: 50%"></div>
+                                        <div class="rsi-zone overbought"></div>
+                                        <div class="rsi-zone oversold"></div>
+                                    </div>
+                                    <div class="rsi-labels">
+                                        <span>0</span>
+                                        <span>30 (Oversold)</span>
+                                        <span>70 (Overbought)</span>
+                                        <span>100</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
-            </section>
+            </main>
 
-        </main>
+            <!-- RIGHT COLUMN: TRADING TERMINAL (ORDER ENTRY) -->
+            <aside class="workspace-panel terminal-panel">
+                <div class="panel-header">
+                    <span class="panel-header-title">Operar</span>
+                </div>
+                
+                <!-- Toggle Mode: Auto Bot / Manual Trade -->
+                <div class="trade-mode-toggle">
+                    <button class="mode-toggle-btn active" id="toggle-manual">Manual</button>
+                    <button class="mode-toggle-btn" id="toggle-auto">Auto Bot</button>
+                </div>
 
-        <!-- Footer -->
-        <footer class="app-footer">
-            <p>&copy; 2026 AutoTrade Bot. Desarrollado con Python, FastAPI y PostgreSQL.</p>
-        </footer>
+                <!-- MANUAL TRADING PANEL -->
+                <div class="trading-panel-content" id="manual-trade-section">
+                    <!-- Buy/Sell Switch tabs -->
+                    <div class="buy-sell-tabs">
+                        <button class="side-tab-btn buy active" id="side-buy-btn">Comprar</button>
+                        <button class="side-tab-btn sell" id="side-sell-btn">Vender</button>
+                    </div>
+
+                    <!-- Limit/Market Switch -->
+                    <div class="order-type-tabs">
+                        <button class="type-tab-btn active" id="order-market-btn">Mercado</button>
+                        <button class="type-tab-btn" id="order-limit-btn">Límite</button>
+                    </div>
+
+                    <div class="order-form">
+                        <!-- Balance display -->
+                        <div class="available-balance-row">
+                            <span class="bal-label">Disponible</span>
+                            <span class="bal-val" id="available-funds-label">$0.00 USD</span>
+                        </div>
+
+                        <!-- Price Input -->
+                        <div class="input-group" id="price-input-group">
+                            <span class="input-prefix">Precio</span>
+                            <input type="text" class="form-input" id="input-price" value="Precio de Mercado" readonly>
+                            <span class="input-suffix quote-asset-lbl">USD</span>
+                        </div>
+
+                        <!-- Amount Input -->
+                        <div class="input-group">
+                            <span class="input-prefix">Cantidad</span>
+                            <input type="number" step="any" min="0" class="form-input" id="input-qty" placeholder="0.00">
+                            <span class="input-suffix base-asset-lbl">BTC</span>
+                        </div>
+
+                        <!-- Percentage shortcuts (25, 50, 75, 100) -->
+                        <div class="percentage-shortcuts">
+                            <button class="pct-btn" data-pct="25">25%</button>
+                            <button class="pct-btn" data-pct="50">50%</button>
+                            <button class="pct-btn" data-pct="75">75%</button>
+                            <button class="pct-btn" data-pct="100">100%</button>
+                        </div>
+
+                        <!-- Total estimate (Price * Qty) -->
+                        <div class="input-group total-group">
+                            <span class="input-prefix">Total</span>
+                            <input type="text" class="form-input" id="input-total" placeholder="0.00" readonly>
+                            <span class="input-suffix quote-asset-lbl">USD</span>
+                        </div>
+
+                        <!-- Main Action Button -->
+                        <button class="btn btn-action-buy" id="btn-execute-order">Comprar <span class="base-asset-lbl">BTC</span></button>
+                    </div>
+                </div>
+
+                <!-- AUTO BOT CONTROL PANEL -->
+                <div class="trading-panel-content hidden" id="auto-bot-section">
+                    <div class="bot-info-card">
+                        <div class="bot-status-header">
+                            <span class="bot-card-title" id="bot-card-worker-name">Alpaca Ventana</span>
+                            <span class="bot-badge offline" id="bot-badge-status">OFFLINE</span>
+                        </div>
+                        <p class="bot-description">
+                            Ejecuta compras y ventas automáticas basadas en la estrategia del cruce de EMA 9/21 y RSI.
+                        </p>
+                    </div>
+
+                    <div class="bot-controls-action">
+                        <button id="btn-start" class="btn btn-start-bot">Iniciar Bot</button>
+                        <button id="btn-stop" class="btn btn-stop-bot disabled" disabled>Detener Bot</button>
+                    </div>
+
+                    <div class="strategy-parameters">
+                        <h4 class="section-subtitle">Configuración Activa</h4>
+                        <div class="param-row">
+                            <span>Símbolo Activo</span>
+                            <strong id="param-symbol">-</strong>
+                        </div>
+                        <div class="param-row">
+                            <span>Estrategia</span>
+                            <strong>EMA Crossover + RSI</strong>
+                        </div>
+                        <div class="param-row">
+                            <span>Intervalo de Velas</span>
+                            <strong>1 Minuto (1m)</strong>
+                        </div>
+                        <div class="param-row">
+                            <span>Origen de Datos</span>
+                            <strong id="param-source">-</strong>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+        </div>
     </div>
+
+    <!-- Script connection -->
     <script src="app.js"></script>
 </body>
 </html>
