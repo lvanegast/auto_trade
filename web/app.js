@@ -94,9 +94,12 @@ const botCardWorkerName = document.getElementById("bot-card-worker-name");
 const botBadgeStatus = document.getElementById("bot-badge-status");
 const paramSymbol = document.getElementById("param-symbol");
 const paramSource = document.getElementById("param-source");
+const selectFeederType = document.getElementById("select-feeder-type");
 const selectCryptoAsset = document.getElementById("select-crypto-asset");
+const selectBinanceAsset = document.getElementById("select-binance-asset");
 const inputCustomSymbol = document.getElementById("input-custom-symbol");
 const btnChangeSymbol = document.getElementById("btn-change-symbol");
+
 
 // Lables de base y quote asset
 const quoteAssetLabels = document.querySelectorAll(".quote-asset-lbl");
@@ -447,21 +450,38 @@ async function fetchStatus() {
         isForexOrEvent = quoteAsset === "USD" && baseAsset !== "BTC" && baseAsset !== "ETH";
         
         // Configurar selector dinámico según el origen de datos (feeder_type)
+        if (selectFeederType && document.activeElement !== selectFeederType) {
+            selectFeederType.value = data.feeder_type;
+        }
+
         if (data.feeder_type === "alpaca") {
             selectCryptoAsset.style.display = "block";
+            selectBinanceAsset.style.display = "none";
             inputCustomSymbol.style.display = "none";
-            // Sincronizar el dropdown si coincide con las opciones
             if (Array.from(selectCryptoAsset.options).some(opt => opt.value === data.symbol)) {
                 selectCryptoAsset.value = data.symbol;
             }
+        } else if (data.feeder_type === "binance") {
+            selectCryptoAsset.style.display = "none";
+            selectBinanceAsset.style.display = "block";
+            inputCustomSymbol.style.display = "none";
+            if (Array.from(selectBinanceAsset.options).some(opt => opt.value === data.symbol)) {
+                selectBinanceAsset.value = data.symbol;
+            }
         } else {
             selectCryptoAsset.style.display = "none";
+            selectBinanceAsset.style.display = "none";
             inputCustomSymbol.style.display = "block";
-            // Evitar sobrescribir si el usuario está escribiendo
+            if (data.feeder_type === "polymarket") {
+                inputCustomSymbol.placeholder = "Ingrese Token ID (ej. 4519247...)";
+            } else {
+                inputCustomSymbol.placeholder = "Ingrese Símbolo (ej. INFLATION-26)";
+            }
             if (document.activeElement !== inputCustomSymbol) {
                 inputCustomSymbol.value = data.symbol;
             }
         }
+
         
         // Actualizar etiquetas de la interfaz
         quoteAssetLabels.forEach(lbl => lbl.textContent = quoteAsset);
@@ -826,43 +846,75 @@ btnStop.addEventListener("click", stopBot);
 let simulatedOrderBookInterval = null;
 let simulatedLiveTradesInterval = null;
 
-function runOrderBookSimulation() {
+async function runOrderBookSimulation() {
     if (simulatedOrderBookInterval) clearInterval(simulatedOrderBookInterval);
     
-    simulatedOrderBookInterval = setInterval(() => {
+    simulatedOrderBookInterval = setInterval(async () => {
         if (lastPrice <= 0) return;
         
-        const spreadPct = 0.0003;
-        const tickSpacing = isForexOrEvent ? 0.0005 : 0.25;
+        let bidsData = [];
+        let asksData = [];
         
-        // Generar Asks (Venta)
-        obAsks.innerHTML = "";
-        const asks = [];
-        let runningTotalAsk = 0;
-        
-        for (let i = 5; i >= 1; i--) {
-            const price = lastPrice * (1 + spreadPct) + (i * tickSpacing);
-            const qty = Math.random() * (isForexOrEvent ? 20000 : 0.8) + (isForexOrEvent ? 1000 : 0.05);
-            runningTotalAsk += qty;
-            asks.push({ price, qty, total: runningTotalAsk });
+        try {
+            const res = await fetch(`${API_BASE}/depth?worker_id=${activeWorkerId}`);
+            if (res.ok) {
+                const depth = await res.json();
+                bidsData = depth.bids || [];
+                asksData = depth.asks || [];
+            }
+        } catch (e) {
+            console.warn("Error fetching live depth:", e);
         }
         
-        asks.forEach(ask => {
+        // Si no hay datos de profundidad en tiempo real, generamos simulación local
+        if (bidsData.length === 0 && asksData.length === 0) {
+            const spreadPct = 0.0003;
+            const tickSpacing = isForexOrEvent ? 0.0005 : 0.25;
+            for (let i = 1; i <= 5; i++) {
+                const bidPrice = lastPrice * (1 - spreadPct) - (i * tickSpacing);
+                const bidQty = Math.random() * (isForexOrEvent ? 20000 : 0.8) + (isForexOrEvent ? 1000 : 0.05);
+                bidsData.push([bidPrice, bidQty]);
+                
+                const askPrice = lastPrice * (1 + spreadPct) + (i * tickSpacing);
+                const askQty = Math.random() * (isForexOrEvent ? 20000 : 0.8) + (isForexOrEvent ? 1000 : 0.05);
+                asksData.push([askPrice, askQty]);
+            }
+            asksData.sort((a, b) => b[0] - a[0]);
+        } else {
+            bidsData = bidsData.slice(0, 5);
+            asksData = asksData.slice(0, 5);
+            asksData.sort((a, b) => b[0] - a[0]);
+        }
+        
+        const decimals = isForexOrEvent ? 4 : 2;
+        const amountDecs = baseAsset === "BTC" || baseAsset === "ETH" ? 4 : 2;
+        
+        // Renderizar Asks (Venta) - Rojo
+        obAsks.innerHTML = "";
+        let runningTotalAsk = 0;
+        const asksList = [];
+        for (let i = asksData.length - 1; i >= 0; i--) {
+            const [price, qty] = asksData[i];
+            runningTotalAsk += qty;
+            asksList.unshift({ price, qty, total: runningTotalAsk });
+        }
+        
+        asksList.forEach(ask => {
             const row = document.createElement("div");
             row.className = "ob-row ask";
-            const depthVal = Math.min((ask.total / (asks[asks.length-1].total * 1.1)) * 100, 100);
+            const maxTotal = asksList[0] ? asksList[0].total : 1;
+            const depthVal = Math.min((ask.total / (maxTotal * 1.1)) * 100, 100);
             
             row.innerHTML = `
                 <div class="ob-depth-bar" style="width: ${depthVal}%"></div>
-                <span class="ob-price">${ask.price.toFixed(isForexOrEvent ? 4 : 2)}</span>
-                <span class="text-right">${ask.qty.toFixed(isForexOrEvent ? 1 : 4)}</span>
+                <span class="ob-price">${ask.price.toFixed(decimals)}</span>
+                <span class="text-right">${ask.qty.toFixed(amountDecs)}</span>
                 <span class="text-right">${(ask.qty * ask.price).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
             `;
             
-            // Permitir al usuario rellenar el formulario al hacer click en el precio
             row.addEventListener("click", () => {
                 if (manualOrderType === "LIMIT") {
-                    inputPrice.value = ask.price.toFixed(isForexOrEvent ? 4 : 2);
+                    inputPrice.value = ask.price.toFixed(decimals);
                 }
                 inputQty.value = formatAmountInput(ask.qty);
                 inputTotal.value = (ask.qty * ask.price).toFixed(2);
@@ -872,37 +924,35 @@ function runOrderBookSimulation() {
         });
         
         // Spread / Mid Price
-        obMidVal.textContent = `$${lastPrice.toFixed(isForexOrEvent ? 4 : 2)}`;
+        obMidVal.textContent = `$${lastPrice.toFixed(decimals)}`;
         obMidDir.textContent = Math.random() > 0.4 ? "▲" : "▼";
         obMidDir.className = obMidDir.textContent === "▲" ? "mid-price-dir text-success" : "mid-price-dir text-danger";
         
-        // Generar Bids (Compra)
+        // Renderizar Bids (Compra) - Verde
         obBids.innerHTML = "";
-        const bids = [];
         let runningTotalBid = 0;
-        
-        for (let i = 1; i <= 5; i++) {
-            const price = lastPrice * (1 - spreadPct) - (i * tickSpacing);
-            const qty = Math.random() * (isForexOrEvent ? 20000 : 0.8) + (isForexOrEvent ? 1000 : 0.05);
+        const bidsList = [];
+        bidsData.forEach(([price, qty]) => {
             runningTotalBid += qty;
-            bids.push({ price, qty, total: runningTotalBid });
-        }
+            bidsList.push({ price, qty, total: runningTotalBid });
+        });
         
-        bids.forEach(bid => {
+        bidsList.forEach(bid => {
             const row = document.createElement("div");
             row.className = "ob-row bid";
-            const depthVal = Math.min((bid.total / (bids[bids.length-1].total * 1.1)) * 100, 100);
+            const maxTotal = bidsList[bidsList.length - 1] ? bidsList[bidsList.length - 1].total : 1;
+            const depthVal = Math.min((bid.total / (maxTotal * 1.1)) * 100, 100);
             
             row.innerHTML = `
                 <div class="ob-depth-bar" style="width: ${depthVal}%"></div>
-                <span class="ob-price">${bid.price.toFixed(isForexOrEvent ? 4 : 2)}</span>
-                <span class="text-right">${bid.qty.toFixed(isForexOrEvent ? 1 : 4)}</span>
+                <span class="ob-price">${bid.price.toFixed(decimals)}</span>
+                <span class="text-right">${bid.qty.toFixed(amountDecs)}</span>
                 <span class="text-right">${(bid.qty * bid.price).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
             `;
             
             row.addEventListener("click", () => {
                 if (manualOrderType === "LIMIT") {
-                    inputPrice.value = bid.price.toFixed(isForexOrEvent ? 4 : 2);
+                    inputPrice.value = bid.price.toFixed(decimals);
                 }
                 inputQty.value = formatAmountInput(bid.qty);
                 inputTotal.value = (bid.qty * bid.price).toFixed(2);
@@ -911,8 +961,9 @@ function runOrderBookSimulation() {
             obBids.appendChild(row);
         });
         
-    }, 600);
+    }, 1500);
 }
+
 
 
 // --- SIMULACIÓN DE TRADES RECIENTES ---
@@ -1034,9 +1085,13 @@ function updatePortfolioTable() {
 
 // --- CAMBIAR ACTIVO/SÍMBOLO DINÁMICAMENTE ---
 async function changeAssetSymbol() {
+    const selectedFeeder = selectFeederType.value;
     let newSymbol = "";
-    if (selectCryptoAsset.style.display === "block") {
+    
+    if (selectedFeeder === "alpaca") {
         newSymbol = selectCryptoAsset.value;
+    } else if (selectedFeeder === "binance") {
+        newSymbol = selectBinanceAsset.value;
     } else {
         newSymbol = inputCustomSymbol.value.trim();
     }
@@ -1058,12 +1113,13 @@ async function changeAssetSymbol() {
             },
             body: JSON.stringify({
                 worker_id: activeWorkerId,
-                symbol: newSymbol
+                symbol: newSymbol,
+                feeder_type: selectedFeeder
             })
         });
         
         if (res.ok) {
-            alert(`Símbolo cambiado con éxito a: ${newSymbol.toUpperCase()}`);
+            alert(`Símbolo y fuente cambiados con éxito. Activo: ${newSymbol.toUpperCase()} | Fuente: ${selectedFeeder.toUpperCase()}`);
             // Limpiar datos del gráfico para refrescar con el nuevo histórico
             chartLabels = [];
             chartData = [];
@@ -1088,7 +1144,34 @@ async function changeAssetSymbol() {
         btnChangeSymbol.style.background = "#02c076";
     }
 }
+
+// Evento al cambiar manualmente la fuente en el selector
+if (selectFeederType) {
+    selectFeederType.addEventListener("change", () => {
+        const ft = selectFeederType.value;
+        if (ft === "alpaca") {
+            selectCryptoAsset.style.display = "block";
+            selectBinanceAsset.style.display = "none";
+            inputCustomSymbol.style.display = "none";
+        } else if (ft === "binance") {
+            selectCryptoAsset.style.display = "none";
+            selectBinanceAsset.style.display = "block";
+            inputCustomSymbol.style.display = "none";
+        } else {
+            selectCryptoAsset.style.display = "none";
+            selectBinanceAsset.style.display = "none";
+            inputCustomSymbol.style.display = "block";
+            if (ft === "polymarket") {
+                inputCustomSymbol.placeholder = "Ingrese Token ID (ej. 4519247...)";
+            } else {
+                inputCustomSymbol.placeholder = "Ingrese Símbolo (ej. INFLATION-26)";
+            }
+        }
+    });
+}
+
 btnChangeSymbol.addEventListener("click", changeAssetSymbol);
+
 
 
 // --- INICIALIZAR LA APLICACIÓN ---

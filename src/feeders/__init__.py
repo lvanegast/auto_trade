@@ -14,5 +14,14 @@ from src.feeders.base import BaseFeeder
 from src.feeders.mock_feeder import MockFeeder
 from src.feeders.oanda_feeder import OandaFeeder
 from src.feeders.ig_feeder import IGFeeder
+from src.feeders.binance_feeder import BinanceFeeder
+from src.feeders.polymarket_feeder import PolymarketFeeder
 
-__all__ = ["BaseFeeder", "MockFeeder", "OandaFeeder", "IGFeeder"]
+__all__ = [
+    "BaseFeeder",
+    "MockFeeder",
+    "OandaFeeder",
+    "IGFeeder",
+    "BinanceFeeder",
+    "PolymarketFeeder",
+]

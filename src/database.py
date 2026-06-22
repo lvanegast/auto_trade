@@ -257,14 +257,14 @@ class DatabaseManager:
             is_numeric = True
         except (ValueError, TypeError):
             pass
-            
+
         if is_numeric:
             query = "UPDATE trades SET status = %s WHERE id = %s;"
             args = (status.upper(), int(external_order_id))
         else:
             query = "UPDATE trades SET status = %s WHERE external_order_id = %s;"
             args = (status.upper(), external_order_id)
-            
+
         conn = None
         try:
             conn = self._get_connection()
@@ -272,7 +272,10 @@ class DatabaseManager:
                 cursor.execute(query, args)
                 conn.commit()
         except Exception as e:
-            self.log("ERROR", f"Error al actualizar estado del trade {external_order_id} a {status}: {e}")
+            self.log(
+                "ERROR",
+                f"Error al actualizar estado del trade {external_order_id} a {status}: {e}",
+            )
             if conn:
                 conn.rollback()
         finally:

@@ -384,11 +384,24 @@
 
                 <!-- DYNAMIC ASSET SELECTOR -->
                 <div class="asset-selector-panel" style="padding: 15px; border-top: 1px solid #2d3139; background: #181a20;">
-                    <h4 class="section-subtitle" style="margin-bottom: 10px; font-size: 13px; text-transform: uppercase; color: #eaecef; letter-spacing: 0.5px;">Cambiar Activo / Símbolo</h4>
+                    <h4 class="section-subtitle" style="margin-bottom: 10px; font-size: 13px; text-transform: uppercase; color: #eaecef; letter-spacing: 0.5px;">Cambiar Activo / Fuente</h4>
+                    
+                    <!-- Feeder Type Selector -->
+                    <div class="input-group" style="margin-bottom: 10px; display: flex; align-items: center; background: #1e2329; border-radius: 4px; padding: 4px 10px;">
+                        <span class="input-prefix" style="color: #848e9c; font-size: 12px; margin-right: 10px; font-weight: 500; min-width: 60px;">Fuente</span>
+                        <select id="select-feeder-type" style="flex: 1; background: transparent; border: none; color: #fff; font-size: 14px; outline: none; cursor: pointer;">
+                            <option value="alpaca">Alpaca (Crypto)</option>
+                            <option value="binance">Binance (BNB/Crypto Simulado)</option>
+                            <option value="polymarket">Polymarket (Eventos Simulado)</option>
+                            <option value="kalshi">Kalshi (Eventos/Predicción)</option>
+                        </select>
+                    </div>
+
+                    <!-- Symbol Selector -->
                     <div class="input-group" style="margin-bottom: 10px; display: flex; align-items: center; background: #1e2329; border-radius: 4px; padding: 4px 10px;">
                         <span class="input-prefix" style="color: #848e9c; font-size: 12px; margin-right: 10px; font-weight: 500; min-width: 60px;">Activo</span>
                         
-                        <!-- select-crypto-asset select dropdown -->
+                        <!-- select-crypto-asset (Alpaca) -->
                         <select id="select-crypto-asset" style="flex: 1; background: transparent; border: none; color: #fff; font-size: 14px; outline: none; cursor: pointer; display: none;">
                             <option value="BTC/USD">BTC/USD (Bitcoin)</option>
                             <option value="ETH/USD">ETH/USD (Ethereum)</option>
@@ -396,12 +409,21 @@
                             <option value="LTC/USD">LTC/USD (Litecoin)</option>
                             <option value="DOGE/USD">DOGE/USD (Dogecoin)</option>
                         </select>
+
+                        <!-- select-binance-asset (Binance) -->
+                        <select id="select-binance-asset" style="flex: 1; background: transparent; border: none; color: #fff; font-size: 14px; outline: none; cursor: pointer; display: none;">
+                            <option value="BNB/USDT">BNB/USDT (Binance Coin)</option>
+                            <option value="BTC/USDT">BTC/USDT (Bitcoin)</option>
+                            <option value="ETH/USDT">ETH/USDT (Ethereum)</option>
+                            <option value="SOL/USDT">SOL/USDT (Solana)</option>
+                        </select>
                         
-                        <!-- input-custom-symbol text input -->
-                        <input type="text" id="input-custom-symbol" placeholder="INFLATION-26" style="flex: 1; background: transparent; border: none; color: #fff; font-size: 14px; outline: none; display: none;">
+                        <!-- input-custom-symbol (Polymarket / Kalshi) -->
+                        <input type="text" id="input-custom-symbol" placeholder="INFLATION-26 o Token ID" style="flex: 1; background: transparent; border: none; color: #fff; font-size: 14px; outline: none; display: none;">
                     </div>
                     <button class="btn" id="btn-change-symbol" style="width: 100%; padding: 8px; font-size: 13px; font-weight: 600; background: #02c076; color: #fff; border: none; border-radius: 4px; cursor: pointer; transition: background 0.2s;">Confirmar Cambio</button>
                 </div>
+
             </aside>
 
         </div>
