@@ -156,10 +156,10 @@ async def get_depth(worker_id: str = "worker_1"):
     symbol = worker.symbol
     feeder_type = worker.feeder_type
 
-    try:
-        import requests
+    import requests
 
-        if feeder_type == "binance":
+    if feeder_type == "binance":
+        try:
             symbol_clean = symbol.replace("/", "").upper()
             url = f"https://api.binance.com/api/v3/depth?symbol={symbol_clean}&limit=20"
             res = await asyncio.to_thread(requests.get, url, timeout=5)
@@ -169,7 +169,13 @@ async def get_depth(worker_id: str = "worker_1"):
                     "bids": [[float(b[0]), float(b[1])] for b in data.get("bids", [])],
                     "asks": [[float(a[0]), float(a[1])] for a in data.get("asks", [])],
                 }
-        elif feeder_type == "polymarket":
+            else:
+                print(f"[Depth API] Binance status {res.status_code}, falling back.")
+        except Exception as e:
+            print(f"[Depth API] Binance error: {e}, falling back.")
+
+    elif feeder_type == "polymarket":
+        try:
             url = f"https://clob.polymarket.com/book?token_id={symbol}"
             res = await asyncio.to_thread(requests.get, url, timeout=5)
             if res.status_code == 200:
@@ -184,8 +190,13 @@ async def get_depth(worker_id: str = "worker_1"):
                         for a in data.get("asks", [])
                     ],
                 }
+            else:
+                print(f"[Depth API] Polymarket status {res.status_code}, falling back.")
+        except Exception as e:
+            print(f"[Depth API] Polymarket error: {e}, falling back.")
 
-        # Fallback for alpaca, oanda, kalshi, mock (simulate a realistic order book based on last price)
+    # Fallback for alpaca, oanda, kalshi, mock, or failed API calls
+    try:
         last_price = 0.0
         if len(worker.strategy.prices_df) > 0:
             last_price = float(worker.strategy.prices_df.iloc[-1]["price"])
@@ -198,7 +209,7 @@ async def get_depth(worker_id: str = "worker_1"):
                 pass
 
             if last_price <= 0:
-                last_price = 0.50 if feeder_type == "kalshi" else 100.0
+                last_price = 0.50 if feeder_type in ["kalshi", "polymarket"] else 100.0
 
         import random
 
@@ -222,7 +233,7 @@ async def get_depth(worker_id: str = "worker_1"):
         return {"bids": bids, "asks": asks}
 
     except Exception as e:
-        print("Error getting depth:", e)
+        print("Error generating simulated depth:", e)
         return {"bids": [], "asks": []}
 
 

@@ -1109,3 +1109,118 @@ input {
     color: var(--text-primary);
     font-weight: 600;
 }
+
+/* Fix browser select dropdown colors in dark theme */
+select {
+    background-color: #1e2329 !important;
+    color: #ffffff !important;
+}
+
+select option, select optgroup {
+    background-color: #1e2329 !important;
+    color: #ffffff !important;
+}
+
+/* Sidebar Asset Cards */
+.asset-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #1e2329;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 10px 12px;
+    cursor: pointer;
+    transition: all 0.2s ease-in-out;
+    margin-bottom: 8px;
+}
+
+.asset-card:hover {
+    background: #2b3139;
+    border-color: #474f59;
+}
+
+.asset-card.active {
+    background: #02c07612;
+    border-color: #02c076;
+    box-shadow: 0 0 8px #02c07622;
+}
+
+.asset-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-width: 110px;
+    text-align: left;
+}
+
+.asset-title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.asset-desc {
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.asset-chart-val {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.asset-sparkline {
+    width: 50px;
+    height: 20px;
+}
+
+.asset-sparkline path {
+    fill: none;
+    stroke-width: 1.5;
+}
+
+.asset-sparkline.up path {
+    stroke: #02c076;
+}
+
+.asset-sparkline.down path {
+    stroke: #f6465d;
+}
+
+.asset-price-col {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+    min-width: 70px;
+}
+
+.asset-card-price {
+    font-size: 0.78rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+}
+
+.asset-card-change {
+    font-size: 0.68rem;
+    font-weight: 600;
+}
+
+.asset-card-change.up {
+    color: #02c076;
+}
+
+.asset-card-change.down {
+    color: #f6465d;
+}
+
+

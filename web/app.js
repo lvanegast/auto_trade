@@ -1,5 +1,122 @@
 const API_BASE = "/api";
 
+const platformAssets = {
+    "alpaca": [
+        { symbol: "BTC/USD", name: "Bitcoin", desc: "BTC / USD (Alpaca Real)", price: 58295.92, change: 1.42, prices: [57200, 57500, 57100, 58000, 57800, 58400, 58100, 58295.92] },
+        { symbol: "ETH/USD", name: "Ethereum", desc: "ETH / USD (Alpaca Real)", price: 3415.22, change: -0.85, prices: [3480, 3460, 3430, 3450, 3400, 3420, 3390, 3415.22] },
+        { symbol: "SOL/USD", name: "Solana", desc: "SOL / USD (Alpaca Real)", price: 142.85, change: 3.12, prices: [136, 138, 135, 140, 139, 144, 141, 142.85] },
+        { symbol: "LTC/USD", name: "Litecoin", desc: "LTC / USD (Alpaca Real)", price: 74.50, change: 0.15, prices: [73.8, 74.2, 73.9, 74.6, 74.1, 74.8, 74.3, 74.50] },
+        { symbol: "DOGE/USD", name: "Dogecoin", desc: "DOGE / USD (Alpaca Real)", price: 0.124, change: -2.44, prices: [0.129, 0.127, 0.125, 0.126, 0.122, 0.125, 0.121, 0.124] }
+    ],
+    "binance": [
+        { symbol: "BNB/USDT", name: "Binance Coin", desc: "BNB / USDT (Binance Sim)", price: 574.80, change: 1.15, prices: [565, 568, 564, 572, 570, 576, 573, 574.8] },
+        { symbol: "BTC/USDT", name: "Bitcoin", desc: "BTC / USDT (Binance Sim)", price: 58295.92, change: 1.42, prices: [57200, 57500, 57100, 58000, 57800, 58400, 58100, 58295.92] },
+        { symbol: "ETH/USDT", name: "Ethereum", desc: "ETH / USDT (Binance Sim)", price: 3415.22, change: -0.85, prices: [3480, 3460, 3430, 3450, 3400, 3420, 3390, 3415.22] },
+        { symbol: "SOL/USDT", name: "Solana", desc: "SOL / USDT (Binance Sim)", price: 142.85, change: 3.12, prices: [136, 138, 135, 140, 139, 144, 141, 142.85] }
+    ],
+    "polymarket": [
+        { symbol: "55010547192661590740925574347715096531393664724810793796541603527267389823616", name: "Mundial: Francia", desc: "Francia gana el Mundial (YES)", price: 0.38, change: 2.70, prices: [0.35, 0.36, 0.34, 0.37, 0.36, 0.39, 0.37, 0.38] },
+        { symbol: "55010547192661590740925574347715096531393664724810793796541603527267389823617", name: "Mundial: Brasil", desc: "Brasil gana el Mundial (YES)", price: 0.28, change: -1.25, prices: [0.29, 0.29, 0.28, 0.30, 0.27, 0.29, 0.27, 0.28] },
+        { symbol: "55010547192661590740925574347715096531393664724810793796541603527267389823618", name: "Mundial: Argentina", desc: "Argentina gana el Mundial (YES)", price: 0.22, change: 4.54, prices: [0.20, 0.21, 0.19, 0.22, 0.21, 0.23, 0.21, 0.22] },
+        { symbol: "87910547192661590740925574347715096531393664724810793796541603527267389823616", name: "Midterms: Cámara", desc: "Demócratas controlan Cámara (YES)", price: 0.52, change: 0.98, prices: [0.50, 0.51, 0.49, 0.52, 0.51, 0.53, 0.51, 0.52] },
+        { symbol: "87910547192661590740925574347715096531393664724810793796541603527267389823617", name: "Midterms: Senado", desc: "Republicanos mantienen Senado (YES)", price: 0.65, change: -0.75, prices: [0.66, 0.67, 0.64, 0.66, 0.63, 0.65, 0.64, 0.65] },
+        { symbol: "21742617192661590740925574347715096531393664724810793796541603527267389823616", name: "FED: Corte Julio 26", desc: "FED recorta tasas en Julio 26 (YES)", price: 0.72, change: 6.25, prices: [0.65, 0.68, 0.66, 0.70, 0.69, 0.73, 0.71, 0.72] },
+        { symbol: "21742617192661590740925574347715096531393664724810793796541603527267389823617", name: "FED: No Corte Julio", desc: "FED recorta tasas en Julio 26 (NO)", price: 0.28, change: -12.50, prices: [0.35, 0.32, 0.34, 0.30, 0.31, 0.27, 0.29, 0.28] },
+        { symbol: "11010547192661590740925574347715096531393664724810793796541603527267389823616", name: "Finanzas: BTC > $150k", desc: "Bitcoin supera los $150k en 2026 (YES)", price: 0.15, change: 1.12, prices: [0.14, 0.14, 0.13, 0.15, 0.14, 0.16, 0.15, 0.15] },
+        { symbol: "33010547192661590740925574347715096531393664724810793796541603527267389823616", name: "Tecnología: GPT-5", desc: "GPT-5 anunciado en 2026 (YES)", price: 0.68, change: 1.49, prices: [0.66, 0.67, 0.65, 0.68, 0.67, 0.69, 0.67, 0.68] },
+        { symbol: "33010547192661590740925574347715096531393664724810793796541603527267389823617", name: "Espacio: Artemis III", desc: "Artemis III logra alunizaje 26 (YES)", price: 0.45, change: -3.15, prices: [0.47, 0.48, 0.46, 0.47, 0.44, 0.46, 0.43, 0.45] }
+    ],
+    "kalshi": [
+        { symbol: "INFLATION-26", name: "Inflación EEUU < 2.6%", desc: "Inflación anual menor a 2.6% (YES)", price: 0.58, change: 1.75, prices: [0.55, 0.56, 0.54, 0.57, 0.56, 0.59, 0.57, 0.58] },
+        { symbol: "CPI-26", name: "CPI Mensual > 0.3%", desc: "CPI de EE.UU. sube más de 0.3% (YES)", price: 0.32, change: -2.40, prices: [0.35, 0.34, 0.33, 0.35, 0.31, 0.33, 0.30, 0.32] },
+        { symbol: "FED-RATE-26", name: "FED Tasa de Interés > 5.0%", desc: "Tasa de interés mayor al 5.0% (YES)", price: 0.74, change: 0.95, prices: [0.72, 0.73, 0.71, 0.74, 0.73, 0.75, 0.73, 0.74] },
+        { symbol: "ECB-RATE-26", name: "ECB Recorte 25bps", desc: "ECB recorta tasas en 25bps (YES)", price: 0.62, change: 3.33, prices: [0.58, 0.60, 0.59, 0.61, 0.60, 0.63, 0.61, 0.62] }
+    ]
+};
+
+function generateSparklinePath(prices, width = 50, height = 20) {
+    if (!prices || prices.length < 2) return "";
+    const min = Math.min(...prices);
+    const max = Math.max(...prices);
+    const range = max - min === 0 ? 1 : max - min;
+    
+    return prices.map((price, idx) => {
+        const x = (idx / (prices.length - 1)) * width;
+        const y = height - ((price - min) / range) * height;
+        return `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
+    }).join(" ");
+}
+
+function renderSidebarAssetCards(feederType, activeSymbol) {
+    const container = document.getElementById("sidebar-asset-cards-container");
+    if (!container) return;
+    
+    container.innerHTML = "";
+    
+    const platform = platformAssets[feederType] ? feederType : "alpaca";
+    const assets = platformAssets[platform];
+    
+    assets.forEach(asset => {
+        const isActive = asset.symbol === activeSymbol;
+        const isUp = asset.change >= 0;
+        const changeSign = isUp ? "+" : "";
+        const changeClass = isUp ? "up" : "down";
+        const sparklineClass = isUp ? "up" : "down";
+        
+        const path = generateSparklinePath(asset.prices, 50, 20);
+        
+        const card = document.createElement("div");
+        card.className = `asset-card ${isActive ? 'active' : ''}`;
+        card.innerHTML = `
+            <div class="asset-info">
+                <span class="asset-title" title="${asset.name}">${asset.name}</span>
+                <span class="asset-desc" title="${asset.desc}">${asset.desc}</span>
+            </div>
+            <div class="asset-chart-val">
+                <svg class="asset-sparkline ${sparklineClass}" viewBox="0 0 50 20">
+                    <path d="${path}"></path>
+                </svg>
+                <div class="asset-price-col">
+                    <span class="asset-card-price">$${asset.price < 2 ? asset.price.toFixed(2) : asset.price.toLocaleString(undefined, {minimumFractionDigits:2})}</span>
+                    <span class="asset-card-change ${changeClass}">${changeSign}${asset.change.toFixed(2)}%</span>
+                </div>
+            </div>
+        `;
+        
+        card.addEventListener("click", () => {
+            changeAssetSymbolTo(platform, asset.symbol);
+        });
+        
+        container.appendChild(card);
+    });
+    
+    const manualCard = document.createElement("div");
+    const isManualActive = !assets.some(a => a.symbol === activeSymbol);
+    manualCard.className = `asset-card ${isManualActive ? 'active' : ''}`;
+    manualCard.style.borderStyle = "dashed";
+    manualCard.style.borderColor = "#474f59";
+    manualCard.style.marginTop = "12px";
+    manualCard.innerHTML = `
+        <div class="asset-info" style="max-width: 100%;">
+            <span class="asset-title" style="color: var(--text-secondary);">-- Entrada Manual --</span>
+            <span class="asset-desc">Símbolo o Token ID personalizado</span>
+        </div>
+        <div style="font-size: 1.1rem; color: var(--text-secondary); margin-left: 8px;">✎</div>
+    `;
+    
+    manualCard.addEventListener("click", () => {
+        if (customInputContainer) {
+            customInputContainer.style.display = customInputContainer.style.display === "flex" ? "none" : "flex";
+        }
+    });
+    
+    container.appendChild(manualCard);
+    
+    if (isManualActive && customInputContainer) {
+        customInputContainer.style.display = "flex";
+    }
+}
+
 // Variables globales para Chart.js
 let priceChart = null;
 const chartLimit = 40;
@@ -14,6 +131,14 @@ let lastPrice = 0.0;
 let quoteAsset = "USD";
 let baseAsset = "BTC";
 let isForexOrEvent = false;
+
+function getDisplayBase(asset) {
+    if (/^\d+$/.test(asset) && asset.length > 12) {
+        return "PM-" + asset.slice(-6);
+    }
+    return asset;
+}
+
 let availableQuote = 0.0;
 let availableBase = 0.0;
 let manualSide = "BUY"; // "BUY" o "SELL"
@@ -94,11 +219,9 @@ const botCardWorkerName = document.getElementById("bot-card-worker-name");
 const botBadgeStatus = document.getElementById("bot-badge-status");
 const paramSymbol = document.getElementById("param-symbol");
 const paramSource = document.getElementById("param-source");
-const selectFeederType = document.getElementById("select-feeder-type");
-const selectCryptoAsset = document.getElementById("select-crypto-asset");
-const selectBinanceAsset = document.getElementById("select-binance-asset");
+const customInputContainer = document.getElementById("custom-input-container");
 const inputCustomSymbol = document.getElementById("input-custom-symbol");
-const btnChangeSymbol = document.getElementById("btn-change-symbol");
+const btnSubmitCustomSymbol = document.getElementById("btn-submit-custom-symbol");
 
 
 // Lables de base y quote asset
@@ -235,7 +358,7 @@ sideBuyBtn.addEventListener("click", () => {
     sideBuyBtn.classList.add("active");
     sideSellBtn.classList.remove("active");
     btnExecuteOrder.className = "btn btn-action-buy";
-    btnExecuteOrder.textContent = `Comprar ${baseAsset}`;
+    btnExecuteOrder.textContent = `Comprar ${getDisplayBase(baseAsset)}`;
     
     // Limpiar input y calcular disponible
     inputQty.value = "";
@@ -249,7 +372,7 @@ sideSellBtn.addEventListener("click", () => {
     sideSellBtn.classList.add("active");
     sideBuyBtn.classList.remove("active");
     btnExecuteOrder.className = "btn btn-action-sell";
-    btnExecuteOrder.textContent = `Vender ${baseAsset}`;
+    btnExecuteOrder.textContent = `Vender ${getDisplayBase(baseAsset)}`;
     
     // Limpiar input y calcular disponible
     inputQty.value = "";
@@ -377,7 +500,7 @@ function updateAvailableDisplay() {
         availableFundsLabel.textContent = `${dispQuote.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${quoteAsset}`;
     } else {
         const decimals = baseAsset === "BTC" || baseAsset === "ETH" ? 6 : 2;
-        availableFundsLabel.textContent = `${dispBase.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })} ${baseAsset}`;
+        availableFundsLabel.textContent = `${dispBase.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })} ${getDisplayBase(baseAsset)}`;
     }
 }
 
@@ -449,43 +572,13 @@ async function fetchStatus() {
         baseAsset = data.base_asset || "BTC";
         isForexOrEvent = quoteAsset === "USD" && baseAsset !== "BTC" && baseAsset !== "ETH";
         
-        // Configurar selector dinámico según el origen de datos (feeder_type)
-        if (selectFeederType && document.activeElement !== selectFeederType) {
-            selectFeederType.value = data.feeder_type;
-        }
-
-        if (data.feeder_type === "alpaca") {
-            selectCryptoAsset.style.display = "block";
-            selectBinanceAsset.style.display = "none";
-            inputCustomSymbol.style.display = "none";
-            if (Array.from(selectCryptoAsset.options).some(opt => opt.value === data.symbol)) {
-                selectCryptoAsset.value = data.symbol;
-            }
-        } else if (data.feeder_type === "binance") {
-            selectCryptoAsset.style.display = "none";
-            selectBinanceAsset.style.display = "block";
-            inputCustomSymbol.style.display = "none";
-            if (Array.from(selectBinanceAsset.options).some(opt => opt.value === data.symbol)) {
-                selectBinanceAsset.value = data.symbol;
-            }
-        } else {
-            selectCryptoAsset.style.display = "none";
-            selectBinanceAsset.style.display = "none";
-            inputCustomSymbol.style.display = "block";
-            if (data.feeder_type === "polymarket") {
-                inputCustomSymbol.placeholder = "Ingrese Token ID (ej. 4519247...)";
-            } else {
-                inputCustomSymbol.placeholder = "Ingrese Símbolo (ej. INFLATION-26)";
-            }
-            if (document.activeElement !== inputCustomSymbol) {
-                inputCustomSymbol.value = data.symbol;
-            }
-        }
+        // Renderizar las tarjetas visuales de activos del panel lateral
+        renderSidebarAssetCards(data.feeder_type, data.symbol);
 
         
         // Actualizar etiquetas de la interfaz
         quoteAssetLabels.forEach(lbl => lbl.textContent = quoteAsset);
-        baseAssetLabels.forEach(lbl => lbl.textContent = baseAsset);
+        baseAssetLabels.forEach(lbl => lbl.textContent = getDisplayBase(baseAsset));
         
         // Status global del bot
         const isOnline = data.status === "ONLINE";
@@ -497,14 +590,15 @@ async function fetchStatus() {
         lastPrice = data.last_price;
         const decimals = isForexOrEvent ? 4 : 2;
         headerPrice.textContent = `$${lastPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: decimals })}`;
-        chartSymbolName.textContent = data.symbol;
+        chartSymbolName.textContent = getDisplayBase(data.symbol);
+        chartSymbolName.title = data.symbol;
         chartSourceName.textContent = data.feeder_type.toUpperCase() + " FEED";
         
         // Simular info de cabecera de Binance
         headerChange.textContent = isOnline ? "+1.42%" : "+0.00%";
         headerHigh.textContent = `$${(lastPrice * 1.02).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: decimals })}`;
         headerLow.textContent = `$${(lastPrice * 0.98).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: decimals })}`;
-        headerVolume.textContent = `428.14 ${baseAsset}`;
+        headerVolume.textContent = `428.14 ${getDisplayBase(baseAsset)}`;
         
         // Alimentar gráfica
         updateChart(lastPrice);
@@ -598,7 +692,8 @@ async function fetchStatus() {
         botCardWorkerName.textContent = data.name;
         botBadgeStatus.className = `bot-badge ${isOnline ? 'online' : 'offline'}`;
         botBadgeStatus.textContent = isOnline ? "ONLINE" : "OFFLINE";
-        paramSymbol.textContent = data.symbol;
+        paramSymbol.textContent = getDisplayBase(data.symbol);
+        paramSymbol.title = data.symbol;
         paramSource.textContent = data.feeder_type.toUpperCase();
         
         if (isOnline) {
@@ -649,7 +744,7 @@ async function fetchTrades() {
                 const row = document.createElement("tr");
                 row.innerHTML = `
                     <td>${dateStr}</td>
-                    <td>${order.symbol}</td>
+                    <td title="${order.symbol}">${getDisplayBase(order.symbol)}</td>
                     <td><span class="${sideClass}">${order.side}</span></td>
                     <td class="font-mono">$${order.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: decimals })}</td>
                     <td class="font-mono">${order.amount.toLocaleString(undefined, { minimumFractionDigits: amountDecs, maximumFractionDigits: amountDecs })}</td>
@@ -681,7 +776,7 @@ async function fetchTrades() {
             const row = document.createElement("tr");
             row.innerHTML = `
                 <td>${dateStr}</td>
-                <td>${trade.symbol}</td>
+                <td title="${trade.symbol}">${getDisplayBase(trade.symbol)}</td>
                 <td><span class="${sideClass}">${trade.side}</span></td>
                 <td class="font-mono">$${trade.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: decimals })}</td>
                 <td class="font-mono">${trade.amount.toLocaleString(undefined, { minimumFractionDigits: amountDecs, maximumFractionDigits: amountDecs })}</td>
@@ -1066,7 +1161,7 @@ function updatePortfolioTable() {
     const rowBase = document.createElement("tr");
     const decimals = baseAsset === "BTC" || baseAsset === "ETH" ? 6 : 2;
     rowBase.innerHTML = `
-        <td><strong>${baseAsset}</strong> <span class="text-muted" style="font-size:0.75rem; margin-left:6px;">Cripto / Activo</span></td>
+        <td><strong>${getDisplayBase(baseAsset)}</strong> <span class="text-muted" style="font-size:0.75rem; margin-left:6px;">Cripto / Activo</span></td>
         <td class="font-mono">${dispBase.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}</td>
         <td class="font-mono">${lockedBase.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}</td>
         <td class="font-mono">$${totalBaseVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
@@ -1083,27 +1178,9 @@ function updatePortfolioTable() {
 }
 
 
-// --- CAMBIAR ACTIVO/SÍMBOLO DINÁMICAMENTE ---
-async function changeAssetSymbol() {
-    const selectedFeeder = selectFeederType.value;
-    let newSymbol = "";
-    
-    if (selectedFeeder === "alpaca") {
-        newSymbol = selectCryptoAsset.value;
-    } else if (selectedFeeder === "binance") {
-        newSymbol = selectBinanceAsset.value;
-    } else {
-        newSymbol = inputCustomSymbol.value.trim();
-    }
-    
-    if (!newSymbol) {
-        alert("Por favor ingresa o selecciona un símbolo válido.");
-        return;
-    }
-    
-    btnChangeSymbol.disabled = true;
-    btnChangeSymbol.textContent = "Cambiando...";
-    btnChangeSymbol.style.background = "#848e9c";
+// --- ENVIAR CONFIGURACIÓN DE ACTIVO AL SERVIDOR ---
+async function changeAssetSymbolTo(feederType, symbol) {
+    if (!symbol) return;
     
     try {
         const res = await fetch(`${API_BASE}/worker/config`, {
@@ -1113,13 +1190,12 @@ async function changeAssetSymbol() {
             },
             body: JSON.stringify({
                 worker_id: activeWorkerId,
-                symbol: newSymbol,
-                feeder_type: selectedFeeder
+                symbol: symbol,
+                feeder_type: feederType
             })
         });
         
         if (res.ok) {
-            alert(`Símbolo y fuente cambiados con éxito. Activo: ${newSymbol.toUpperCase()} | Fuente: ${selectedFeeder.toUpperCase()}`);
             // Limpiar datos del gráfico para refrescar con el nuevo histórico
             chartLabels = [];
             chartData = [];
@@ -1137,40 +1213,34 @@ async function changeAssetSymbol() {
         }
     } catch (err) {
         console.error("Error al cambiar símbolo:", err);
-        alert("Ocurrió un error de conexión al cambiar el símbolo.");
-    } finally {
-        btnChangeSymbol.disabled = false;
-        btnChangeSymbol.textContent = "Confirmar Cambio";
-        btnChangeSymbol.style.background = "#02c076";
     }
 }
 
-// Evento al cambiar manualmente la fuente en el selector
-if (selectFeederType) {
-    selectFeederType.addEventListener("change", () => {
-        const ft = selectFeederType.value;
-        if (ft === "alpaca") {
-            selectCryptoAsset.style.display = "block";
-            selectBinanceAsset.style.display = "none";
-            inputCustomSymbol.style.display = "none";
-        } else if (ft === "binance") {
-            selectCryptoAsset.style.display = "none";
-            selectBinanceAsset.style.display = "block";
-            inputCustomSymbol.style.display = "none";
-        } else {
-            selectCryptoAsset.style.display = "none";
-            selectBinanceAsset.style.display = "none";
-            inputCustomSymbol.style.display = "block";
-            if (ft === "polymarket") {
-                inputCustomSymbol.placeholder = "Ingrese Token ID (ej. 4519247...)";
-            } else {
-                inputCustomSymbol.placeholder = "Ingrese Símbolo (ej. INFLATION-26)";
-            }
+// Evento para enviar símbolo manual ingresado por el usuario
+if (btnSubmitCustomSymbol) {
+    btnSubmitCustomSymbol.addEventListener("click", () => {
+        const val = inputCustomSymbol.value.trim();
+        if (!val) {
+            alert("Por favor ingresa un símbolo o Token ID válido.");
+            return;
         }
+        
+        // Determinar automáticamente el feeder según el formato de la entrada manual
+        let targetFeeder = "alpaca";
+        if (/^\d+$/.test(val) && val.length > 12) {
+            targetFeeder = "polymarket";
+        } else if (val.includes("-")) {
+            targetFeeder = "kalshi";
+        } else {
+            // Seguir la plataforma del worker activo
+            if (activeWorkerId === "worker_2") targetFeeder = "kalshi";
+            else if (activeWorkerId === "worker_3") targetFeeder = "polymarket";
+            else targetFeeder = "binance";
+        }
+        
+        changeAssetSymbolTo(targetFeeder, val);
     });
 }
-
-btnChangeSymbol.addEventListener("click", changeAssetSymbol);
 
 
 

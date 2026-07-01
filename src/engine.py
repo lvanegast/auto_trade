@@ -901,6 +901,7 @@ class TradingEngine:
         # Intentar leer configuraciones de múltiples workers de .env
         w1_enabled = os.getenv("WORKER1_ENABLED", "true").lower() == "true"
         w2_enabled = os.getenv("WORKER2_ENABLED", "true").lower() == "true"
+        w3_enabled = os.getenv("WORKER3_ENABLED", "true").lower() == "true"
 
         if w1_enabled:
             w1_type = os.getenv(
@@ -916,6 +917,16 @@ class TradingEngine:
             w2_sym = os.getenv("WORKER2_SYMBOL", "INFLATION-26")
             self.workers["worker_2"] = TradingWorker(
                 "worker_2", "Kalshi Ventana", w2_sym, w2_type, self.db
+            )
+
+        if w3_enabled:
+            w3_type = os.getenv("WORKER3_FEEDER_TYPE", "polymarket")
+            w3_sym = os.getenv(
+                "WORKER3_SYMBOL",
+                "21742617192661590740925574347715096531393664724810793796541603527267389823616",
+            )
+            self.workers["worker_3"] = TradingWorker(
+                "worker_3", "Polymarket Ventana", w3_sym, w3_type, self.db
             )
 
     @property
