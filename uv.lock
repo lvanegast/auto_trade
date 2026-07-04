@@ -253,6 +253,7 @@ dependencies = [
     { name = "requests" },
     { name = "trading-ig" },
     { name = "uvicorn" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -265,6 +266,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31.0" },
     { name = "trading-ig", specifier = ">=0.0.1" },
     { name = "uvicorn", specifier = ">=0.22.0" },
+    { name = "websockets", specifier = ">=16.0" },
 ]
 
 [package.metadata.requires-dev]

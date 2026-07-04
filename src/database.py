@@ -44,7 +44,7 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS trades (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                symbol VARCHAR(20) NOT NULL,
+                symbol VARCHAR(100) NOT NULL,
                 side VARCHAR(10) NOT NULL,       -- 'BUY' o 'SELL'
                 price NUMERIC(18, 8) NOT NULL,
                 amount NUMERIC(18, 8) NOT NULL,
@@ -69,11 +69,14 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS portfolio_state (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                asset VARCHAR(20) NOT NULL,
+                asset VARCHAR(100) NOT NULL,
                 free_balance NUMERIC(18, 8) NOT NULL,
                 locked_balance NUMERIC(18, 8) NOT NULL DEFAULT 0.0
             );
             """,
+            # Migraciones para asegurar la longitud de las columnas
+            "ALTER TABLE trades ALTER COLUMN symbol TYPE VARCHAR(100);",
+            "ALTER TABLE portfolio_state ALTER COLUMN asset TYPE VARCHAR(100);",
         ]
 
         conn = None

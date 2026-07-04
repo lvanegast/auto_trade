@@ -11,7 +11,7 @@
     <!-- Chart.js CDN -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- Custom Style -->
-    <link rel="stylesheet" href="style.css?v=3">
+    <link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
     <div class="terminal-app">
@@ -117,9 +117,20 @@
                             <span class="chart-resolution">1m</span>
                             <span class="chart-source-badge" id="chart-source-name">Alpaca API</span>
                         </div>
-                        <div class="indicator-quick-view">
-                            <span>EMA(9): <span id="view-ema9" class="text-primary">-</span></span>
-                            <span>EMA(21): <span id="view-ema21" class="text-secondary">-</span></span>
+                        <div class="indicator-quick-view" style="display: flex; gap: 15px; align-items: center;">
+                            <!-- Event Probability Gauge (shown only for event/prediction markets) -->
+                            <div id="event-probability-container" style="display: none; align-items: center; gap: 8px; background: rgba(36, 44, 53, 0.4); border-radius: 4px; padding: 2px 8px; border: 1px solid #242c35; margin-right: 10px;">
+                                <span style="font-size: 10px; color: #848e9c; font-weight: 600;">YES</span>
+                                <div style="width: 80px; height: 6px; background: #f6465d; border-radius: 3px; overflow: hidden; display: flex;">
+                                    <div id="probability-yes-bar" style="width: 50%; height: 100%; background: #02c076; transition: width 0.3s ease;"></div>
+                                </div>
+                                <span style="font-size: 10px; color: #848e9c; font-weight: 600;">NO</span>
+                                <span id="probability-value-text" class="font-mono" style="font-size: 11px; font-weight: 600; color: #fff; margin-left: 4px;">50%</span>
+                            </div>
+                            <span>P. Teórica: <span id="view-prob-p" class="text-blue" style="font-weight: 600;">-</span></span>
+                            <span>Edge: <span id="view-edge" class="text-cyan" style="font-weight: 600;">-</span></span>
+                            <span>Kelly (f*): <span id="view-kelly" class="text-primary" style="font-weight: 600;">-</span></span>
+                            <span>EMA(9): <span id="view-ema9" class="text-secondary">-</span></span>
                             <span>RSI(14): <span id="view-rsi" class="text-cyan">-</span></span>
                         </div>
                     </div>
@@ -386,19 +397,17 @@
                 <div class="asset-selector-panel" style="padding: 15px; border-top: 1px solid #2d3139; background: #181a20;">
                     <h4 class="section-subtitle" style="margin-bottom: 10px; font-size: 13px; text-transform: uppercase; color: #eaecef; letter-spacing: 0.5px;">Seleccionar Instrumento</h4>
                     
+                    <!-- Search Filter Bar -->
+                    <div style="margin-bottom: 12px; display: flex; align-items: center; background: #1e2329; border-radius: 4px; padding: 4px 10px; border: 1px solid #2d3139;">
+                        <span style="color: #848e9c; font-size: 12px; margin-right: 8px;">🔍</span>
+                        <input type="text" id="search-asset-input" placeholder="Buscar instrumento..." style="flex: 1; background: transparent; border: none; color: #fff; font-size: 13px; outline: none;">
+                    </div>
+                    
                     <!-- Dynamic Asset Cards Container -->
                     <div id="sidebar-asset-cards-container" style="display: flex; flex-direction: column; gap: 8px; max-height: 380px; overflow-y: auto; margin-bottom: 12px; padding-right: 4px;">
                         <!-- Filled dynamically by JavaScript in app.js -->
                     </div>
 
-                    <!-- Custom input text field container -->
-                    <div id="custom-input-container" style="display: none; flex-direction: column; gap: 6px; background: #1e2329; border-radius: 4px; padding: 8px 10px; border: 1px dashed #474f59; margin-bottom: 10px;">
-                        <span style="color: #848e9c; font-size: 11px; font-weight: 500;">Ingrese Token ID / Símbolo Manual</span>
-                        <div style="display: flex; gap: 8px;">
-                            <input type="text" id="input-custom-symbol" placeholder="ID o símbolo..." style="flex: 1; background: transparent; border: none; color: #fff; font-size: 13px; outline: none;">
-                            <button id="btn-submit-custom-symbol" style="background: #02c076; color: #fff; border: none; padding: 2px 8px; border-radius: 3px; font-size: 11px; cursor: pointer; font-weight: 600;">OK</button>
-                        </div>
-                    </div>
                 </div>
 
             </aside>
@@ -406,7 +415,6 @@
         </div>
     </div>
 
-    <!-- Script connection -->
-    <script src="app.js?v=5"></script>
+    <script src="app.js?v=6"></script>
 </body>
 </html>

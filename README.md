@@ -154,9 +154,10 @@ python main.py
 | `DB_NAME`          | Nombre de la base de datos                             | `trading_bot`   |
 | `DB_USER`          | Usuario de PostgreSQL                                  | `trading_user`  |
 | `DB_PASSWORD`      | Contraseña de PostgreSQL                               | `trading_password` |
-| `FEEDER_TYPE`      | Fuente de datos: `mock`, `oanda`, `ig`                 | `mock`          |
-| `TRADING_SYMBOL`   | Par de trading: `BTCUSDT`, `EUR_USD`, `GBP_USD`, epics de IG | `BTCUSDT`  |
+| `FEEDER_TYPE`      | Fuente de datos: `mock`, `oanda`, `ig`, `alpaca`, `kalshi`, `polymarket` | `mock` |
+| `TRADING_SYMBOL`   | Par de trading o Token ID de Polymarket/Kalshi         | `BTC/USD`       |
 | `TRADING_MODE`     | Modo de operación: `paper` (simulado)                  | `paper`         |
+| `AUTO_START`       | Iniciar el bot automáticamente en el arranque          | `true`          |
 | `OANDA_ACCOUNT_ID` | ID de cuenta OANDA (solo si `FEEDER_TYPE=oanda`)       | —               |
 | `OANDA_API_TOKEN`  | Token API de OANDA                                     | —               |
 | `IG_USERNAME`      | Usuario de IG Group                                    | —               |
@@ -167,28 +168,25 @@ python main.py
 
 ---
 
-## 📊 Estrategia: EMA + RSI
+## 📊 Estrategia: Arbitraje de Latencia Lead-Lag (Estrategia Principal)
 
-La estrategia implementada en `src/strategy/ema_rsi.py` combina dos indicadores clásicos:
+La estrategia principal implementada en `src/strategy/lead_lag_arbitrage.py` es una lógica de arbitraje de latencia cuantitativo que compara un feed líder de alta velocidad con un broker/ejecutor rezagado:
 
-### Indicadores
-- **EMA 9** (corta): Media móvil exponencial de corto plazo
-- **EMA 21** (larga): Media móvil exponencial de largo plazo
-- **RSI 14**: Índice de Fuerza Relativa — suavizado con el método de Wilder (EWM con alpha = 1/14)
+### Funcionamiento
+- **Líder (Binance):** Se conecta a un WebSocket de Binance en tiempo real para obtener precios spot de BTC y ETH instantáneos.
+- **Rezagado (Alpaca/Polymarket):** Las cotizaciones del worker local suelen sufrir retrasos (latencia de 100ms a 3s) frente al líder.
+- **Señales:**
+  - **BUY:** Si la cotización de Binance supera a la local por más del umbral configurado (`0.12%`), se realiza una compra rápida.
+  - **SELL:** Si la cotización de Binance cae por debajo de la local, se realiza una venta corta.
+- **Salida:**
+  - **Profit Target:** Al alcanzar el beneficio objetivo (`0.20%`).
+  - **Time Stop:** Salida automática si transcurren más de `8 segundos` en la operación.
 
-### Señales
+---
 
-| Señal | Condición                                                         |
-|-------|-------------------------------------------------------------------|
-| BUY   | EMA9 cruza hacia **arriba** a EMA21 **Y** RSI entre 40 y 85      |
-| SELL  | EMA9 cruza hacia **abajo** a EMA21 **Y** RSI entre 15 y 60       |
+## 📊 Estrategia Alternativa: Probabilistic Kelly (Estrategia Opcional)
 
-> Las señales solo se emiten cuando **cambia el estado de posición**, evitando señales repetidas en la misma dirección.
-
-### Ejecución (Paper Trading)
-- **BUY**: Se gasta el 50% del saldo disponible en el activo cotizado (ej: USD)
-- **SELL**: Se vende el 100% de la tenencia del activo base (ej: EUR, BTC)
-- Mínimo de compra: 10 USD/USDT (o 1 unidad para otras divisas)
+Implementada en `src/strategy/probabilistic_kelly.py`, utiliza una actualización Bayesiana Beta-Binomial sobre la dirección del flujo de ticks recientes combinada con desequilibrio del libro de órdenes (OBI) para estimar la probabilidad real $p$. Modela el tamaño de posición dinámico mediante la fórmula del **Criterio de Kelly**.
 
 ---
 
@@ -218,7 +216,7 @@ La estrategia implementada en `src/strategy/ema_rsi.py` combina dos indicadores 
 |---------------------|---------------|-----------------------------------|
 | `id`                | SERIAL PK     | ID autoincremental                |
 | `timestamp`         | TIMESTAMP     | Momento de la operación           |
-| `symbol`            | VARCHAR(20)   | Par de trading (ej: BTCUSDT)      |
+| `symbol`            | VARCHAR(100)  | Par de trading o Token ID de Polymarket |
 | `side`              | VARCHAR(10)   | `BUY` o `SELL`                    |
 | `price`             | NUMERIC(18,8) | Precio de ejecución               |
 | `amount`            | NUMERIC(18,8) | Cantidad del activo base           |
@@ -239,7 +237,7 @@ La estrategia implementada en `src/strategy/ema_rsi.py` combina dos indicadores 
 |------------------|---------------|-------------------------------------|
 | `id`             | SERIAL PK     | ID autoincremental                  |
 | `timestamp`      | TIMESTAMP     | Momento del registro                |
-| `asset`          | VARCHAR(20)   | Activo (ej: USD, EUR, BTC)          |
+| `asset`          | VARCHAR(100)  | Activo (ej: USD, EUR, BTC, Token ID) |
 | `free_balance`   | NUMERIC(18,8) | Saldo disponible                    |
 | `locked_balance` | NUMERIC(18,8) | Saldo bloqueado en órdenes          |
 

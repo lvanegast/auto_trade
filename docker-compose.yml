@@ -25,6 +25,10 @@ services:
       - DB_HOST=db_trading
     env_file:
       - .env
+    volumes:
+      - ./src:/app/src
+      - ./web:/app/web
+      - .env:/app/.env
     depends_on:
       db_trading:
         condition: service_healthy

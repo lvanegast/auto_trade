@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import asyncio
+import os
 from src.database import DatabaseManager
 from src.engine import TradingEngine
 from src.events import SignalEvent
@@ -30,9 +31,24 @@ engine = TradingEngine(db)
 
 @app.on_event("startup")
 async def startup_event():
-    # El bot iniciará apagado por defecto
-    db.set_state("bot_running", "false")
-    db.log("INFO", "API Backend de FastAPI iniciada y lista para recibir comandos.")
+    # Configuración para auto-iniciar el bot al encender el contenedor (por defecto true)
+    auto_start = os.getenv("AUTO_START", "true").lower() == "true"
+    if auto_start:
+        db.set_state("bot_running", "true")
+        try:
+            await engine.start()
+            db.log(
+                "INFO",
+                "El bot de trading se ha iniciado AUTOMÁTICAMENTE al arrancar el backend.",
+            )
+        except Exception as e:
+            db.log("ERROR", f"Error en el auto-inicio del bot: {e}")
+    else:
+        db.set_state("bot_running", "false")
+        db.log(
+            "INFO",
+            "API Backend de FastAPI iniciada y lista para recibir comandos (Auto-start desactivado).",
+        )
 
 
 @app.on_event("shutdown")
@@ -128,6 +144,19 @@ async def get_status(worker_id: str = "worker_1"):
             except Exception:
                 pass
 
+        # Obtener historial de precios registrado en la estrategia
+        price_history = []
+        if len(worker.strategy.prices_df) > 0:
+            price_history = [
+                {
+                    "timestamp": row["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+                    if hasattr(row["timestamp"], "strftime")
+                    else str(row["timestamp"]),
+                    "price": float(row["price"]),
+                }
+                for _, row in worker.strategy.prices_df.iterrows()
+            ]
+
         return {
             "status": "ONLINE" if is_running else "OFFLINE",
             "trading_mode": db.get_state("trading_mode", "paper").upper(),
@@ -138,9 +167,17 @@ async def get_status(worker_id: str = "worker_1"):
             "quote_asset": worker.quote_asset,
             "feeder_type": worker.feeder_type,
             "name": worker.name,
-            "last_position": worker.strategy.last_position,
+            "last_position": getattr(worker.strategy, "last_position", None),
             "avg_entry_price": avg_entry_price,
             "indicators": indicators,
+            "price_history": price_history,
+            "teorical_probability": getattr(
+                worker.strategy, "teorical_probability", 0.50
+            ),
+            "edge": getattr(worker.strategy, "edge", 0.0),
+            "kelly_recommendation": getattr(
+                worker.strategy, "kelly_recommendation", 0.0
+            ),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

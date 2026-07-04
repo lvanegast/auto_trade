@@ -5,7 +5,7 @@ import uuid
 import datetime
 from src.database import DatabaseManager
 from src.events import SignalEvent
-from src.strategy.ema_rsi import EmaRsiStrategy
+from src.strategy.lead_lag_arbitrage import LeadLagArbitrageStrategy
 from src.feeders.mock_feeder import MockFeeder
 from src.feeders.oanda_feeder import OandaFeeder
 from src.feeders.ig_feeder import IGFeeder
@@ -33,8 +33,8 @@ class TradingWorker:
 
         self.base_asset, self.quote_asset = self._parse_symbol()
 
-        # Inicializar estrategia
-        self.strategy = EmaRsiStrategy(self.symbol)
+        # Inicializar estrategia de arbitraje de latencia
+        self.strategy = LeadLagArbitrageStrategy(self.symbol)
 
         if self.feeder_type == "oanda":
             self.feeder = OandaFeeder(self.symbol, self.queue)

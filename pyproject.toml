@@ -13,6 +13,7 @@ dependencies = [
     "requests>=2.31.0",
     "trading-ig>=0.0.1",
     "alpaca-py>=0.43.4",
+    "websockets>=16.0",
 ]
 
 [tool.uv]

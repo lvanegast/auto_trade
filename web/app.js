@@ -1,38 +1,63 @@
-const API_BASE = "/api";
+const API_BASE = window.location.protocol === "file:" ? "http://localhost:8080/api" : "/api";
 
 const platformAssets = {
     "alpaca": [
-        { symbol: "BTC/USD", name: "Bitcoin", desc: "BTC / USD (Alpaca Real)", price: 58295.92, change: 1.42, prices: [57200, 57500, 57100, 58000, 57800, 58400, 58100, 58295.92] },
-        { symbol: "ETH/USD", name: "Ethereum", desc: "ETH / USD (Alpaca Real)", price: 3415.22, change: -0.85, prices: [3480, 3460, 3430, 3450, 3400, 3420, 3390, 3415.22] },
-        { symbol: "SOL/USD", name: "Solana", desc: "SOL / USD (Alpaca Real)", price: 142.85, change: 3.12, prices: [136, 138, 135, 140, 139, 144, 141, 142.85] },
-        { symbol: "LTC/USD", name: "Litecoin", desc: "LTC / USD (Alpaca Real)", price: 74.50, change: 0.15, prices: [73.8, 74.2, 73.9, 74.6, 74.1, 74.8, 74.3, 74.50] },
-        { symbol: "DOGE/USD", name: "Dogecoin", desc: "DOGE / USD (Alpaca Real)", price: 0.124, change: -2.44, prices: [0.129, 0.127, 0.125, 0.126, 0.122, 0.125, 0.121, 0.124] }
+        { symbol: "BTC/USD", name: "Bitcoin", desc: "BTC / USD (Alpaca Real)", price: 58295.92, change: 1.42, tag: "CRIPTO", prices: [57200, 57500, 57100, 58000, 57800, 58400, 58100, 58295.92] },
+        { symbol: "ETH/USD", name: "Ethereum", desc: "ETH / USD (Alpaca Real)", price: 3415.22, change: -0.85, tag: "CRIPTO", prices: [3480, 3460, 3430, 3450, 3400, 3420, 3390, 3415.22] },
+        { symbol: "SOL/USD", name: "Solana", desc: "SOL / USD (Alpaca Real)", price: 142.85, change: 3.12, tag: "CRIPTO", prices: [136, 138, 135, 140, 139, 144, 141, 142.85] },
+        { symbol: "LTC/USD", name: "Litecoin", desc: "LTC / USD (Alpaca Real)", price: 74.50, change: 0.15, tag: "CRIPTO", prices: [73.8, 74.2, 73.9, 74.6, 74.1, 74.8, 74.3, 74.50] },
+        { symbol: "DOGE/USD", name: "Dogecoin", desc: "DOGE / USD (Alpaca Real)", price: 0.124, change: -2.44, tag: "MEME", prices: [0.129, 0.127, 0.125, 0.126, 0.122, 0.125, 0.121, 0.124] }
     ],
     "binance": [
-        { symbol: "BNB/USDT", name: "Binance Coin", desc: "BNB / USDT (Binance Sim)", price: 574.80, change: 1.15, prices: [565, 568, 564, 572, 570, 576, 573, 574.8] },
-        { symbol: "BTC/USDT", name: "Bitcoin", desc: "BTC / USDT (Binance Sim)", price: 58295.92, change: 1.42, prices: [57200, 57500, 57100, 58000, 57800, 58400, 58100, 58295.92] },
-        { symbol: "ETH/USDT", name: "Ethereum", desc: "ETH / USDT (Binance Sim)", price: 3415.22, change: -0.85, prices: [3480, 3460, 3430, 3450, 3400, 3420, 3390, 3415.22] },
-        { symbol: "SOL/USDT", name: "Solana", desc: "SOL / USDT (Binance Sim)", price: 142.85, change: 3.12, prices: [136, 138, 135, 140, 139, 144, 141, 142.85] }
+        { symbol: "BNB/USDT", name: "Binance Coin", desc: "BNB / USDT (Binance Sim)", price: 574.80, change: 1.15, tag: "CRIPTO", prices: [565, 568, 564, 572, 570, 576, 573, 574.8] },
+        { symbol: "BTC/USDT", name: "Bitcoin", desc: "BTC / USDT (Binance Sim)", price: 58295.92, change: 1.42, tag: "CRIPTO", prices: [57200, 57500, 57100, 58000, 57800, 58400, 58100, 58295.92] },
+        { symbol: "ETH/USDT", name: "Ethereum", desc: "ETH / USDT (Binance Sim)", price: 3415.22, change: -0.85, tag: "CRIPTO", prices: [3480, 3460, 3430, 3450, 3400, 3420, 3390, 3415.22] },
+        { symbol: "SOL/USDT", name: "Solana", desc: "SOL / USDT (Binance Sim)", price: 142.85, change: 3.12, tag: "CRIPTO", prices: [136, 138, 135, 140, 139, 144, 141, 142.85] },
+        { symbol: "ADA/USDT", name: "Cardano", desc: "ADA / USDT (Binance Sim)", price: 0.385, change: 0.78, tag: "CRIPTO", prices: [0.378, 0.381, 0.375, 0.388, 0.382, 0.391, 0.383, 0.385] },
+        { symbol: "XRP/USDT", name: "Ripple", desc: "XRP / USDT (Binance Sim)", price: 0.495, change: -1.20, tag: "CRIPTO", prices: [0.505, 0.501, 0.498, 0.502, 0.491, 0.499, 0.492, 0.495] }
     ],
     "polymarket": [
-        { symbol: "55010547192661590740925574347715096531393664724810793796541603527267389823616", name: "Mundial: Francia", desc: "Francia gana el Mundial (YES)", price: 0.38, change: 2.70, prices: [0.35, 0.36, 0.34, 0.37, 0.36, 0.39, 0.37, 0.38] },
-        { symbol: "55010547192661590740925574347715096531393664724810793796541603527267389823617", name: "Mundial: Brasil", desc: "Brasil gana el Mundial (YES)", price: 0.28, change: -1.25, prices: [0.29, 0.29, 0.28, 0.30, 0.27, 0.29, 0.27, 0.28] },
-        { symbol: "55010547192661590740925574347715096531393664724810793796541603527267389823618", name: "Mundial: Argentina", desc: "Argentina gana el Mundial (YES)", price: 0.22, change: 4.54, prices: [0.20, 0.21, 0.19, 0.22, 0.21, 0.23, 0.21, 0.22] },
-        { symbol: "87910547192661590740925574347715096531393664724810793796541603527267389823616", name: "Midterms: Cámara", desc: "Demócratas controlan Cámara (YES)", price: 0.52, change: 0.98, prices: [0.50, 0.51, 0.49, 0.52, 0.51, 0.53, 0.51, 0.52] },
-        { symbol: "87910547192661590740925574347715096531393664724810793796541603527267389823617", name: "Midterms: Senado", desc: "Republicanos mantienen Senado (YES)", price: 0.65, change: -0.75, prices: [0.66, 0.67, 0.64, 0.66, 0.63, 0.65, 0.64, 0.65] },
-        { symbol: "21742617192661590740925574347715096531393664724810793796541603527267389823616", name: "FED: Corte Julio 26", desc: "FED recorta tasas en Julio 26 (YES)", price: 0.72, change: 6.25, prices: [0.65, 0.68, 0.66, 0.70, 0.69, 0.73, 0.71, 0.72] },
-        { symbol: "21742617192661590740925574347715096531393664724810793796541603527267389823617", name: "FED: No Corte Julio", desc: "FED recorta tasas en Julio 26 (NO)", price: 0.28, change: -12.50, prices: [0.35, 0.32, 0.34, 0.30, 0.31, 0.27, 0.29, 0.28] },
-        { symbol: "11010547192661590740925574347715096531393664724810793796541603527267389823616", name: "Finanzas: BTC > $150k", desc: "Bitcoin supera los $150k en 2026 (YES)", price: 0.15, change: 1.12, prices: [0.14, 0.14, 0.13, 0.15, 0.14, 0.16, 0.15, 0.15] },
-        { symbol: "33010547192661590740925574347715096531393664724810793796541603527267389823616", name: "Tecnología: GPT-5", desc: "GPT-5 anunciado en 2026 (YES)", price: 0.68, change: 1.49, prices: [0.66, 0.67, 0.65, 0.68, 0.67, 0.69, 0.67, 0.68] },
-        { symbol: "33010547192661590740925574347715096531393664724810793796541603527267389823617", name: "Espacio: Artemis III", desc: "Artemis III logra alunizaje 26 (YES)", price: 0.45, change: -3.15, prices: [0.47, 0.48, 0.46, 0.47, 0.44, 0.46, 0.43, 0.45] }
+        { symbol: "55010547192661590740925574347715096531393664724810793796541603527267389823616", name: "Mundial: Francia", desc: "Francia gana el Mundial (YES)", price: 0.38, change: 2.70, tag: "MUNDIAL", prices: [0.35, 0.36, 0.34, 0.37, 0.36, 0.39, 0.37, 0.38] },
+        { symbol: "55010547192661590740925574347715096531393664724810793796541603527267389823617", name: "Mundial: Brasil", desc: "Brasil gana el Mundial (YES)", price: 0.28, change: -1.25, tag: "MUNDIAL", prices: [0.29, 0.29, 0.28, 0.30, 0.27, 0.29, 0.27, 0.28] },
+        { symbol: "55010547192661590740925574347715096531393664724810793796541603527267389823618", name: "Mundial: Argentina", desc: "Argentina gana el Mundial (YES)", price: 0.22, change: 4.54, tag: "MUNDIAL", prices: [0.20, 0.21, 0.19, 0.22, 0.21, 0.23, 0.21, 0.22] },
+        { symbol: "87910547192661590740925574347715096531393664724810793796541603527267389823616", name: "Midterms: Cámara", desc: "Demócratas controlan Cámara (YES)", price: 0.52, change: 0.98, tag: "POLÍTICA", prices: [0.50, 0.51, 0.49, 0.52, 0.51, 0.53, 0.51, 0.52] },
+        { symbol: "87910547192661590740925574347715096531393664724810793796541603527267389823617", name: "Midterms: Senado", desc: "Republicanos mantienen Senado (YES)", price: 0.65, change: -0.75, tag: "POLÍTICA", prices: [0.66, 0.67, 0.64, 0.66, 0.63, 0.65, 0.64, 0.65] },
+        { symbol: "21742617192661590740925574347715096531393664724810793796541603527267389823616", name: "FED: Corte Julio 26", desc: "FED recorta tasas en Julio 26 (YES)", price: 0.72, change: 6.25, tag: "MACRO", prices: [0.65, 0.68, 0.66, 0.70, 0.69, 0.73, 0.71, 0.72] },
+        { symbol: "21742617192661590740925574347715096531393664724810793796541603527267389823617", name: "FED: No Corte Julio", desc: "FED recorta tasas en Julio 26 (NO)", price: 0.28, change: -12.50, tag: "MACRO", prices: [0.35, 0.32, 0.34, 0.30, 0.31, 0.27, 0.29, 0.28] },
+        { symbol: "21742617192661590740925574347715096531393664724810793796541603527267389823619", name: "FED: Corte Sept. 26", desc: "FED recorta tasas en Sept. 26 (YES)", price: 0.81, change: 1.25, tag: "MACRO", prices: [0.78, 0.80, 0.79, 0.82, 0.80, 0.83, 0.81, 0.81] },
+        { symbol: "21742617192661590740925574347715096531393664724810793796541603527267389823620", name: "Macro: Recesión Q3", desc: "EE.UU. entra en recesión Q3 (YES)", price: 0.34, change: 4.88, tag: "MACRO", prices: [0.30, 0.31, 0.29, 0.32, 0.33, 0.35, 0.32, 0.34] },
+        { symbol: "11010547192661590740925574347715096531393664724810793796541603527267389823616", name: "Finanzas: BTC > $150k", desc: "Bitcoin supera los $150k en 2026 (YES)", price: 0.15, change: 1.12, tag: "MACRO", prices: [0.14, 0.14, 0.13, 0.15, 0.14, 0.16, 0.15, 0.15] },
+        { symbol: "33010547192661590740925574347715096531393664724810793796541603527267389823616", name: "Tecnología: GPT-5", desc: "GPT-5 anunciado en 2026 (YES)", price: 0.68, change: 1.49, tag: "TECNOLOGÍA", prices: [0.66, 0.67, 0.65, 0.68, 0.67, 0.69, 0.67, 0.68] },
+        { symbol: "33010547192661590740925574347715096531393664724810793796541603527267389823617", name: "Espacio: Artemis III", desc: "Artemis III logra alunizaje 26 (YES)", price: 0.45, change: -3.15, tag: "TECNOLOGÍA", prices: [0.47, 0.48, 0.46, 0.47, 0.44, 0.46, 0.43, 0.45] },
+        { symbol: "33010547192661590740925574347715096531393664724810793796541603527267389823618", name: "Espacio: Retraso Artemis", desc: "Artemis III se retrasa a 2027 (YES)", price: 0.55, change: 3.77, tag: "TECNOLOGÍA", prices: [0.51, 0.53, 0.50, 0.54, 0.52, 0.56, 0.53, 0.55] }
     ],
     "kalshi": [
-        { symbol: "INFLATION-26", name: "Inflación EEUU < 2.6%", desc: "Inflación anual menor a 2.6% (YES)", price: 0.58, change: 1.75, prices: [0.55, 0.56, 0.54, 0.57, 0.56, 0.59, 0.57, 0.58] },
-        { symbol: "CPI-26", name: "CPI Mensual > 0.3%", desc: "CPI de EE.UU. sube más de 0.3% (YES)", price: 0.32, change: -2.40, prices: [0.35, 0.34, 0.33, 0.35, 0.31, 0.33, 0.30, 0.32] },
-        { symbol: "FED-RATE-26", name: "FED Tasa de Interés > 5.0%", desc: "Tasa de interés mayor al 5.0% (YES)", price: 0.74, change: 0.95, prices: [0.72, 0.73, 0.71, 0.74, 0.73, 0.75, 0.73, 0.74] },
-        { symbol: "ECB-RATE-26", name: "ECB Recorte 25bps", desc: "ECB recorta tasas en 25bps (YES)", price: 0.62, change: 3.33, prices: [0.58, 0.60, 0.59, 0.61, 0.60, 0.63, 0.61, 0.62] }
+        { symbol: "INFLATION-26", name: "Inflación EEUU < 2.6%", desc: "Inflación anual menor a 2.6% (YES)", price: 0.58, change: 1.75, tag: "INFLACIÓN", prices: [0.55, 0.56, 0.54, 0.57, 0.56, 0.59, 0.57, 0.58] },
+        { symbol: "CPI-26", name: "CPI Mensual > 0.3%", desc: "CPI de EE.UU. sube más de 0.3% (YES)", price: 0.32, change: -2.40, tag: "INFLACIÓN", prices: [0.35, 0.34, 0.33, 0.35, 0.31, 0.33, 0.30, 0.32] },
+        { symbol: "FED-RATE-26", name: "FED Tasa de Interés > 5.0%", desc: "Tasa de interés mayor al 5.0% (YES)", price: 0.74, change: 0.95, tag: "TASAS", prices: [0.72, 0.73, 0.71, 0.74, 0.73, 0.75, 0.73, 0.74] },
+        { symbol: "ECB-RATE-26", name: "ECB Recorte 25bps", desc: "ECB recorta tasas en 25bps (YES)", price: 0.62, change: 3.33, tag: "TASAS", prices: [0.58, 0.60, 0.59, 0.61, 0.60, 0.63, 0.61, 0.62] },
+        { symbol: "UNEMP-26", name: "Desempleo EE.UU. > 4.2%", desc: "Desempleo mensual supera 4.2% (YES)", price: 0.42, change: 2.44, tag: "EMPLEO", prices: [0.39, 0.41, 0.40, 0.42, 0.41, 0.43, 0.41, 0.42] },
+        { symbol: "EV-26", name: "Ventas EV EE.UU. > 12%", desc: "Cuota mercado EV supera el 12% (YES)", price: 0.67, change: -1.47, tag: "CLIMA", prices: [0.69, 0.68, 0.67, 0.69, 0.66, 0.68, 0.66, 0.67] }
     ]
 };
+
+function getTagStyle(tag) {
+    let color = '#00e6ff';
+    let bg = 'rgba(0, 230, 255, 0.12)';
+    
+    if (tag === 'CRIPTO') { color = '#f0b90b'; bg = 'rgba(240, 185, 11, 0.12)'; }
+    else if (tag === 'MEME') { color = '#ff7f50'; bg = 'rgba(255, 127, 80, 0.12)'; }
+    else if (tag === 'MUNDIAL') { color = '#ff4757'; bg = 'rgba(255, 71, 87, 0.12)'; }
+    else if (tag === 'POLÍTICA') { color = '#a03ffc'; bg = 'rgba(160, 63, 252, 0.12)'; }
+    else if (tag === 'MACRO') { color = '#ff9f43'; bg = 'rgba(255, 159, 67, 0.12)'; }
+    else if (tag === 'TECNOLOGÍA') { color = '#00e6ff'; bg = 'rgba(0, 230, 255, 0.12)'; }
+    else if (tag === 'INFLACIÓN') { color = '#e069c3'; bg = 'rgba(224, 105, 195, 0.12)'; }
+    else if (tag === 'TASAS') { color = '#02c076'; bg = 'rgba(2, 192, 118, 0.12)'; }
+    else if (tag === 'EMPLEO') { color = '#3498db'; bg = 'rgba(52, 152, 219, 0.12)'; }
+    else if (tag === 'CLIMA') { color = '#2ecc71'; bg = 'rgba(46, 204, 113, 0.12)'; }
+    
+    return { color, bg };
+}
 
 function generateSparklinePath(prices, width = 50, height = 20) {
     if (!prices || prices.length < 2) return "";
@@ -48,37 +73,87 @@ function generateSparklinePath(prices, width = 50, height = 20) {
 }
 
 function renderSidebarAssetCards(feederType, activeSymbol) {
+    // Guardar para uso en filtros
+    lastKnownFeederType = feederType;
+    lastKnownActiveSymbol = activeSymbol;
+
     const container = document.getElementById("sidebar-asset-cards-container");
     if (!container) return;
     
     container.innerHTML = "";
     
     const platform = platformAssets[feederType] ? feederType : "alpaca";
-    const assets = platformAssets[platform];
+    let assets = platformAssets[platform];
+    
+    // Actualizar datalist para autocompletado del input manual
+    const datalist = document.getElementById("custom-symbol-suggestions");
+    if (datalist) {
+        datalist.innerHTML = "";
+        const allAssets = platformAssets[platform] || [];
+        allAssets.forEach(asset => {
+            const opt = document.createElement("option");
+            opt.value = asset.symbol;
+            opt.textContent = `${asset.name} (${asset.tag})`;
+            datalist.appendChild(opt);
+        });
+    }
+    
+    // Aplicar filtro si el input de búsqueda tiene valor
+    const query = searchAssetInput ? searchAssetInput.value.toLowerCase().trim() : "";
+    if (query) {
+        assets = assets.filter(a => 
+            a.name.toLowerCase().includes(query) || 
+            a.desc.toLowerCase().includes(query) || 
+            a.symbol.toLowerCase().includes(query)
+        );
+    }
     
     assets.forEach(asset => {
         const isActive = asset.symbol === activeSymbol;
-        const isUp = asset.change >= 0;
+        
+        let displayPrice = asset.price;
+        let displayChange = asset.change;
+        let displayPrices = asset.prices;
+        
+        if (isActive && lastPrice > 0) {
+            displayPrice = lastPrice;
+            if (chartData.length > 1) {
+                const first = chartData[0];
+                const last = chartData[chartData.length - 1];
+                displayChange = first > 0 ? ((last - first) / first) * 100 : 0;
+                displayPrices = chartData.slice(-8);
+                if (displayPrices.length < 2) {
+                    displayPrices = [first, last];
+                }
+            }
+        }
+        
+        const isUp = displayChange >= 0;
         const changeSign = isUp ? "+" : "";
         const changeClass = isUp ? "up" : "down";
         const sparklineClass = isUp ? "up" : "down";
         
-        const path = generateSparklinePath(asset.prices, 50, 20);
+        const path = generateSparklinePath(displayPrices, 50, 20);
+        
+        const tagStyle = getTagStyle(asset.tag);
         
         const card = document.createElement("div");
         card.className = `asset-card ${isActive ? 'active' : ''}`;
         card.innerHTML = `
             <div class="asset-info">
                 <span class="asset-title" title="${asset.name}">${asset.name}</span>
-                <span class="asset-desc" title="${asset.desc}">${asset.desc}</span>
+                <span class="asset-desc" title="${asset.desc}">
+                    <span style="background: ${tagStyle.bg}; color: ${tagStyle.color}; padding: 1px 4px; border-radius: 3px; font-size: 8px; font-weight: 700; margin-right: 4px; text-transform: uppercase;">${asset.tag}</span>
+                    ${asset.desc}
+                </span>
             </div>
             <div class="asset-chart-val">
                 <svg class="asset-sparkline ${sparklineClass}" viewBox="0 0 50 20">
                     <path d="${path}"></path>
                 </svg>
                 <div class="asset-price-col">
-                    <span class="asset-card-price">$${asset.price < 2 ? asset.price.toFixed(2) : asset.price.toLocaleString(undefined, {minimumFractionDigits:2})}</span>
-                    <span class="asset-card-change ${changeClass}">${changeSign}${asset.change.toFixed(2)}%</span>
+                    <span class="asset-card-price">${displayPrice < 2 ? '$' + displayPrice.toFixed(4) : '$' + displayPrice.toLocaleString(undefined, {minimumFractionDigits:2})}</span>
+                    <span class="asset-card-change ${changeClass}">${changeSign}${displayChange.toFixed(2)}%</span>
                 </div>
             </div>
         `;
@@ -89,32 +164,6 @@ function renderSidebarAssetCards(feederType, activeSymbol) {
         
         container.appendChild(card);
     });
-    
-    const manualCard = document.createElement("div");
-    const isManualActive = !assets.some(a => a.symbol === activeSymbol);
-    manualCard.className = `asset-card ${isManualActive ? 'active' : ''}`;
-    manualCard.style.borderStyle = "dashed";
-    manualCard.style.borderColor = "#474f59";
-    manualCard.style.marginTop = "12px";
-    manualCard.innerHTML = `
-        <div class="asset-info" style="max-width: 100%;">
-            <span class="asset-title" style="color: var(--text-secondary);">-- Entrada Manual --</span>
-            <span class="asset-desc">Símbolo o Token ID personalizado</span>
-        </div>
-        <div style="font-size: 1.1rem; color: var(--text-secondary); margin-left: 8px;">✎</div>
-    `;
-    
-    manualCard.addEventListener("click", () => {
-        if (customInputContainer) {
-            customInputContainer.style.display = customInputContainer.style.display === "flex" ? "none" : "flex";
-        }
-    });
-    
-    container.appendChild(manualCard);
-    
-    if (isManualActive && customInputContainer) {
-        customInputContainer.style.display = "flex";
-    }
 }
 
 // Variables globales para Chart.js
@@ -131,6 +180,7 @@ let lastPrice = 0.0;
 let quoteAsset = "USD";
 let baseAsset = "BTC";
 let isForexOrEvent = false;
+let lastActiveSymbol = "";
 
 function getDisplayBase(asset) {
     if (/^\d+$/.test(asset) && asset.length > 12) {
@@ -172,6 +222,9 @@ const chartSourceName = document.getElementById("chart-source-name");
 const viewEma9 = document.getElementById("view-ema9");
 const viewEma21 = document.getElementById("view-ema21");
 const viewRsi = document.getElementById("view-rsi");
+const viewProbP = document.getElementById("view-prob-p");
+const viewEdge = document.getElementById("view-edge");
+const viewKelly = document.getElementById("view-kelly");
 
 const strategyPosition = document.getElementById("strategy-position");
 const balanceQuote = document.getElementById("balance-quote");
@@ -219,9 +272,13 @@ const botCardWorkerName = document.getElementById("bot-card-worker-name");
 const botBadgeStatus = document.getElementById("bot-badge-status");
 const paramSymbol = document.getElementById("param-symbol");
 const paramSource = document.getElementById("param-source");
-const customInputContainer = document.getElementById("custom-input-container");
-const inputCustomSymbol = document.getElementById("input-custom-symbol");
-const btnSubmitCustomSymbol = document.getElementById("btn-submit-custom-symbol");
+const searchAssetInput = document.getElementById("search-asset-input");
+const eventProbabilityContainer = document.getElementById("event-probability-container");
+const probabilityYesBar = document.getElementById("probability-yes-bar");
+const probabilityValueText = document.getElementById("probability-value-text");
+
+let lastKnownFeederType = "alpaca";
+let lastKnownActiveSymbol = "";
 
 
 // Lables de base y quote asset
@@ -230,13 +287,30 @@ const baseAssetLabels = document.querySelectorAll(".base-asset-lbl");
 
 
 // --- INICIALIZACIÓN DE LA GRÁFICA ---
-function initChart() {
+let currentFeederTypeForChart = null;
+
+function initChart(feederType = "alpaca") {
     const ctx = document.getElementById('priceChart').getContext('2d');
+    currentFeederTypeForChart = feederType;
     
-    // Crear gradiente azul de fondo
+    // Determinar esquema de color según la plataforma
+    let colorTheme = '#00e6ff'; // Alpaca Blue
+    let gradientStart = 'rgba(0, 230, 255, 0.15)';
+    
+    if (feederType === 'binance') {
+        colorTheme = '#f0b90b'; // Binance Yellow
+        gradientStart = 'rgba(240, 185, 11, 0.15)';
+    } else if (feederType === 'polymarket') {
+        colorTheme = '#a03ffc'; // Polymarket Purple
+        gradientStart = 'rgba(160, 63, 252, 0.15)';
+    } else if (feederType === 'kalshi') {
+        colorTheme = '#02c076'; // Kalshi Green
+        gradientStart = 'rgba(2, 192, 118, 0.15)';
+    }
+    
     const gradient = ctx.createLinearGradient(0, 0, 0, 400);
-    gradient.addColorStop(0, 'rgba(0, 230, 255, 0.15)');
-    gradient.addColorStop(1, 'rgba(0, 230, 255, 0.0)');
+    gradient.addColorStop(0, gradientStart);
+    gradient.addColorStop(1, 'rgba(0, 0, 0, 0.0)');
 
     if (priceChart) {
         priceChart.destroy();
@@ -249,12 +323,12 @@ function initChart() {
             datasets: [{
                 label: 'Precio',
                 data: chartData,
-                borderColor: '#00e6ff',
+                borderColor: colorTheme,
                 borderWidth: 2,
                 pointRadius: 0, // Ocultar puntos para estilo limpio
                 pointHoverRadius: 5,
                 pointHoverBackgroundColor: '#eaecef',
-                pointHoverBorderColor: '#00e6ff',
+                pointHoverBorderColor: colorTheme,
                 pointHoverBorderWidth: 2,
                 fill: true,
                 backgroundColor: gradient,
@@ -279,7 +353,7 @@ function initChart() {
                     bodyFont: { family: 'JetBrains Mono', size: 12 },
                     callbacks: {
                         label: function(context) {
-                            return ` Precio: $${context.raw.toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+                            return ` Precio: $${context.raw.toLocaleString(undefined, { minimumFractionDigits: context.raw < 2 ? 4 : 2 })}`;
                         }
                     }
                 }
@@ -289,7 +363,12 @@ function initChart() {
                     grid: { color: 'rgba(36, 44, 53, 0.4)' },
                     ticks: { color: '#848e9c', font: { family: 'Inter', size: 10 } }
                 },
-                y: {
+                y: (feederType === 'polymarket' || feederType === 'kalshi') ? {
+                    min: 0.0,
+                    max: 1.0,
+                    grid: { color: 'rgba(36, 44, 53, 0.4)' },
+                    ticks: { color: '#848e9c', font: { family: 'JetBrains Mono', size: 10 } }
+                } : {
                     grid: { color: 'rgba(36, 44, 53, 0.4)' },
                     ticks: { color: '#848e9c', font: { family: 'JetBrains Mono', size: 10 } }
                 }
@@ -314,8 +393,43 @@ function updateChart(price) {
             chartData.shift();
         }
         
+        // Si el dataset de Precio Entrada existe, mantener su tamaño sincronizado
+        if (priceChart && priceChart.data.datasets.length > 1) {
+            const entryDataset = priceChart.data.datasets[1];
+            if (entryDataset.data.length > 0) {
+                const entryVal = entryDataset.data[0];
+                entryDataset.data = Array(chartData.length).fill(entryVal);
+            }
+        }
+        
         if (priceChart) {
             priceChart.update();
+        }
+    }
+}
+
+function updateAvgEntryPriceLine(avgEntryPrice) {
+    if (!priceChart) return;
+    
+    if (avgEntryPrice > 0 && chartData.length > 0) {
+        const lineData = Array(chartData.length).fill(avgEntryPrice);
+        
+        if (priceChart.data.datasets.length > 1) {
+            priceChart.data.datasets[1].data = lineData;
+        } else {
+            priceChart.data.datasets.push({
+                label: 'Precio Entrada',
+                data: lineData,
+                borderColor: '#f0b90b', // Dorado
+                borderWidth: 1.5,
+                borderDash: [5, 5], // Dotted
+                pointRadius: 0,
+                fill: false
+            });
+        }
+    } else {
+        if (priceChart.data.datasets.length > 1) {
+            priceChart.data.datasets.pop();
         }
     }
 }
@@ -538,15 +652,6 @@ function renderWorkerTabs() {
 
 function switchWorker(workerId) {
     activeWorkerId = workerId;
-    chartLabels = [];
-    chartData = [];
-    
-    if (priceChart) {
-        priceChart.data.labels = [];
-        priceChart.data.datasets[0].data = [];
-        priceChart.update();
-    }
-    
     renderWorkerTabs();
     
     // Limpiar inputs
@@ -575,6 +680,11 @@ async function fetchStatus() {
         // Renderizar las tarjetas visuales de activos del panel lateral
         renderSidebarAssetCards(data.feeder_type, data.symbol);
 
+        // Re-inicializar gráfica si cambia la plataforma
+        if (data.feeder_type !== currentFeederTypeForChart) {
+            initChart(data.feeder_type);
+        }
+
         
         // Actualizar etiquetas de la interfaz
         quoteAssetLabels.forEach(lbl => lbl.textContent = quoteAsset);
@@ -588,6 +698,20 @@ async function fetchStatus() {
         
         // Ticker Header
         lastPrice = data.last_price;
+        
+        // Actualizar barra de probabilidad de evento si corresponde
+        if (eventProbabilityContainer && probabilityYesBar && probabilityValueText) {
+            const isEvent = data.feeder_type === 'polymarket' || data.feeder_type === 'kalshi';
+            if (isEvent) {
+                eventProbabilityContainer.style.display = "flex";
+                const probPct = Math.min(99, Math.max(1, Math.round(lastPrice * 100)));
+                probabilityYesBar.style.width = `${probPct}%`;
+                probabilityValueText.textContent = `${probPct}% SI`;
+            } else {
+                eventProbabilityContainer.style.display = "none";
+            }
+        }
+
         const decimals = isForexOrEvent ? 4 : 2;
         headerPrice.textContent = `$${lastPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: decimals })}`;
         chartSymbolName.textContent = getDisplayBase(data.symbol);
@@ -600,8 +724,23 @@ async function fetchStatus() {
         headerLow.textContent = `$${(lastPrice * 0.98).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: decimals })}`;
         headerVolume.textContent = `428.14 ${getDisplayBase(baseAsset)}`;
         
-        // Alimentar gráfica
-        updateChart(lastPrice);
+        // Alimentar gráfica desde el histórico del backend si cambiamos de activo o no hay datos
+        if (data.price_history && (data.symbol !== lastActiveSymbol || chartData.length === 0)) {
+            chartLabels = data.price_history.map(item => {
+                const parts = item.timestamp.split(" ");
+                return parts.length > 1 ? parts[1] : item.timestamp;
+            });
+            chartData = data.price_history.map(item => item.price);
+            if (priceChart) {
+                priceChart.data.labels = chartLabels;
+                priceChart.data.datasets[0].data = chartData;
+                priceChart.update();
+            }
+        } else {
+            // Alimentar gráfica con tick individual en tiempo real
+            updateChart(lastPrice);
+        }
+        lastActiveSymbol = data.symbol;
         
         // Sincronizar balances del portafolio
         availableQuote = data.portfolio[quoteAsset] || 0.0;
@@ -628,6 +767,10 @@ async function fetchStatus() {
         
         // Calcular PnL No Realizado
         const avgEntryPrice = data.avg_entry_price || 0.0;
+        updateAvgEntryPriceLine(avgEntryPrice);
+        if (priceChart) {
+            priceChart.update();
+        }
         if (availableBase > 0.000001 && avgEntryPrice > 0) {
             const pnlUSD = (lastPrice - avgEntryPrice) * availableBase;
             const pnlPercent = ((lastPrice - avgEntryPrice) / avgEntryPrice) * 100;
@@ -662,13 +805,60 @@ async function fetchStatus() {
         const ema21Val = ind.ema_long > 0 ? ind.ema_long.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: decimals }) : "-";
         const rsiVal = ind.rsi > 0 ? ind.rsi.toFixed(2) : "-";
         
-        viewEma9.textContent = ema9Val;
-        viewEma21.textContent = ema21Val;
-        viewRsi.textContent = rsiVal;
+        if (viewEma9) viewEma9.textContent = ema9Val;
+        if (viewEma21) viewEma21.textContent = ema21Val;
+        if (viewRsi) viewRsi.textContent = rsiVal;
         
-        detailEma9.textContent = ema9Val;
-        detailEma21.textContent = ema21Val;
-        detailRsiVal.textContent = rsiVal;
+        // Nuevos Indicadores Cuantitativos (Compatibles con Arbitraje Lead-Lag)
+        if (viewProbP) {
+            let pVal = "-";
+            if (data.teorical_probability !== undefined) {
+                if (data.teorical_probability > 1.5) {
+                    pVal = `$${data.teorical_probability.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                } else {
+                    pVal = `${(data.teorical_probability * 100).toFixed(1)}%`;
+                }
+            }
+            viewProbP.textContent = pVal;
+        }
+        if (viewEdge) {
+            let edgeVal = "-";
+            if (data.edge !== undefined) {
+                if (Math.abs(data.edge) < 0.10) {
+                    edgeVal = `${data.edge > 0 ? '+' : ''}${(data.edge * 100).toFixed(3)}%`;
+                } else {
+                    edgeVal = `${data.edge > 0 ? '+' : ''}${data.edge.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
+                }
+            }
+            viewEdge.textContent = edgeVal;
+            if (data.edge > 0) {
+                viewEdge.style.color = "#02c076"; // Verde
+            } else if (data.edge < 0) {
+                viewEdge.style.color = "#f6465d"; // Rojo
+            } else {
+                viewEdge.style.color = "#00e6ff"; // Cyan
+            }
+        }
+        if (viewKelly) {
+            let kellyVal = "-";
+            if (data.kelly_recommendation !== undefined) {
+                if (data.kelly_recommendation < 0.05) {
+                    kellyVal = `${(data.kelly_recommendation * 100).toFixed(3)}%`;
+                } else {
+                    kellyVal = `${(data.kelly_recommendation * 100).toFixed(1)}%`;
+                }
+            }
+            viewKelly.textContent = kellyVal;
+            if (Math.abs(data.kelly_recommendation) > 0.0005) {
+                viewKelly.style.color = "#f0b90b"; // Dorado
+            } else {
+                viewKelly.style.color = "#848e9c";
+            }
+        }
+        
+        if (detailEma9) detailEma9.textContent = ema9Val;
+        if (detailEma21) detailEma21.textContent = ema21Val;
+        if (detailRsiVal) detailRsiVal.textContent = rsiVal;
         
         if (ind.rsi > 0) {
             rsiPointer.style.left = `${ind.rsi}%`;
@@ -1216,29 +1406,12 @@ async function changeAssetSymbolTo(feederType, symbol) {
     }
 }
 
-// Evento para enviar símbolo manual ingresado por el usuario
-if (btnSubmitCustomSymbol) {
-    btnSubmitCustomSymbol.addEventListener("click", () => {
-        const val = inputCustomSymbol.value.trim();
-        if (!val) {
-            alert("Por favor ingresa un símbolo o Token ID válido.");
-            return;
-        }
-        
-        // Determinar automáticamente el feeder según el formato de la entrada manual
-        let targetFeeder = "alpaca";
-        if (/^\d+$/.test(val) && val.length > 12) {
-            targetFeeder = "polymarket";
-        } else if (val.includes("-")) {
-            targetFeeder = "kalshi";
-        } else {
-            // Seguir la plataforma del worker activo
-            if (activeWorkerId === "worker_2") targetFeeder = "kalshi";
-            else if (activeWorkerId === "worker_3") targetFeeder = "polymarket";
-            else targetFeeder = "binance";
-        }
-        
-        changeAssetSymbolTo(targetFeeder, val);
+
+
+// Evento al escribir en la barra de búsqueda de instrumentos
+if (searchAssetInput) {
+    searchAssetInput.addEventListener("input", () => {
+        renderSidebarAssetCards(lastKnownFeederType, lastKnownActiveSymbol);
     });
 }
 
