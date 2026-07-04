@@ -71,12 +71,14 @@ class DatabaseManager:
                 timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 asset VARCHAR(100) NOT NULL,
                 free_balance NUMERIC(18, 8) NOT NULL,
-                locked_balance NUMERIC(18, 8) NOT NULL DEFAULT 0.0
+                locked_balance NUMERIC(18, 8) NOT NULL DEFAULT 0.0,
+                worker_id VARCHAR(50) NOT NULL DEFAULT 'worker_1'
             );
             """,
             # Migraciones para asegurar la longitud de las columnas
             "ALTER TABLE trades ALTER COLUMN symbol TYPE VARCHAR(100);",
             "ALTER TABLE portfolio_state ALTER COLUMN asset TYPE VARCHAR(100);",
+            "ALTER TABLE portfolio_state ADD COLUMN IF NOT EXISTS worker_id VARCHAR(50) NOT NULL DEFAULT 'worker_1';",
         ]
 
         conn = None
@@ -307,12 +309,16 @@ class DatabaseManager:
                 conn.close()
 
     def update_portfolio(
-        self, asset: str, free_balance: float, locked_balance: float = 0.0
+        self,
+        asset: str,
+        free_balance: float,
+        locked_balance: float = 0.0,
+        worker_id: str = "worker_1",
     ):
         """Inserta o actualiza el balance de un activo en el portafolio."""
         query = """
-        INSERT INTO portfolio_state (timestamp, asset, free_balance, locked_balance)
-        VALUES (%s, %s, %s, %s);
+        INSERT INTO portfolio_state (timestamp, asset, free_balance, locked_balance, worker_id)
+        VALUES (%s, %s, %s, %s, %s);
         """
         now = datetime.now()
         conn = None
@@ -320,32 +326,40 @@ class DatabaseManager:
             conn = self._get_connection()
             with conn.cursor() as cursor:
                 cursor.execute(
-                    query, (now, asset.upper(), free_balance, locked_balance)
+                    query, (now, asset.upper(), free_balance, locked_balance, worker_id)
                 )
                 conn.commit()
         except Exception as e:
-            self.log("ERROR", f"Error al actualizar portafolio para '{asset}': {e}")
+            self.log(
+                "ERROR",
+                f"Error al actualizar portafolio para '{asset}' en {worker_id}: {e}",
+            )
             if conn:
                 conn.rollback()
         finally:
             if conn:
                 conn.close()
 
-    def get_portfolio(self):
-        """Obtiene el estado más reciente de cada activo en el portafolio."""
+    def get_portfolio(self, worker_id: str = "worker_1"):
+        """Obtiene el estado más reciente de cada activo en el portafolio para un worker específico."""
         query = """
         SELECT DISTINCT ON (asset) asset, free_balance, locked_balance, timestamp
         FROM portfolio_state
+        WHERE worker_id = %s
         ORDER BY asset, timestamp DESC;
         """
         conn = None
         try:
             conn = self._get_connection()
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute(query)
+                cursor.execute(query, (worker_id,))
                 return cursor.fetchall()
         except Exception as e:
-            self.log("ERROR", f"Error al recuperar portafolio: {e}")
+            self.log(
+                "ERROR",
+                f"Error al recuperar portafolio para {worker_id}: {e}",
+                worker_id,
+            )
             return []
         finally:
             if conn:

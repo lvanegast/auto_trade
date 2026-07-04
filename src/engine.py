@@ -139,6 +139,13 @@ class TradingWorker:
         mid = len(symbol) // 2
         return symbol[:mid], symbol[mid:]
 
+    def _update_db_portfolio(
+        self, asset: str, free_balance: float, locked_balance: float = 0.0
+    ):
+        self.db.update_portfolio(
+            asset, free_balance, locked_balance, worker_id=self.worker_id
+        )
+
     def _init_portfolio(self):
         # Si usamos cuentas reales/demo conectadas con APIs, la sincronización se hace al iniciar (start)
         if self.alpaca_client and self.feeder_type == "alpaca":
@@ -152,18 +159,18 @@ class TradingWorker:
         ):
             return
 
-        portfolio = self.db.get_portfolio()
+        portfolio = self.db.get_portfolio(self.worker_id)
         assets = [item["asset"] for item in portfolio]
 
         if self.quote_asset not in assets:
-            self.db.update_portfolio(self.quote_asset, 10000.0)
+            self._update_db_portfolio(self.quote_asset, 10000.0)
             self.db.log(
                 "INFO",
                 f"Portafolio inicializado con 10,000 {self.quote_asset} para simulación.",
                 self.worker_id,
             )
         if self.base_asset not in assets:
-            self.db.update_portfolio(self.base_asset, 0.0)
+            self._update_db_portfolio(self.base_asset, 0.0)
 
     async def start(self):
         if self.is_running:
@@ -268,10 +275,10 @@ class TradingWorker:
     async def _execute_order(self, signal: SignalEvent):
         self.db.log("INFO", f"Procesando señal: {signal}", self.worker_id)
 
-        # Cargar balances actuales de la base de datos
+        # Cargar balances actuales de la base de datos para este worker
         balances = {
             item["asset"]: float(item["free_balance"])
-            for item in self.db.get_portfolio()
+            for item in self.db.get_portfolio(self.worker_id)
         }
         quote_balance = balances.get(self.quote_asset, 0.0)
         base_balance = balances.get(self.base_asset, 0.0)
@@ -531,8 +538,8 @@ class TradingWorker:
                         status="COMPLETED",
                         worker_id=self.worker_id,
                     )
-                    self.db.update_portfolio(self.quote_asset, new_quote)
-                    self.db.update_portfolio(self.base_asset, new_base)
+                    self._update_db_portfolio(self.quote_asset, new_quote)
+                    self._update_db_portfolio(self.base_asset, new_base)
                     self.db.log(
                         "INFO",
                         f"Compra de eventos simulada (Kalshi). Nuevo saldo: {new_quote:.2f} {self.quote_asset}, {new_base:.2f} contratos YES.",
@@ -558,8 +565,8 @@ class TradingWorker:
                         status="COMPLETED",
                         worker_id=self.worker_id,
                     )
-                    self.db.update_portfolio(self.quote_asset, new_quote)
-                    self.db.update_portfolio(self.base_asset, new_base)
+                    self._update_db_portfolio(self.quote_asset, new_quote)
+                    self._update_db_portfolio(self.base_asset, new_base)
                     self.db.log(
                         "INFO",
                         f"Venta de contratos simulada (Kalshi). Nuevo saldo: {new_quote:.2f} {self.quote_asset}, {new_base:.2f} contratos.",
@@ -595,8 +602,8 @@ class TradingWorker:
                 status="COMPLETED",
                 worker_id=self.worker_id,
             )
-            self.db.update_portfolio(self.quote_asset, new_quote)
-            self.db.update_portfolio(self.base_asset, new_base)
+            self._update_db_portfolio(self.quote_asset, new_quote)
+            self._update_db_portfolio(self.base_asset, new_base)
             self.db.log(
                 "INFO",
                 f"Compra simulada completada. Nuevo saldo: {new_quote:.2f} {self.quote_asset}, {new_base:.6f} {self.base_asset}",
@@ -628,8 +635,8 @@ class TradingWorker:
                 status="COMPLETED",
                 worker_id=self.worker_id,
             )
-            self.db.update_portfolio(self.quote_asset, new_quote)
-            self.db.update_portfolio(self.base_asset, new_base)
+            self._update_db_portfolio(self.quote_asset, new_quote)
+            self._update_db_portfolio(self.base_asset, new_base)
             self.db.log(
                 "INFO",
                 f"Venta simulada completada. Nuevo saldo: {new_quote:.2f} {self.quote_asset}, {new_base:.6f} {self.base_asset}",
@@ -646,7 +653,7 @@ class TradingWorker:
             )
             account = await asyncio.to_thread(self.alpaca_client.get_account)
             cash = float(account.cash)
-            self.db.update_portfolio(self.quote_asset, cash)
+            self._update_db_portfolio(self.quote_asset, cash)
 
             positions = await asyncio.to_thread(self.alpaca_client.get_all_positions)
             base_qty = 0.0
@@ -656,7 +663,7 @@ class TradingWorker:
                 if position.symbol.upper() == alpaca_target_symbol:
                     base_qty = float(position.qty)
                     break
-            self.db.update_portfolio(self.base_asset, base_qty)
+            self._update_db_portfolio(self.base_asset, base_qty)
             self.db.log(
                 "INFO",
                 f"Sincronización de Alpaca exitosa. {self.quote_asset}: {cash:.2f}, {self.base_asset}: {base_qty:.6f}",
@@ -715,7 +722,7 @@ class TradingWorker:
                 data = response.json()
                 account = data.get("account", {})
                 balance = float(account.get("balance", 0.0))
-                self.db.update_portfolio(self.quote_asset, balance)
+                self._update_db_portfolio(self.quote_asset, balance)
 
                 positions = account.get("positions", [])
                 base_qty = 0.0
@@ -725,7 +732,7 @@ class TradingWorker:
                         short_units = float(pos.get("short", {}).get("units", 0.0))
                         base_qty = long_units - short_units
                         break
-                self.db.update_portfolio(self.base_asset, base_qty)
+                self._update_db_portfolio(self.base_asset, base_qty)
                 self.db.log(
                     "INFO",
                     f"Sincronización de OANDA exitosa. {self.quote_asset}: {balance:.2f}, {self.base_asset}: {base_qty:.2f}",
@@ -781,7 +788,7 @@ class TradingWorker:
                 data = response.json()
                 balance_cents = float(data.get("balance", 0.0))
                 balance = balance_cents / 100.0
-                self.db.update_portfolio(self.quote_asset, balance)
+                self._update_db_portfolio(self.quote_asset, balance)
                 self.db.log(
                     "INFO",
                     f"Sincronización de Kalshi exitosa. USD: {balance:.2f}",

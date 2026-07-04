@@ -134,8 +134,22 @@
                             <span>RSI(14): <span id="view-rsi" class="text-cyan">-</span></span>
                         </div>
                     </div>
-                    <div class="chart-wrapper">
+                    <div class="chart-wrapper" style="position: relative; height: 350px;">
                         <canvas id="priceChart"></canvas>
+                        <!-- Radial Probability Gauge for Prediction Markets -->
+                        <div id="radial-gauge-container" style="display: none; position: absolute; inset: 0; flex-direction: column; align-items: center; justify-content: center; background: #161a1e; z-index: 10; border-radius: 8px;">
+                            <div class="radial-gauge-wrapper" style="position: relative; width: 220px; height: 220px; margin-bottom: 10px;">
+                                <svg width="220" height="220" viewBox="0 0 220 220" style="transform: rotate(-90deg);">
+                                    <circle cx="110" cy="110" r="90" fill="none" stroke="#242c35" stroke-width="10"></circle>
+                                    <circle id="gauge-circle-fill" cx="110" cy="110" r="90" fill="none" stroke="#02c076" stroke-width="12" stroke-linecap="round" stroke-dasharray="565.48" stroke-dashoffset="565.48" style="transition: stroke-dashoffset 0.4s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.3s ease;"></circle>
+                                </svg>
+                                <div style="position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;">
+                                    <span id="gauge-percent-text" style="font-size: 34px; font-weight: 700; color: #fff; font-family: 'JetBrains Mono', monospace;">50.0%</span>
+                                    <span id="gauge-label-text" style="font-size: 11px; font-weight: 600; color: #848e9c; margin-top: 2px; letter-spacing: 1px; text-transform: uppercase;">SI PROBABLE</span>
+                                </div>
+                            </div>
+                            <span style="font-size: 12px; color: #848e9c; font-weight: 500;">Consenso Bayesiano del Mercado</span>
+                        </div>
                     </div>
                 </div>
 

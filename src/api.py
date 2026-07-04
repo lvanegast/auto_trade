@@ -87,7 +87,7 @@ async def get_status(worker_id: str = "worker_1"):
 
         worker = engine.workers[worker_id]
         is_running = worker.is_running
-        portfolio = db.get_portfolio()
+        portfolio = db.get_portfolio(worker_id=worker_id)
 
         # Formatear balance
         balances = {item["asset"]: float(item["free_balance"]) for item in portfolio}

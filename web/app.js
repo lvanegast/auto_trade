@@ -226,6 +226,12 @@ const viewProbP = document.getElementById("view-prob-p");
 const viewEdge = document.getElementById("view-edge");
 const viewKelly = document.getElementById("view-kelly");
 
+const radialGaugeContainer = document.getElementById("radial-gauge-container");
+const gaugeCircleFill = document.getElementById("gauge-circle-fill");
+const gaugePercentText = document.getElementById("gauge-percent-text");
+const gaugeLabelText = document.getElementById("gauge-label-text");
+const priceChartCanvas = document.getElementById("priceChart");
+
 const strategyPosition = document.getElementById("strategy-position");
 const balanceQuote = document.getElementById("balance-quote");
 const balanceBase = document.getElementById("balance-base");
@@ -724,6 +730,42 @@ async function fetchStatus() {
         headerLow.textContent = `$${(lastPrice * 0.98).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: decimals })}`;
         headerVolume.textContent = `428.14 ${getDisplayBase(baseAsset)}`;
         
+        // Trazado dinámico de visualización: Gráfica para Crypto/Forex, Dial Radial para Predicciones
+        const isPredictionMarket = data.feeder_type === "kalshi" || data.feeder_type === "polymarket";
+        if (isPredictionMarket) {
+            if (radialGaugeContainer) radialGaugeContainer.style.display = "flex";
+            if (priceChartCanvas) priceChartCanvas.style.display = "none";
+            
+            let prob = data.teorical_probability !== undefined ? data.teorical_probability : (lastPrice < 1.5 ? lastPrice : 0.50);
+            prob = Math.max(0.01, Math.min(0.99, prob));
+            const probPct = prob * 100;
+            
+            if (gaugePercentText) gaugePercentText.textContent = `${probPct.toFixed(1)}%`;
+            if (gaugeCircleFill) {
+                const radius = 90;
+                const circumference = 2 * Math.PI * radius;
+                const offset = circumference - (probPct / 100) * circumference;
+                gaugeCircleFill.style.strokeDashoffset = offset;
+                
+                if (probPct >= 50) {
+                    gaugeCircleFill.setAttribute("stroke", "#02c076");
+                    if (gaugeLabelText) {
+                        gaugeLabelText.textContent = "SI PROBABLE";
+                        gaugeLabelText.style.color = "#02c076";
+                    }
+                } else {
+                    gaugeCircleFill.setAttribute("stroke", "#f6465d");
+                    if (gaugeLabelText) {
+                        gaugeLabelText.textContent = "NO PROBABLE";
+                        gaugeLabelText.style.color = "#f6465d";
+                    }
+                }
+            }
+        } else {
+            if (radialGaugeContainer) radialGaugeContainer.style.display = "none";
+            if (priceChartCanvas) priceChartCanvas.style.display = "block";
+        }
+
         // Alimentar gráfica desde el histórico del backend si cambiamos de activo o no hay datos
         if (data.price_history && (data.symbol !== lastActiveSymbol || chartData.length === 0)) {
             chartLabels = data.price_history.map(item => {
@@ -737,8 +779,10 @@ async function fetchStatus() {
                 priceChart.update();
             }
         } else {
-            // Alimentar gráfica con tick individual en tiempo real
-            updateChart(lastPrice);
+            // Alimentar gráfica con tick individual en tiempo real (solo si no es mercado de predicción)
+            if (!isPredictionMarket) {
+                updateChart(lastPrice);
+            }
         }
         lastActiveSymbol = data.symbol;
         
