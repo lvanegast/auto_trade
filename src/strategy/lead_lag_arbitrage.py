@@ -78,7 +78,11 @@ class LeadLagArbitrageStrategy(BaseStrategy):
             return BinanceTracker.latest_btc_price
         elif "ETH" in self.symbol:
             return BinanceTracker.latest_eth_price
-        return BinanceTracker.latest_btc_price
+        
+        # Para mercados de predicción, la probabilidad es el precio del contrato (0.0 - 1.0)
+        if len(self.prices_df) > 0:
+            return float(self.prices_df.iloc[-1]["price"])
+        return 0.50
 
     @property
     def edge(self) -> float:

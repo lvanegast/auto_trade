@@ -96,6 +96,18 @@
                 </div>
 
                 <div class="panel-content hidden" id="market-trades-container">
+                    <!-- Buy/Sell Order Flow Pressure Thermometer -->
+                    <div class="buy-sell-pressure-container" style="padding: 10px; background: #161a1e; margin-bottom: 10px; border-radius: 6px; display: flex; flex-direction: column; gap: 6px; border: 1px solid #2b3643;">
+                        <div style="display: flex; justify-content: space-between; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; font-family: 'JetBrains Mono', monospace;">
+                            <span style="color: #02c076;">COMPRAS: <span id="pressure-buy-pct">50%</span></span>
+                            <span style="color: #f6465d;">VENTAS: <span id="pressure-sell-pct">50%</span></span>
+                        </div>
+                        <div style="height: 6px; width: 100%; display: flex; border-radius: 3px; overflow: hidden; background: #242c35;">
+                            <div id="pressure-buy-bar" style="width: 50%; background: #02c076; transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);"></div>
+                            <div id="pressure-sell-bar" style="width: 50%; background: #f6465d; transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);"></div>
+                        </div>
+                    </div>
+                    
                     <div class="ob-grid-header">
                         <span>Hora</span>
                         <span class="text-right">Precio</span>

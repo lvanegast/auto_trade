@@ -181,6 +181,7 @@ let quoteAsset = "USD";
 let baseAsset = "BTC";
 let isForexOrEvent = false;
 let lastActiveSymbol = "";
+let recentTradesList = [];
 
 function getDisplayBase(asset) {
     if (/^\d+$/.test(asset) && asset.length > 12) {
@@ -736,7 +737,7 @@ async function fetchStatus() {
             if (radialGaugeContainer) radialGaugeContainer.style.display = "flex";
             if (priceChartCanvas) priceChartCanvas.style.display = "none";
             
-            let prob = data.teorical_probability !== undefined ? data.teorical_probability : (lastPrice < 1.5 ? lastPrice : 0.50);
+            let prob = (data.teorical_probability !== undefined && data.teorical_probability < 1.5) ? data.teorical_probability : (lastPrice < 1.5 ? lastPrice : 0.50);
             prob = Math.max(0.01, Math.min(0.99, prob));
             const probPct = prob * 100;
             
@@ -1301,6 +1302,7 @@ function runLiveTradesSimulation() {
     
     // Lista de trades inicial
     obLiveTrades.innerHTML = "";
+    recentTradesList = [];
     
     simulatedLiveTradesInterval = setInterval(() => {
         if (lastPrice <= 0) return;
@@ -1313,19 +1315,47 @@ function runLiveTradesSimulation() {
         const price = lastPrice * (1 + spreadShift);
         const qty = Math.random() * (isForexOrEvent ? 15000 : 0.4) + (isForexOrEvent ? 500 : 0.01);
         
-        const row = document.createElement("div");
-        row.className = `trade-row ${side === "buy" ? "text-success" : "text-danger"}`;
-        row.innerHTML = `
-            <span class="text-muted">${timeStr}</span>
-            <span class="font-mono">${price.toFixed(isForexOrEvent ? 4 : 2)}</span>
-            <span class="text-right font-mono">${qty.toFixed(isForexOrEvent ? 0 : 4)}</span>
-        `;
+        const newTrade = {
+            time: timeStr,
+            side: side,
+            price: price,
+            qty: qty
+        };
+        recentTradesList.unshift(newTrade);
+        if (recentTradesList.length > 18) {
+            recentTradesList.pop();
+        }
         
-        obLiveTrades.insertBefore(row, obLiveTrades.firstChild);
+        // Renderizar la lista de trades recientes
+        obLiveTrades.innerHTML = recentTradesList.map(t => `
+            <div class="trade-row ${t.side === 'buy' ? 'text-success' : 'text-danger'}">
+                <span class="text-muted">${t.time}</span>
+                <span class="font-mono">${t.price.toFixed(isForexOrEvent ? 4 : 2)}</span>
+                <span class="text-right font-mono">${t.qty.toFixed(isForexOrEvent ? 0 : 4)}</span>
+            </div>
+        `).join("");
         
-        // Limitar a 18 elementos
-        if (obLiveTrades.children.length > 18) {
-            obLiveTrades.removeChild(obLiveTrades.lastChild);
+        // Calcular presión de volumen de compra/venta en tiempo real
+        let totalBuyQty = 0;
+        let totalSellQty = 0;
+        recentTradesList.forEach(t => {
+            if (t.side === "buy") totalBuyQty += t.qty;
+            else totalSellQty += t.qty;
+        });
+        const totalQty = totalBuyQty + totalSellQty;
+        if (totalQty > 0) {
+            const buyPct = (totalBuyQty / totalQty) * 100;
+            const sellPct = 100 - buyPct;
+            
+            const pressureBuyPct = document.getElementById("pressure-buy-pct");
+            const pressureSellPct = document.getElementById("pressure-sell-pct");
+            const pressureBuyBar = document.getElementById("pressure-buy-bar");
+            const pressureSellBar = document.getElementById("pressure-sell-bar");
+            
+            if (pressureBuyPct) pressureBuyPct.textContent = `${buyPct.toFixed(0)}%`;
+            if (pressureSellPct) pressureSellPct.textContent = `${sellPct.toFixed(0)}%`;
+            if (pressureBuyBar) pressureBuyBar.style.width = `${buyPct}%`;
+            if (pressureSellBar) pressureSellBar.style.width = `${sellPct}%`;
         }
     }, 900);
 }
