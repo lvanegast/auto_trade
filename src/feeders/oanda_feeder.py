@@ -27,7 +27,7 @@ class OandaFeeder(BaseFeeder):
             self.stream_host = "stream-fxpractice.oanda.com"
 
     async def start(self):
-        """Inicia el streaming de datos reales de OANDA."""
+        """Inicia el streaming de datos reales de OANDA con reconexión automática."""
         if not self.account_id or not self.token:
             print(
                 "[Feeder OANDA] ERROR: OANDA_ACCOUNT_ID u OANDA_API_TOKEN faltan en el archivo .env"
@@ -42,12 +42,22 @@ class OandaFeeder(BaseFeeder):
             f"[Feeder OANDA] Iniciando streaming real para {self.symbol} en entorno: {self.environment}"
         )
 
-        # Ejecutar la función de streaming bloqueante en un hilo secundario asíncrono
-        try:
-            await asyncio.to_thread(self._stream_prices)
-        except Exception as e:
-            print(f"[Feeder OANDA] Error en streaming: {e}")
-            self.running = False
+        # Loop de reconexión con exponential backoff
+        delay = 1.0
+        while self.running:
+            try:
+                await asyncio.to_thread(self._stream_prices)
+            except Exception as e:
+                print(f"[Feeder OANDA] Error en streaming: {e}")
+
+            if not self.running:
+                break
+
+            print(
+                f"[Feeder OANDA] Reconectando en {delay:.1f}s..."
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2.0, 60.0)  # Exponential backoff: 1s → 2s → 4s → ... → 60s cap
 
     def _stream_prices(self):
         """Establece conexión persistente con OANDA y procesa los ticks."""
@@ -59,8 +69,9 @@ class OandaFeeder(BaseFeeder):
         params = {"instruments": self.symbol}
 
         # Conexión persistente mediante stream=True
+        # timeout=(connect_timeout, read_timeout): detecta conexiones zombie
         with requests.get(
-            url, headers=headers, params=params, stream=True, timeout=30
+            url, headers=headers, params=params, stream=True, timeout=(15, 30)
         ) as response:
             if response.status_code != 200:
                 print(

@@ -56,7 +56,7 @@ class IGFeeder(BaseFeeder):
         self.environment = os.getenv("IG_ENV", "DEMO").upper()  # 'DEMO' o 'LIVE'
 
     async def start(self):
-        """Inicia el cliente IGService y el streaming de Lightstreamer."""
+        """Inicia el cliente IGService y el streaming de Lightstreamer con reconexión."""
         if not self.username or not self.password or not self.api_key:
             print(
                 "[Feeder IG] ERROR: IG_USERNAME, IG_PASSWORD o IG_API_KEY faltan en el archivo .env"
@@ -66,12 +66,22 @@ class IGFeeder(BaseFeeder):
         self.running = True
         print(f"[Feeder IG] Conectando a IG ({self.environment}) para {self.symbol}...")
 
-        try:
-            # Ejecutar conexión y streaming en hilo secundario para evitar bloquear el event loop
-            await asyncio.to_thread(self._connect_and_stream)
-        except Exception as e:
-            print(f"[Feeder IG] Fallo en la conexión/streaming de IG: {e}")
-            self.running = False
+        # Loop de reconexión con exponential backoff
+        delay = 1.0
+        while self.running:
+            try:
+                await asyncio.to_thread(self._connect_and_stream)
+            except Exception as e:
+                print(f"[Feeder IG] Fallo en la conexión/streaming de IG: {e}")
+
+            if not self.running:
+                break
+
+            print(
+                f"[Feeder IG] Reconectando en {delay:.1f}s..."
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2.0, 60.0)
 
     def _connect_and_stream(self):
         """Inicializa los servicios REST y Stream de IG."""
@@ -116,11 +126,10 @@ class IGFeeder(BaseFeeder):
         print(f"[Feeder IG] Suscripción activa para MARKET:{self.symbol}")
 
         # Mantener el hilo vivo mientras la bandera running sea True
-        while self.running:
-            # Pequeña espera para no sobrecargar CPU
-            import time
+        import time
 
-            time.sleep(1)
+        while self.running:
+            time.sleep(0.5)  # Check rápido para shutdown ágil
 
         # Detener suscripciones si se apaga
         print("[Feeder IG] Cerrando conexiones de streaming...")

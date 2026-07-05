@@ -211,7 +211,7 @@ class TradingWorker:
 
         self.is_running = False
         self.db.log("INFO", f"Deteniendo Worker '{self.name}'...", self.worker_id)
-        self.feeder.stop()
+        await self.feeder.stop()
 
         if self.feeder_task:
             self.feeder_task.cancel()

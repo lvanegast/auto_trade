@@ -1,9 +1,8 @@
 import asyncio
-import json
 import logging
-import websockets
 from src.strategy.base import BaseStrategy
 from src.events import PriceUpdateEvent, SignalEvent
+from src.feeders.connection_manager import AsyncWebSocketManager
 
 logger = logging.getLogger("LeadLagStrategy")
 
@@ -11,46 +10,48 @@ logger = logging.getLogger("LeadLagStrategy")
 class BinanceTracker:
     """Clase estática compartida para almacenar cotizaciones en tiempo real de Binance."""
 
-    latest_btc_price = 0.0
-    latest_eth_price = 0.0
-    is_listening = False
+    latest_btc_price: float = 0.0
+    latest_eth_price: float = 0.0
 
 
-async def start_binance_websocket():
-    """Inicia la conexión WebSocket con Binance para cotizaciones rápidas sin autenticación."""
-    if BinanceTracker.is_listening:
-        return
-    BinanceTracker.is_listening = True
+class _BinanceWebSocketManager(AsyncWebSocketManager):
+    """Gestor del WebSocket de Binance para el tracker de precios líder."""
 
-    url = "wss://stream.binance.com:9443/stream?streams=btcusdt@ticker/ethusdt@ticker"
-    logger.info("Iniciando WebSocket de Binance Lead...")
+    async def on_message(self, data: dict):
+        stream = data.get("stream", "")
+        ticker_data = data.get("data", {})
 
-    while BinanceTracker.is_listening:
-        try:
-            async with websockets.connect(
-                url, ping_interval=20, ping_timeout=10
-            ) as websocket:
-                logger.info("Conectado con éxito al WebSocket de Binance Spot.")
-                while BinanceTracker.is_listening:
-                    message = await websocket.recv()
-                    data = json.loads(message)
-                    stream = data.get("stream", "")
-                    ticker_data = data.get("data", {})
+        price = float(ticker_data.get("c", 0.0))
 
-                    price = float(
-                        ticker_data.get("c", 0.0)
-                    )  # "c" es el precio actual de cierre
+        if "btcusdt" in stream:
+            BinanceTracker.latest_btc_price = price
+        elif "ethusdt" in stream:
+            BinanceTracker.latest_eth_price = price
 
-                    if "btcusdt" in stream:
-                        BinanceTracker.latest_btc_price = price
-                    elif "ethusdt" in stream:
-                        BinanceTracker.latest_eth_price = price
 
-        except Exception as e:
-            logger.error(
-                f"Error en WebSocket de Binance: {e}. Reintentando en 3 segundos..."
-            )
-            await asyncio.sleep(3)
+# Singleton del WebSocket de Binance (compartido entre todos los workers)
+_binance_ws_manager: _BinanceWebSocketManager | None = None
+_binance_ws_lock = asyncio.Lock()
+
+
+async def ensure_binance_websocket():
+    """Asegura que el WebSocket de Binance esté corriendo (singleton, thread-safe)."""
+    global _binance_ws_manager
+
+    async with _binance_ws_lock:
+        if _binance_ws_manager is not None:
+            return
+
+        url = "wss://stream.binance.com:9443/stream?streams=btcusdt@ticker/ethusdt@ticker"
+        _binance_ws_manager = _BinanceWebSocketManager(
+            url=url,
+            ping_interval=20,
+            ping_timeout=10,
+            health_check_timeout=30.0,
+            name="BinanceTracker",
+        )
+        await _binance_ws_manager.connect()
+        logger.info("BinanceTracker WebSocket iniciado (singleton).")
 
 
 class LeadLagArbitrageStrategy(BaseStrategy):
@@ -103,9 +104,8 @@ class LeadLagArbitrageStrategy(BaseStrategy):
 
     def on_price_update(self, event: PriceUpdateEvent) -> SignalEvent:
         """Sobrescribe la actualización de precio tick-a-tick para arbitraje de latencia."""
-        # Asegurar que el listener de Binance esté corriendo
-        if not BinanceTracker.is_listening:
-            asyncio.create_task(start_binance_websocket())
+        # Asegurar que el listener de Binance esté corriendo (idempotente gracias al lock)
+        asyncio.create_task(ensure_binance_websocket())
 
         super().on_price_update(event)
 

@@ -73,12 +73,32 @@ class AlpacaFeeder(BaseFeeder):
             self.stream = StockDataStream(self.api_key, self.secret_key)
             self.stream.subscribe_quotes(self._handle_quote, self.symbol)
 
-        # Iniciar el bucle de recepción en segundo plano en la cola del loop existente
-        self.task = asyncio.create_task(self.stream._run_forever())
+        # Iniciar el stream con watchdog: si la tarea muere, se reinicia automáticamente
+        self._start_stream_task()
 
-        # Mantener activo mientras self.running sea True
+        # Mantener activo mientras self.running sea True, con watchdog
         while self.running:
             await asyncio.sleep(1)
+            # Verificar si la tarea del stream murió inesperadamente
+            if self.task and self.task.done():
+                exc = self.task.exception()
+                if exc:
+                    print(
+                        f"[Feeder Alpaca] ERROR: Tarea del stream terminó con excepción: {exc}"
+                    )
+                else:
+                    print(
+                        "[Feeder Alpaca] WARNING: Tarea del stream terminó inesperadamente."
+                    )
+                if self.running:
+                    print("[Feeder Alpaca] Reiniciando tarea del stream...")
+                    self._start_stream_task()
+
+    def _start_stream_task(self):
+        """Crea (o recrea) la tarea del stream con monitoreo."""
+        if self.task and not self.task.done():
+            self.task.cancel()
+        self.task = asyncio.create_task(self.stream._run_forever())
 
     async def _handle_quote(self, quote):
         """Callback para procesar los quotes de Alpaca."""
@@ -98,14 +118,19 @@ class AlpacaFeeder(BaseFeeder):
         except Exception as e:
             print(f"[Feeder Alpaca] Error al procesar quote: {e}")
 
-    def stop(self):
-        """Detiene el streaming."""
+    async def stop(self):
+        """Detiene el streaming de forma segura, esperando la limpieza del WebSocket."""
         self.running = False
         if self.stream:
             try:
-                # alpaca-py utiliza stop_ws para detener el websocket
-                asyncio.create_task(self.stream.stop_ws())
+                await self.stream.stop_ws()
+                print(f"[Feeder Alpaca] WebSocket detenido correctamente para {self.symbol}.")
             except Exception as e:
                 print(f"[Feeder Alpaca] Error al detener websocket: {e}")
         if self.task:
             self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+            self.task = None

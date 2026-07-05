@@ -42,11 +42,16 @@ class KalshiFeeder(BaseFeeder):
         while self.running:
             await asyncio.sleep(1)
 
-    def stop(self):
+    async def stop(self):
         """Detiene el alimentador."""
         self.running = False
         if self.task:
             self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+            self.task = None
 
     async def _run_mock_stream(self):
         """Genera fluctuaciones de precios simuladas de opciones binarias (entre 0.10 y 0.90 USD)."""

@@ -13,6 +13,6 @@ class BaseFeeder(ABC):
         """Inicia la recolección de datos asíncrona."""
         pass
 
-    def stop(self):
+    async def stop(self):
         """Detiene el feeder."""
         self.running = False
