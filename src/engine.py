@@ -13,6 +13,7 @@ from src.feeders.alpaca_feeder import AlpacaFeeder
 from src.feeders.kalshi_feeder import KalshiFeeder
 from src.feeders.binance_feeder import BinanceFeeder
 from src.feeders.polymarket_feeder import PolymarketFeeder
+from src.websocket_server import ws_server, make_event
 
 
 class TradingWorker:
@@ -261,10 +262,39 @@ class TradingWorker:
                 try:
                     if event.event_type == "PRICE_UPDATE":
                         signal = self.strategy.on_price_update(event)
+                        # Broadcast del precio a clientes WebSocket (no bloqueante)
+                        if ws_server.has_clients(self.worker_id):
+                            await ws_server.broadcast(
+                                self.worker_id,
+                                make_event("price_update", {
+                                    "symbol": event.symbol,
+                                    "price": event.price,
+                                    "bid": event.bid,
+                                    "ask": event.ask,
+                                    "teorical_probability": getattr(
+                                        self.strategy, "teorical_probability", 0.0
+                                    ),
+                                    "edge": getattr(self.strategy, "edge", 0.0),
+                                    "last_position": getattr(
+                                        self.strategy, "last_position", None
+                                    ),
+                                }),
+                            )
                         if signal:
                             await self.queue.put(signal)
                     elif event.event_type == "SIGNAL":
                         await self._execute_order(event)
+                        if ws_server.has_clients(self.worker_id):
+                            # Broadcast de señal/trade a clientes WebSocket
+                            await ws_server.broadcast(
+                                self.worker_id,
+                                make_event("trade_update", {
+                                    "symbol": event.symbol,
+                                    "side": event.side,
+                                    "price": event.price,
+                                    "reason": event.reason,
+                                }),
+                            )
                 except Exception as e:
                     self.db.log("ERROR", f"Error en event_loop: {e}", self.worker_id)
                 finally:

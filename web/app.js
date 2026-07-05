@@ -59,6 +59,223 @@ function getTagStyle(tag) {
     return { color, bg };
 }
 
+// ============================================================
+//  WEBSOCKET STREAMING (Fase 2)
+//  Conexión en tiempo real, con fallback a polling REST
+// ============================================================
+let wsConnection = null;
+let wsReconnectTimer = null;
+let wsUsePollingFallback = false;
+const WS_RECONNECT_DELAY = 2000;
+
+function connectWebSocket(workerId) {
+    if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+        // Ya conectado al mismo worker
+        if (wsConnection._workerId === workerId) return;
+        // Cambio de worker: cerrar y reconectar
+        wsConnection.close();
+    }
+
+    // Limpiar timer de reconexión pendiente
+    if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+    }
+
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const host = window.location.host || "localhost:8080";
+    const url = `${protocol}//${host}/ws/${workerId}`;
+
+    console.log(`[WS] Conectando a ${url}...`);
+    const ws = new WebSocket(url);
+    ws._workerId = workerId;
+
+    ws.onopen = () => {
+        console.log(`[WS] Conectado a worker ${workerId}`);
+        wsUsePollingFallback = false;
+        updateConnectionIndicator(true);
+
+        // Cargar estado inicial desde REST mientras el WS calienta
+        fetchStatus();
+        fetchTrades();
+        loadWorkers();
+    };
+
+    ws.onmessage = (msg) => {
+        try {
+            const event = JSON.parse(msg.data);
+            handleWsEvent(event);
+        } catch (e) {
+            console.error("[WS] Error parseando mensaje:", e);
+        }
+    };
+
+    ws.onclose = (e) => {
+        console.log(`[WS] Desconectado (code=${e.code}). Activando polling fallback...`);
+        wsConnection = null;
+        wsUsePollingFallback = true;
+        updateConnectionIndicator(false);
+
+        // Reconexión con backoff
+        if (activeWorkerId === workerId) {
+            wsReconnectTimer = setTimeout(() => connectWebSocket(workerId), WS_RECONNECT_DELAY);
+        }
+    };
+
+    ws.onerror = (e) => {
+        console.error("[WS] Error de conexión. Usando polling.");
+        wsUsePollingFallback = true;
+        updateConnectionIndicator(false);
+    };
+
+    wsConnection = ws;
+}
+
+function handleWsEvent(event) {
+    const { type, data } = event;
+
+    switch (type) {
+        case "initial_state":
+            // Actualizar UI con estado completo
+            if (data.last_price) {
+                lastPrice = data.last_price;
+                updateTickerDisplay(data);
+            }
+            if (data.portfolio) {
+                updatePortfolioDisplay(data);
+            }
+            updatePositionDisplay(data);
+            break;
+
+        case "price_update":
+            // Actualizar en tiempo real
+            lastPrice = data.price;
+            updateTickerDisplay({
+                last_price: data.price,
+                symbol: data.symbol,
+                teorical_probability: data.teorical_probability,
+                edge: data.edge,
+                last_position: data.last_position,
+            });
+            addChartPoint(data.price);
+            updatePositionDisplay(data);
+            break;
+
+        case "trade_update":
+            // Nuevo trade: refrescar tablas
+            fetchTrades();  // Recargar historial completo
+            fetchStatus();  // Actualizar balances
+            break;
+
+        case "heartbeat":
+            // Mantener vivo, no acción necesaria
+            break;
+
+        case "pong":
+            // Respuesta a nuestro ping
+            break;
+
+        default:
+            console.log("[WS] Evento desconocido:", type);
+    }
+}
+
+function updateConnectionIndicator(connected) {
+    const dot = document.getElementById("connection-dot");
+    const text = document.getElementById("connection-text");
+    if (dot) {
+        dot.style.background = connected ? "#02c076" : "#f84960";
+        dot.style.boxShadow = connected
+            ? "0 0 8px rgba(2, 192, 118, 0.6)"
+            : "0 0 8px rgba(248, 73, 96, 0.6)";
+    }
+    if (text) {
+        text.textContent = connected ? "LIVE" : "POLLING";
+        text.style.color = connected ? "#02c076" : "#f84960";
+    }
+}
+
+function addChartPoint(price) {
+    if (!price || price <= 0) return;
+    const now = new Date();
+    const timeLabel = now.toLocaleTimeString("es-CO", { hour12: false });
+
+    chartLabels.push(timeLabel);
+    chartData.push(price);
+
+    if (chartLabels.length > chartLimit) {
+        chartLabels.shift();
+        chartData.shift();
+    }
+
+    if (priceChart) {
+        priceChart.data.labels = chartLabels;
+        priceChart.data.datasets[0].data = chartData;
+        priceChart.update("none"); // Sin animación para rendimiento
+    }
+}
+
+function updateTickerDisplay(data) {
+    const priceEl = document.getElementById("ticker-price");
+    const symbolEl = document.getElementById("ticker-symbol");
+    if (priceEl && data.last_price) {
+        priceEl.textContent = formatCurrency(data.last_price);
+    }
+    if (symbolEl && data.symbol) {
+        symbolEl.textContent = data.symbol;
+    }
+    // Actualizar probabilidad teórica y edge si existen
+    const probEl = document.getElementById("stat-teorical-prob");
+    if (probEl && data.teorical_probability !== undefined) {
+        probEl.textContent = (data.teorical_probability * 100).toFixed(1) + "%";
+    }
+    const edgeEl = document.getElementById("stat-edge");
+    if (edgeEl && data.edge !== undefined) {
+        const edgePct = (data.edge * 100).toFixed(3);
+        edgeEl.textContent = (data.edge >= 0 ? "+" : "") + edgePct + "%";
+        edgeEl.style.color = data.edge >= 0 ? "#02c076" : "#f84960";
+    }
+}
+
+function updatePositionDisplay(data) {
+    const badge = document.getElementById("position-badge");
+    if (badge && data.last_position !== undefined) {
+        if (data.last_position === "BUY") {
+            badge.textContent = "COMPRADO";
+            badge.className = "badge badge-buy";
+        } else if (data.last_position === "SELL") {
+            badge.textContent = "VENDIDO";
+            badge.className = "badge badge-sell";
+        } else {
+            badge.textContent = "SIN POSICIÓN";
+            badge.className = "badge badge-neutral";
+        }
+    }
+}
+
+function updatePortfolioDisplay(data) {
+    // Actualizar balances en el panel de trading
+    if (data.portfolio && data.quote_asset) {
+        availableQuote = data.portfolio[data.quote_asset] || 0;
+        document.getElementById("available-quote").textContent =
+            formatCurrency(availableQuote) + " " + data.quote_asset;
+    }
+    if (data.portfolio && data.base_asset) {
+        availableBase = data.portfolio[data.base_asset] || 0;
+        document.getElementById("available-base").textContent =
+            availableBase.toFixed(6) + " " + data.base_asset;
+    }
+}
+
+function sendWsPing() {
+    if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+        wsConnection.send("ping");
+    }
+}
+
+// Ping cada 25s para mantener vivo el WebSocket
+setInterval(sendWsPing, 25000);
+
 function generateSparklinePath(prices, width = 50, height = 20) {
     if (!prices || prices.length < 2) return "";
     const min = Math.min(...prices);
@@ -722,12 +939,16 @@ function renderWorkerTabs() {
 function switchWorker(workerId) {
     activeWorkerId = workerId;
     renderWorkerTabs();
-    
+
     // Limpiar inputs
     inputQty.value = "";
     inputTotal.value = "";
     clearActivePct();
-    
+
+    // Reconectar WebSocket al nuevo worker
+    connectWebSocket(workerId);
+
+    // Fallback inicial mientras el WS conecta
     fetchStatus();
     fetchLogs();
     fetchTrades();
@@ -1560,15 +1781,33 @@ if (searchAssetInput) {
 // --- INICIALIZAR LA APLICACIÓN ---
 initChart();
 loadWorkers().then(() => {
-    fetchStatus();
-    fetchLogs();
-    fetchTrades();
-    runOrderBookSimulation();
-    runLiveTradesSimulation();
+    // Fase 2: WebSocket primero, polling como fallback
+    connectWebSocket(activeWorkerId);
 });
 
-// Loops de Polling
-setInterval(fetchStatus, 1000);   // Consultar status cada 1s
-setInterval(fetchLogs, 2000);     // Consultar logs cada 2s
-setInterval(fetchTrades, 3000);   // Consultar trades cada 3s
-setInterval(loadWorkers, 10000);  // Actualizar lista de workers cada 10s
+// Polling inteligente: solo ejecuta si WebSocket está caído
+setInterval(() => {
+    if (wsUsePollingFallback) fetchStatus();
+}, 1000);
+
+setInterval(() => {
+    if (wsUsePollingFallback) fetchLogs();
+}, 2000);
+
+setInterval(() => {
+    if (wsUsePollingFallback) fetchTrades();
+}, 3000);
+
+setInterval(() => {
+    // Workers siempre por REST (baja frecuencia)
+    loadWorkers();
+}, 10000);
+
+// Order book y simulated trades siguen corriendo siempre
+setInterval(() => {
+    runOrderBookSimulation();
+}, 1500);
+
+setInterval(() => {
+    if (wsUsePollingFallback) runLiveTradesSimulation();
+}, 900);

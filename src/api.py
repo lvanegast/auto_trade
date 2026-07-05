@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import asyncio
@@ -6,6 +6,7 @@ import os
 from src.database import DatabaseManager
 from src.engine import TradingEngine
 from src.events import SignalEvent
+from src.websocket_server import ws_server, make_event
 
 # Inicializar Base de Datos
 db = DatabaseManager()
@@ -529,6 +530,81 @@ async def configure_worker(body: dict):
         raise HTTPException(
             status_code=500, detail=f"Fallo al reconfigurar el activo: {e}"
         )
+
+
+@app.websocket("/ws/{worker_id}")
+async def websocket_endpoint(websocket: WebSocket, worker_id: str):
+    """Streaming en tiempo real para un worker específico.
+
+    Eventos enviados:
+        - price_update: nuevo precio recibido
+        - status_update: cambio de estado del worker
+        - trade_update: nuevo trade ejecutado
+        - log: nueva entrada de log
+    """
+    if worker_id not in engine.workers:
+        await websocket.close(code=4004, reason="Worker no encontrado")
+        return
+
+    await ws_server.connect(websocket, worker_id)
+    worker = engine.workers[worker_id]
+
+    try:
+        # Enviar estado inicial
+        await _send_initial_state(websocket, worker, worker_id)
+
+        # Mantener conexión viva con heartbeat
+        while True:
+            try:
+                # Esperar mensajes del cliente (pings, comandos) con timeout
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                # Por ahora solo usamos pings, el cliente puede enviar "ping"
+                if data == "ping":
+                    await websocket.send_text('{"type":"pong"}')
+            except asyncio.TimeoutError:
+                # Heartbeat: verificar que el cliente siga vivo
+                try:
+                    await websocket.send_text('{"type":"heartbeat"}')
+                except Exception:
+                    break
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print(f"[WS] Error en conexión WebSocket para {worker_id}: {e}")
+    finally:
+        await ws_server.disconnect(websocket, worker_id)
+
+
+async def _send_initial_state(websocket: WebSocket, worker, worker_id: str):
+    """Envía el estado inicial completo al cliente que se conecta."""
+    import json as json_mod
+
+    try:
+        portfolio = db.get_portfolio(worker_id=worker_id)
+        balances = {item["asset"]: float(item["free_balance"]) for item in portfolio}
+
+        last_price = 0.0
+        if len(worker.strategy.prices_df) > 0:
+            last_price = float(worker.strategy.prices_df.iloc[-1]["price"])
+
+        event = make_event(
+            "initial_state",
+            {
+                "symbol": worker.symbol,
+                "feeder_type": worker.feeder_type,
+                "is_running": worker.is_running,
+                "last_price": last_price,
+                "portfolio": balances,
+                "base_asset": worker.base_asset,
+                "quote_asset": worker.quote_asset,
+                "last_position": getattr(worker.strategy, "last_position", None),
+                "teorical_probability": getattr(worker.strategy, "teorical_probability", 0.50),
+                "edge": getattr(worker.strategy, "edge", 0.0),
+            },
+        )
+        await websocket.send_text(json_mod.dumps(event, default=str))
+    except Exception as e:
+        print(f"[WS] Error enviando estado inicial: {e}")
 
 
 # Servir archivos estáticos del frontend en la raíz
