@@ -472,6 +472,38 @@ input {
     font-weight: 600;
 }
 
+.timeframe-buttons {
+    display: flex;
+    gap: 1px;
+    background: #242c35;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.tf-btn {
+    background: transparent;
+    border: none;
+    color: #848e9c;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 3px 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border-radius: 0;
+}
+
+.tf-btn:hover {
+    color: #eaecef;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.tf-btn.active {
+    color: #fff;
+    background: var(--primary);
+    box-shadow: 0 0 6px rgba(0, 230, 255, 0.3);
+}
+
 .chart-source-badge {
     font-size: 0.7rem;
     color: var(--text-secondary);

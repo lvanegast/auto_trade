@@ -63,10 +63,16 @@ function getTagStyle(tag) {
 //  WEBSOCKET STREAMING (Fase 2)
 //  Conexión en tiempo real, con fallback a polling REST
 // ============================================================
+// Configuración de WebSocket
+// ============================================================
 let wsConnection = null;
 let wsReconnectTimer = null;
+let wsResetTimer = null;
+let wsReconnectAttempts = 0;
 let wsUsePollingFallback = false;
-const WS_RECONNECT_DELAY = 2000;
+const WS_BASE_DELAY = 1000;     // 1s base
+const WS_MAX_DELAY = 60000;     // 60s cap
+const WS_RESET_AFTER = 30000;   // Resetear contador tras 30s conectado
 
 function connectWebSocket(workerId) {
     if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
@@ -76,10 +82,14 @@ function connectWebSocket(workerId) {
         wsConnection.close();
     }
 
-    // Limpiar timer de reconexión pendiente
+    // Limpiar timers pendientes
     if (wsReconnectTimer) {
         clearTimeout(wsReconnectTimer);
         wsReconnectTimer = null;
+    }
+    if (wsResetTimer) {
+        clearTimeout(wsResetTimer);
+        wsResetTimer = null;
     }
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -94,6 +104,16 @@ function connectWebSocket(workerId) {
         console.log(`[WS] Conectado a worker ${workerId}`);
         wsUsePollingFallback = false;
         updateConnectionIndicator(true);
+
+        // Resetear backoff al conectar exitosamente
+        wsReconnectAttempts = 0;
+
+        // Programar reset del contador tras conexión estable prolongada
+        if (wsResetTimer) clearTimeout(wsResetTimer);
+        wsResetTimer = setTimeout(() => {
+            wsReconnectAttempts = 0;
+            console.log("[WS] Conexión estable, contador de reconexión reseteado.");
+        }, WS_RESET_AFTER);
 
         // Cargar estado inicial desde REST mientras el WS calienta
         fetchStatus();
@@ -116,9 +136,22 @@ function connectWebSocket(workerId) {
         wsUsePollingFallback = true;
         updateConnectionIndicator(false);
 
-        // Reconexión con backoff
+        // Limpiar timer de reset
+        if (wsResetTimer) {
+            clearTimeout(wsResetTimer);
+            wsResetTimer = null;
+        }
+
+        // Reconexión con backoff exponencial + jitter
         if (activeWorkerId === workerId) {
-            wsReconnectTimer = setTimeout(() => connectWebSocket(workerId), WS_RECONNECT_DELAY);
+            const jitter = Math.random() * 1000;  // 0-1s de jitter
+            const delay = Math.min(
+                WS_BASE_DELAY * Math.pow(2, wsReconnectAttempts) + jitter,
+                WS_MAX_DELAY
+            );
+            wsReconnectAttempts++;
+            console.log(`[WS] Reconectando en ${(delay / 1000).toFixed(1)}s (intento #${wsReconnectAttempts})...`);
+            wsReconnectTimer = setTimeout(() => connectWebSocket(workerId), delay);
         }
     };
 
@@ -126,6 +159,8 @@ function connectWebSocket(workerId) {
         console.error("[WS] Error de conexión. Usando polling.");
         wsUsePollingFallback = true;
         updateConnectionIndicator(false);
+        wsConnection = null;
+        try { ws.close(); } catch (_) { /* ya cerrado */ }
     };
 
     wsConnection = ws;
@@ -157,14 +192,40 @@ function handleWsEvent(event) {
                 edge: data.edge,
                 last_position: data.last_position,
             });
-            addChartPoint(data.price);
+            pushTick(data.price);
             updatePositionDisplay(data);
+            // Actualizar línea de entrada si hay posición activa
+            if (data.last_position && data.entry_price > 0) {
+                updateAvgEntryPriceLine(data.entry_price);
+            } else if (!data.last_position) {
+                clearTradeLines();
+            }
             break;
 
         case "trade_update":
-            // Nuevo trade: refrescar tablas
-            fetchTrades();  // Recargar historial completo
-            fetchStatus();  // Actualizar balances
+            // Nuevo trade: refrescar tablas y agregar marcador en el gráfico
+            fetchTrades();
+            fetchStatus();
+            if (data.price && data.side) {
+                addTradeMarker(Math.floor(Date.now() / 1000), data.side, data.price);
+            }
+            break;
+
+        case "worker_status":
+            // Cambio de estado de worker (start/stop) — actualizar sin polling
+            updateWorkerCardStatus(data);
+            break;
+
+        case "depth_update":
+            // Libro de órdenes recibido vía WebSocket
+            currentBids = data.bids || [];
+            currentAsks = data.asks || [];
+            updateOrderBookDisplay(currentBids, currentAsks);
+            break;
+
+        case "log":
+            // Nueva entrada de log en tiempo real
+            appendLogEntry(data);
             break;
 
         case "heartbeat":
@@ -177,6 +238,166 @@ function handleWsEvent(event) {
 
         default:
             console.log("[WS] Evento desconocido:", type);
+    }
+}
+
+// --- Funciones helper para eventos WebSocket ---
+
+function updateWorkerCardStatus(data) {
+    // Actualiza el indicador visual de estado en las pestañas de workers
+    const tabs = document.querySelectorAll(".tab-btn");
+    tabs.forEach(btn => {
+        if (btn.textContent.trim() === data.name) {
+            if (data.is_running) {
+                btn.classList.add("worker-running");
+                btn.title = `${data.name}: ONLINE (${data.feeder_type.toUpperCase()})`;
+            } else {
+                btn.classList.remove("worker-running");
+                btn.title = `${data.name}: OFFLINE`;
+            }
+        }
+    });
+    // Actualizar también el texto de estado en el panel si está visible
+    const statusEl = document.getElementById("worker-status-text");
+    if (statusEl) {
+        statusEl.textContent = data.is_running ? "ONLINE" : "OFFLINE";
+        statusEl.style.color = data.is_running ? "#02c076" : "#f84960";
+    }
+}
+
+function requestDepth() {
+    if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+        wsConnection.send("depth");
+    }
+}
+
+function updateOrderBookDisplay(bidsData, asksData) {
+    // Si no hay datos, generar simulación local
+    if ((!bidsData || bidsData.length === 0) && (!asksData || asksData.length === 0)) {
+        if (lastPrice <= 0) return;
+        const spreadPct = 0.0003;
+        const tickSpacing = isForexOrEvent ? 0.0005 : 0.25;
+        bidsData = [];
+        asksData = [];
+        for (let i = 1; i <= 5; i++) {
+            const bidPrice = lastPrice * (1 - spreadPct) - (i * tickSpacing);
+            const bidQty = Math.random() * (isForexOrEvent ? 20000 : 0.8) + (isForexOrEvent ? 1000 : 0.05);
+            bidsData.push([bidPrice, bidQty]);
+            const askPrice = lastPrice * (1 + spreadPct) + (i * tickSpacing);
+            const askQty = Math.random() * (isForexOrEvent ? 20000 : 0.8) + (isForexOrEvent ? 1000 : 0.05);
+            asksData.push([askPrice, askQty]);
+        }
+        asksData.sort((a, b) => b[0] - a[0]);
+    } else {
+        bidsData = bidsData.slice(0, 5);
+        asksData = asksData.slice(0, 5);
+        asksData.sort((a, b) => b[0] - a[0]);
+    }
+
+    const decimals = isForexOrEvent ? 4 : 2;
+    const amountDecs = baseAsset === "BTC" || baseAsset === "ETH" ? 4 : 2;
+
+    // Renderizar Asks (Venta) - Rojo
+    obAsks.innerHTML = "";
+    let runningTotalAsk = 0;
+    const asksList = [];
+    for (let i = asksData.length - 1; i >= 0; i--) {
+        const [price, qty] = asksData[i];
+        runningTotalAsk += qty;
+        asksList.unshift({ price, qty, total: runningTotalAsk });
+    }
+
+    asksList.forEach(ask => {
+        const row = document.createElement("div");
+        row.className = "ob-row ask";
+        const maxTotal = asksList[0] ? asksList[0].total : 1;
+        const depthVal = Math.min((ask.total / (maxTotal * 1.1)) * 100, 100);
+
+        row.innerHTML = `
+            <div class="ob-depth-bar" style="width: ${depthVal}%"></div>
+            <span class="ob-price">${ask.price.toFixed(decimals)}</span>
+            <span class="text-right">${ask.qty.toFixed(amountDecs)}</span>
+            <span class="text-right">${(ask.qty * ask.price).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+        `;
+
+        row.addEventListener("click", () => {
+            if (manualOrderType === "LIMIT") {
+                inputPrice.value = ask.price.toFixed(decimals);
+            }
+            inputQty.value = formatAmountInput(ask.qty);
+            inputTotal.value = (ask.qty * ask.price).toFixed(2);
+        });
+
+        obAsks.appendChild(row);
+    });
+
+    // Spread / Mid Price
+    obMidVal.textContent = `$${lastPrice.toFixed(decimals)}`;
+    obMidDir.textContent = Math.random() > 0.4 ? "▲" : "▼";
+    obMidDir.className = obMidDir.textContent === "▲" ? "mid-price-dir text-success" : "mid-price-dir text-danger";
+
+    // Renderizar Bids (Compra) - Verde
+    obBids.innerHTML = "";
+    let runningTotalBid = 0;
+    const bidsList = [];
+    bidsData.forEach(([price, qty]) => {
+        runningTotalBid += qty;
+        bidsList.push({ price, qty, total: runningTotalBid });
+    });
+
+    bidsList.forEach(bid => {
+        const row = document.createElement("div");
+        row.className = "ob-row bid";
+        const maxTotal = bidsList[bidsList.length - 1] ? bidsList[bidsList.length - 1].total : 1;
+        const depthVal = Math.min((bid.total / (maxTotal * 1.1)) * 100, 100);
+
+        row.innerHTML = `
+            <div class="ob-depth-bar" style="width: ${depthVal}%"></div>
+            <span class="ob-price">${bid.price.toFixed(decimals)}</span>
+            <span class="text-right">${bid.qty.toFixed(amountDecs)}</span>
+            <span class="text-right">${(bid.qty * bid.price).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+        `;
+
+        row.addEventListener("click", () => {
+            if (manualOrderType === "LIMIT") {
+                inputPrice.value = bid.price.toFixed(decimals);
+            }
+            inputQty.value = formatAmountInput(bid.qty);
+            inputTotal.value = (bid.qty * bid.price).toFixed(2);
+        });
+
+        obBids.appendChild(row);
+    });
+
+    currentBids = bidsData;
+    currentAsks = asksData;
+    updateDepthOnChart(currentBids, currentAsks);
+}
+
+function appendLogEntry(data) {
+    // Añade una entrada de log en tiempo real al panel de logs
+    if (!logConsole) return;
+
+    const date = new Date(data.timestamp);
+    const timeStr = date.toLocaleTimeString();
+    const levelClass = data.level === "ERROR" ? "error"
+        : data.level === "WARNING" ? "warning"
+        : "info";
+
+    const entry = document.createElement("div");
+    entry.className = `terminal-line ${levelClass}`;
+    entry.innerHTML = `<span class="log-time">[${timeStr}]</span> ${data.level}: ${data.message}`;
+    logConsole.insertBefore(entry, logConsole.firstChild);
+
+    // Limitar a 100 entradas para evitar acumulación excesiva
+    while (logConsole.children.length > 100) {
+        logConsole.removeChild(logConsole.lastChild);
+    }
+
+    // Si el mensaje inicial de "Esperando logs..." está presente, limpiarlo
+    const placeholder = logConsole.querySelector(".terminal-line.info");
+    if (placeholder && placeholder.textContent.includes("Esperando logs")) {
+        placeholder.remove();
     }
 }
 
@@ -196,23 +417,8 @@ function updateConnectionIndicator(connected) {
 }
 
 function addChartPoint(price) {
-    if (!price || price <= 0) return;
-    const now = new Date();
-    const timeLabel = now.toLocaleTimeString("es-CO", { hour12: false });
-
-    chartLabels.push(timeLabel);
-    chartData.push(price);
-
-    if (chartLabels.length > chartLimit) {
-        chartLabels.shift();
-        chartData.shift();
-    }
-
-    if (priceChart) {
-        priceChart.data.labels = chartLabels;
-        priceChart.data.datasets[0].data = chartData;
-        priceChart.update("none"); // Sin animación para rendimiento
-    }
+    /** Compatibilidad: redirige a pushTick para Lightweight Charts. */
+    pushTick(price);
 }
 
 function updateTickerDisplay(data) {
@@ -334,11 +540,11 @@ function renderSidebarAssetCards(feederType, activeSymbol) {
         
         if (isActive && lastPrice > 0) {
             displayPrice = lastPrice;
-            if (chartData.length > 1) {
-                const first = chartData[0];
-                const last = chartData[chartData.length - 1];
+            if (tickBuffer.length > 1) {
+                const first = tickBuffer[0].price;
+                const last = tickBuffer[tickBuffer.length - 1].price;
                 displayChange = first > 0 ? ((last - first) / first) * 100 : 0;
-                displayPrices = chartData.slice(-8);
+                displayPrices = tickBuffer.slice(-8).map(t => t.price);
                 if (displayPrices.length < 2) {
                     displayPrices = [first, last];
                 }
@@ -383,11 +589,22 @@ function renderSidebarAssetCards(feederType, activeSymbol) {
     });
 }
 
-// Variables globales para Chart.js
-let priceChart = null;
-const chartLimit = 40;
-let chartLabels = [];
-let chartData = [];
+// ============================================================
+// Gráfico — Lightweight Charts (TradingView)
+// ============================================================
+let priceChart = null;        // IChartApi
+let candleSeries = null;      // ISeriesApi<"Candlestick">
+let volumeSeries = null;      // ISeriesApi<"Histogram"> (depth/volume)
+let entryPriceLine = null;    // Active position price line
+let tradeMarkers = [];        // Historical trade markers [{time, position, color, shape, text}]
+
+// Tick buffer para agregación OHLC
+let tickBuffer = [];           // [{time: number, price: number}]
+let currentTimeframe = "1m";   // "1m" | "5m" | "15m" | "1h"
+let currentFeederTypeForChart = null;
+
+// Constantes de timeframe
+const TF_MINUTES = { "1m": 1, "5m": 5, "15m": 15, "1h": 60 };
 
 // Estado de la UI
 let activeWorkerId = "worker_1";
@@ -514,211 +731,289 @@ const baseAssetLabels = document.querySelectorAll(".base-asset-lbl");
 
 
 // --- INICIALIZACIÓN DE LA GRÁFICA ---
-const orderBookDepthPlugin = {
-    id: 'orderBookDepth',
-    beforeDatasetsDraw(chart) {
-        if (isPredictionMarket) return;
-        if (!currentBids.length && !currentAsks.length) return;
-        const { ctx, chartArea: ca, scales: { y: ys } } = chart;
-        const maxBarW = (ca.right - ca.left) * 0.28;
-        let maxVol = 0.0001, cumBid = 0;
-        const bidsD = [];
-        [...currentBids].sort((a, b) => b[0] - a[0]).slice(0, 15).forEach(b => {
-            cumBid += b[1]; bidsD.push({ p: b[0], v: cumBid });
-            if (cumBid > maxVol) maxVol = cumBid;
-        });
-        let cumAsk = 0;
-        const asksD = [];
-        [...currentAsks].sort((a, b) => a[0] - b[0]).slice(0, 15).forEach(a => {
-            cumAsk += a[1]; asksD.push({ p: a[0], v: cumAsk });
-            if (cumAsk > maxVol) maxVol = cumAsk;
-        });
-        ctx.save();
-        const bh = Math.max(2, Math.min(8, (ca.bottom - ca.top) / 50));
-        // Bids (green)
-        bidsD.forEach(b => {
-            const y = ys.getPixelForValue(b.p);
-            if (y < ca.top || y > ca.bottom) return;
-            const w = (b.v / maxVol) * maxBarW;
-            ctx.fillStyle = 'rgba(2,192,118,0.10)';
-            ctx.fillRect(ca.right - w, y - bh / 2, w, bh);
-            ctx.fillStyle = 'rgba(2,192,118,0.30)';
-            ctx.fillRect(ca.right - w, y - bh / 2, w, 1);
-        });
-        // Asks (red)
-        asksD.forEach(a => {
-            const y = ys.getPixelForValue(a.p);
-            if (y < ca.top || y > ca.bottom) return;
-            const w = (a.v / maxVol) * maxBarW;
-            ctx.fillStyle = 'rgba(246,70,93,0.10)';
-            ctx.fillRect(ca.right - w, y - bh / 2, w, bh);
-            ctx.fillStyle = 'rgba(246,70,93,0.30)';
-            ctx.fillRect(ca.right - w, y - bh / 2, w, 1);
-        });
-        ctx.restore();
+// (currentFeederTypeForChart movido arriba con las otras variables del gráfico)
+
+// ============================================================
+// Funciones de agregación OHLC y chart
+// ============================================================
+
+function aggregateTicks(ticks, tfMinutes) {
+    /** Agrupa ticks en velas OHLC por intervalo de tiempo (en minutos). */
+    if (!ticks.length) return [];
+    const bucketMs = tfMinutes * 60 * 1000;
+    const candles = [];
+    let bucketStart = null;
+    let open = 0, high = -Infinity, low = Infinity, close = 0;
+
+    for (const tick of ticks) {
+        const tMs = tick.time * 1000;
+        const bucket = Math.floor(tMs / bucketMs) * bucketMs;
+
+        if (bucketStart === null) {
+            bucketStart = bucket;
+            open = tick.price;
+            high = tick.price;
+            low = tick.price;
+            close = tick.price;
+        } else if (bucket !== bucketStart) {
+            candles.push({
+                time: Math.floor(bucketStart / 1000),
+                open, high, low, close,
+            });
+            bucketStart = bucket;
+            open = tick.price;
+            high = tick.price;
+            low = tick.price;
+            close = tick.price;
+        } else {
+            close = tick.price;
+            if (tick.price > high) high = tick.price;
+            if (tick.price < low) low = tick.price;
+        }
     }
-};
-
-let currentFeederTypeForChart = null;
-
-function initChart(feederType = "alpaca") {
-    const ctx = document.getElementById('priceChart').getContext('2d');
-    currentFeederTypeForChart = feederType;
-    
-    // Determinar esquema de color según la plataforma
-    let colorTheme = '#00e6ff'; // Alpaca Blue
-    let gradientStart = 'rgba(0, 230, 255, 0.15)';
-    
-    if (feederType === 'binance') {
-        colorTheme = '#f0b90b'; // Binance Yellow
-        gradientStart = 'rgba(240, 185, 11, 0.15)';
-    } else if (feederType === 'polymarket') {
-        colorTheme = '#a03ffc'; // Polymarket Purple
-        gradientStart = 'rgba(160, 63, 252, 0.15)';
-    } else if (feederType === 'kalshi') {
-        colorTheme = '#02c076'; // Kalshi Green
-        gradientStart = 'rgba(2, 192, 118, 0.15)';
+    if (bucketStart !== null) {
+        candles.push({
+            time: Math.floor(bucketStart / 1000),
+            open, high, low, close,
+        });
     }
-    
-    const gradient = ctx.createLinearGradient(0, 0, 0, 400);
-    gradient.addColorStop(0, gradientStart);
-    gradient.addColorStop(1, 'rgba(0, 0, 0, 0.0)');
-
-    if (priceChart) {
-        priceChart.destroy();
-    }
-
-    priceChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: chartLabels,
-            datasets: [{
-                label: 'Precio',
-                data: chartData,
-                borderColor: colorTheme,
-                borderWidth: 2,
-                pointRadius: 0, // Ocultar puntos para estilo limpio
-                pointHoverRadius: 5,
-                pointHoverBackgroundColor: '#eaecef',
-                pointHoverBorderColor: colorTheme,
-                pointHoverBorderWidth: 2,
-                fill: true,
-                backgroundColor: gradient,
-                tension: 0.15
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: { duration: 200 },
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    mode: 'index',
-                    intersect: false,
-                    backgroundColor: '#161a1e',
-                    titleColor: '#848e9c',
-                    bodyColor: '#eaecef',
-                    borderColor: '#242c35',
-                    borderWidth: 1,
-                    titleFont: { family: 'Inter', size: 11 },
-                    bodyFont: { family: 'JetBrains Mono', size: 12 },
-                    callbacks: {
-                        label: function(context) {
-                            return ` Precio: $${context.raw.toLocaleString(undefined, { minimumFractionDigits: context.raw < 2 ? 4 : 2 })}`;
-                        }
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    grid: { color: 'rgba(36, 44, 53, 0.4)' },
-                    ticks: { color: '#848e9c', font: { family: 'Inter', size: 10 } }
-                },
-                y: (feederType === 'polymarket' || feederType === 'kalshi') ? {
-                    min: 0.0,
-                    max: 1.0,
-                    grid: { color: 'rgba(36, 44, 53, 0.4)' },
-                    ticks: { color: '#848e9c', font: { family: 'JetBrains Mono', size: 10 } }
-                } : {
-                    grid: { color: 'rgba(36, 44, 53, 0.4)' },
-                    ticks: { color: '#848e9c', font: { family: 'JetBrains Mono', size: 10 } }
-                }
-            }
-        },
-        plugins: [orderBookDepthPlugin]
-    });
+    return candles;
 }
 
-function synchronizeChartScales(targetPrice) {
-    if (isNaN(targetPrice) || targetPrice <= 0) return;
-    if (isPredictionMarket) {
-        if (priceChart && priceChart.options.scales.y) { priceChart.options.scales.y.min = 0.0; priceChart.options.scales.y.max = 1.0; }
-        return;
+function buildChart(containerId, feederType) {
+    /** Crea la instancia de Lightweight Charts con tema oscuro. */
+    if (priceChart) {
+        try { priceChart.remove(); } catch (_) { /* cleanup */ }
     }
-    let rs = 1.0;
-    if (targetPrice > 10000) rs = 50.0; else if (targetPrice > 1000) rs = 10.0; else if (targetPrice > 50) rs = 1.0; else if (targetPrice > 1) rs = 0.10; else rs = 0.01;
-    const scp = Math.round(targetPrice / rs) * rs, ro = isForexOrEvent ? 0.003 : 0.008;
-    if (priceChart && priceChart.options.scales.y) { priceChart.options.scales.y.min = scp * (1 - ro); priceChart.options.scales.y.max = scp * (1 + ro); }
+
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    // Limpiar container
+    container.innerHTML = "";
+
+    priceChart = LightweightCharts.createChart(container, {
+        layout: {
+            background: { type: "solid", color: "#161a1e" },
+            textColor: "#848e9c",
+        },
+        grid: {
+            vertLines: { color: "rgba(36, 44, 53, 0.4)" },
+            horzLines: { color: "rgba(36, 44, 53, 0.4)" },
+        },
+        crosshair: {
+            mode: 0,
+            vertLine: { color: "rgba(36, 44, 53, 0.6)", labelBackgroundColor: "#242c35" },
+            horzLine: { color: "rgba(36, 44, 53, 0.6)", labelBackgroundColor: "#242c35" },
+        },
+        rightPriceScale: {
+            borderColor: "rgba(36, 44, 53, 0.6)",
+            autoScale: true,
+        },
+        timeScale: {
+            borderColor: "rgba(36, 44, 53, 0.6)",
+            timeVisible: true,
+            secondsVisible: false,
+        },
+        handleScroll: { vertTouchDrag: false },
+    });
+
+    // Determinar colores por plataforma
+    let upColor = "#02c076";
+    let downColor = "#f84960";
+    let borderUp = "rgba(2, 192, 118, 0.6)";
+    let borderDown = "rgba(248, 73, 96, 0.6)";
+    let wickColor = "#848e9c";
+
+    if (feederType === "binance") {
+        upColor = "#02c076"; downColor = "#f84960";
+    } else if (feederType === "polymarket") {
+        upColor = "#a03ffc"; downColor = "#cf5bdb";
+        borderUp = "rgba(160, 63, 252, 0.6)"; borderDown = "rgba(207, 91, 219, 0.6)";
+    } else if (feederType === "kalshi") {
+        upColor = "#02c076"; downColor = "#f84960";
+    }
+
+    candleSeries = priceChart.addCandlestickSeries({
+        upColor: upColor,
+        downColor: downColor,
+        borderUpColor: borderUp,
+        borderDownColor: borderDown,
+        wickUpColor: wickColor,
+        wickDownColor: wickColor,
+    });
+
+    // Serie de volumen/depth como histograma en overlay (se actualiza con depth)
+    volumeSeries = priceChart.addHistogramSeries({
+        color: "rgba(2, 192, 118, 0.25)",
+        priceFormat: { type: "volume" },
+        priceScaleId: "overlay",
+    });
+    volumeSeries.priceScale().applyOptions({
+        scaleMargins: { top: 0.85, bottom: 0 },
+    });
+
+    currentFeederTypeForChart = feederType;
+    return priceChart;
+}
+
+function initChart(feederType) {
+    feederType = feederType || "alpaca";
+    buildChart("priceChart", feederType);
+
+    // Cargar datos existentes si hay
+    if (tickBuffer.length > 0) {
+        const candles = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
+        if (candles.length > 0 && candleSeries) {
+            candleSeries.setData(candles);
+        }
+    }
+
+    // Restaurar marcadores de trade
+    if (tradeMarkers.length > 0 && candleSeries) {
+        candleSeries.setMarkers(tradeMarkers);
+    }
+
+    // Configurar timeframe buttons
+    document.querySelectorAll(".tf-btn").forEach(btn => {
+        btn.addEventListener("click", function () {
+            document.querySelectorAll(".tf-btn").forEach(b => b.classList.remove("active"));
+            this.classList.add("active");
+            const newTf = this.dataset.tf;
+            if (newTf !== currentTimeframe) {
+                currentTimeframe = newTf;
+                applyTimeframe();
+            }
+        });
+    });
+
+    // Activar botón del timeframe actual
+    const activeBtn = document.querySelector(`.tf-btn[data-tf="${currentTimeframe}"]`);
+    if (activeBtn) activeBtn.classList.add("active");
+}
+
+function applyTimeframe() {
+    /** Re-agrega todas las velas para el timeframe seleccionado. */
+    if (!candleSeries || tickBuffer.length === 0) return;
+    const candles = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
+    candleSeries.setData(candles);
+    // Re-aplicar marcadores
+    if (tradeMarkers.length > 0) {
+        candleSeries.setMarkers(tradeMarkers);
+    }
+}
+
+// ============================================================
+// Funciones de actualización del gráfico (Lightweight Charts)
+// ============================================================
+
+function pushTick(price) {
+    /** Agrega un tick al buffer y actualiza la vela actual. */
+    if (!price || price <= 0) return;
+    const now = Math.floor(Date.now() / 1000);
+    tickBuffer.push({ time: now, price: price });
+
+    // Limitar buffer a ~8 horas de ticks
+    const maxTicks = 30000;
+    if (tickBuffer.length > maxTicks) {
+        tickBuffer = tickBuffer.slice(-maxTicks);
+    }
+
+    if (!candleSeries) return;
+
+    const tfMin = TF_MINUTES[currentTimeframe];
+    const bucketMs = tfMin * 60 * 1000;
+    const bucket = Math.floor(now * 1000 / bucketMs) * bucketMs;
+
+    // Tomar ticks relevantes para el periodo actual y anterior
+    const relevantTicks = tickBuffer.filter(t => {
+        const tBucket = Math.floor(t.time * 1000 / bucketMs) * bucketMs;
+        return tBucket >= bucket - bucketMs;
+    }).slice(-500);
+
+    const candles = aggregateTicks(relevantTicks, tfMin);
+    if (candles.length > 0) {
+        const lastCandle = candles[candles.length - 1];
+        candleSeries.update(lastCandle);
+    }
+}
+
+function addChartPoint(price) {
+    /** Compatibilidad: redirige a pushTick. */
+    pushTick(price);
 }
 
 function updateChart(price) {
-    if (isNaN(price) || price <= 0) return;
-    
-    const now = new Date();
-    const timeLabel = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    
-    // Solo actualizamos la gráfica si no hay datos o el precio cambió
-    if (chartData.length === 0 || chartData[chartData.length - 1] !== price) {
-        chartLabels.push(timeLabel);
-        chartData.push(price);
-        
-        if (chartLabels.length > chartLimit) {
-            chartLabels.shift();
-            chartData.shift();
-        }
-        
-        // Si el dataset de Precio Entrada existe, mantener su tamaño sincronizado
-        if (priceChart && priceChart.data.datasets.length > 1) {
-            const entryDataset = priceChart.data.datasets[1];
-            if (entryDataset.data.length > 0) {
-                const entryVal = entryDataset.data[0];
-                entryDataset.data = Array(chartData.length).fill(entryVal);
-            }
-        }
-        
-        if (priceChart) {
-            synchronizeChartScales(price);
-            priceChart.update();
-        }
-    }
+    /** Compatibilidad: redirige a pushTick. */
+    pushTick(price);
 }
 
 function updateAvgEntryPriceLine(avgEntryPrice) {
-    if (!priceChart) return;
-    
-    if (avgEntryPrice > 0 && chartData.length > 0) {
-        const lineData = Array(chartData.length).fill(avgEntryPrice);
-        
-        if (priceChart.data.datasets.length > 1) {
-            priceChart.data.datasets[1].data = lineData;
-        } else {
-            priceChart.data.datasets.push({
-                label: 'Precio Entrada',
-                data: lineData,
-                borderColor: '#f0b90b', // Dorado
-                borderWidth: 1.5,
-                borderDash: [5, 5], // Dotted
-                pointRadius: 0,
-                fill: false
-            });
-        }
-    } else {
-        if (priceChart.data.datasets.length > 1) {
-            priceChart.data.datasets.pop();
-        }
+    /** Dibuja/actualiza línea de precio de entrada en el gráfico. */
+    if (!candleSeries) return;
+
+    if (entryPriceLine) {
+        candleSeries.removePriceLine(entryPriceLine);
+        entryPriceLine = null;
+    }
+
+    if (avgEntryPrice > 0) {
+        entryPriceLine = candleSeries.createPriceLine({
+            price: avgEntryPrice,
+            color: "#f0b90b",
+            lineWidth: 1.5,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: "ENTRADA",
+        });
     }
 }
+
+function addTradeMarker(time, side, price) {
+    /** Agrega un marcador de trade ejecutado en el gráfico. */
+    if (!candleSeries) return;
+    tradeMarkers.push({
+        time: time,
+        position: side === "BUY" ? "belowBar" : "aboveBar",
+        color: side === "BUY" ? "#02c076" : "#f84960",
+        shape: side === "BUY" ? "arrowUp" : "arrowDown",
+        text: side === "BUY" ? "B" : "S",
+        size: 2,
+    });
+    if (tradeMarkers.length > 50) {
+        tradeMarkers = tradeMarkers.slice(-50);
+    }
+    candleSeries.setMarkers(tradeMarkers);
+}
+
+function clearTradeLines() {
+    /** Limpia la línea de precio de entrada cuando no hay posición. */
+    if (entryPriceLine && candleSeries) {
+        candleSeries.removePriceLine(entryPriceLine);
+        entryPriceLine = null;
+    }
+}
+
+function updateDepthOnChart(bids, asks) {
+    /** Actualiza la serie de volumen/depth en el gráfico. */
+    if (!volumeSeries || !priceChart) return;
+    let totalBidVol = 0;
+    if (bids && bids.length > 0) {
+        bids.slice(0, 5).forEach(b => { totalBidVol += b[1]; });
+    }
+    let totalAskVol = 0;
+    if (asks && asks.length > 0) {
+        asks.slice(0, 5).forEach(a => { totalAskVol += a[1]; });
+    }
+    const netVol = totalBidVol - totalAskVol;
+    const time = Math.floor(Date.now() / 1000);
+    try {
+        volumeSeries.update({ time, value: netVol, color: netVol >= 0 ? "rgba(2,192,118,0.25)" : "rgba(248,73,96,0.25)" });
+    } catch (_) { /* ignore */ }
+}
+
+
+
 
 
 // --- CONFIGURACIÓN DE PESTAÑAS DEL SISTEMA (BOTTOM TABS) ---
@@ -1051,29 +1346,29 @@ async function fetchStatus() {
         }
 
         // Alimentar gráfica desde el histórico del backend si cambiamos de activo o no hay datos
-        if (data.price_history && (data.symbol !== lastActiveSymbol || chartData.length === 0)) {
-            chartLabels = data.price_history.map(item => {
-                const parts = item.timestamp.split(" ");
-                return parts.length > 1 ? parts[1] : item.timestamp;
+        if (data.price_history && (data.symbol !== lastActiveSymbol || tickBuffer.length === 0)) {
+            // Cargar historial de precios en el buffer de ticks
+            tickBuffer = data.price_history.map(item => {
+                const d = new Date(item.timestamp);
+                const secs = Math.floor(d.getTime() / 1000);
+                return { time: secs, price: item.price };
             });
-            chartData = data.price_history.map(item => item.price);
-            if (priceChart) {
-                priceChart.data.labels = chartLabels;
-                priceChart.data.datasets[0].data = chartData;
-                priceChart.update();
+            if (candleSeries) {
+                const candles = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
+                candleSeries.setData(candles);
             }
         } else {
-            // Alimentar gráfica con tick individual en tiempo real (solo si no es mercado de predicción)
+            // Alimentar gráfica con tick individual en tiempo real
             if (!isPredictionMarket) {
-                updateChart(lastPrice);
+                pushTick(lastPrice);
             }
         }
         lastActiveSymbol = data.symbol;
-        
+
         // Sincronizar balances del portafolio
         availableQuote = data.portfolio[quoteAsset] || 0.0;
         availableBase = data.portfolio[baseAsset] || 0.0;
-        
+
         let lockedQuote = 0.0;
         let lockedBase = 0.0;
         openOrdersList.forEach(o => {
@@ -1083,22 +1378,19 @@ async function fetchStatus() {
                 lockedBase += o.amount;
             }
         });
-        
+
         const dispQuote = Math.max(availableQuote - lockedQuote, 0);
         const dispBase = Math.max(availableBase - lockedBase, 0);
         const totalEstimated = availableQuote + (availableBase * lastPrice);
-        
+
         balanceQuote.textContent = `$${dispQuote.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
         const baseDecs = baseAsset === "BTC" || baseAsset === "ETH" ? 6 : 2;
         balanceBase.textContent = dispBase.toLocaleString(undefined, { minimumFractionDigits: baseDecs, maximumFractionDigits: baseDecs });
         portfolioTotal.textContent = `$${totalEstimated.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-        
+
         // Calcular PnL No Realizado
         const avgEntryPrice = data.avg_entry_price || 0.0;
         updateAvgEntryPriceLine(avgEntryPrice);
-        if (priceChart) {
-            priceChart.update();
-        }
         if (availableBase > 0.000001 && avgEntryPrice > 0) {
             const pnlUSD = (lastPrice - avgEntryPrice) * availableBase;
             const pnlPercent = ((lastPrice - avgEntryPrice) / avgEntryPrice) * 100;
@@ -1460,125 +1752,24 @@ let simulatedOrderBookInterval = null;
 let simulatedLiveTradesInterval = null;
 
 async function runOrderBookSimulation() {
-    if (simulatedOrderBookInterval) clearInterval(simulatedOrderBookInterval);
-    
-    simulatedOrderBookInterval = setInterval(async () => {
-        if (lastPrice <= 0) return;
-        
-        let bidsData = [];
-        let asksData = [];
-        
-        try {
-            const res = await fetch(`${API_BASE}/depth?worker_id=${activeWorkerId}`);
-            if (res.ok) {
-                const depth = await res.json();
-                bidsData = depth.bids || [];
-                asksData = depth.asks || [];
-            }
-        } catch (e) {
-            console.warn("Error fetching live depth:", e);
-        }
-        
-        // Si no hay datos de profundidad en tiempo real, generamos simulación local
-        if (bidsData.length === 0 && asksData.length === 0) {
-            const spreadPct = 0.0003;
-            const tickSpacing = isForexOrEvent ? 0.0005 : 0.25;
-            for (let i = 1; i <= 5; i++) {
-                const bidPrice = lastPrice * (1 - spreadPct) - (i * tickSpacing);
-                const bidQty = Math.random() * (isForexOrEvent ? 20000 : 0.8) + (isForexOrEvent ? 1000 : 0.05);
-                bidsData.push([bidPrice, bidQty]);
-                
-                const askPrice = lastPrice * (1 + spreadPct) + (i * tickSpacing);
-                const askQty = Math.random() * (isForexOrEvent ? 20000 : 0.8) + (isForexOrEvent ? 1000 : 0.05);
-                asksData.push([askPrice, askQty]);
-            }
-            asksData.sort((a, b) => b[0] - a[0]);
-        } else {
-            bidsData = bidsData.slice(0, 5);
-            asksData = asksData.slice(0, 5);
-            asksData.sort((a, b) => b[0] - a[0]);
-        }
-        
-        const decimals = isForexOrEvent ? 4 : 2;
-        const amountDecs = baseAsset === "BTC" || baseAsset === "ETH" ? 4 : 2;
-        
-        // Renderizar Asks (Venta) - Rojo
-        obAsks.innerHTML = "";
-        let runningTotalAsk = 0;
-        const asksList = [];
-        for (let i = asksData.length - 1; i >= 0; i--) {
-            const [price, qty] = asksData[i];
-            runningTotalAsk += qty;
-            asksList.unshift({ price, qty, total: runningTotalAsk });
-        }
-        
-        asksList.forEach(ask => {
-            const row = document.createElement("div");
-            row.className = "ob-row ask";
-            const maxTotal = asksList[0] ? asksList[0].total : 1;
-            const depthVal = Math.min((ask.total / (maxTotal * 1.1)) * 100, 100);
-            
-            row.innerHTML = `
-                <div class="ob-depth-bar" style="width: ${depthVal}%"></div>
-                <span class="ob-price">${ask.price.toFixed(decimals)}</span>
-                <span class="text-right">${ask.qty.toFixed(amountDecs)}</span>
-                <span class="text-right">${(ask.qty * ask.price).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
-            `;
-            
-            row.addEventListener("click", () => {
-                if (manualOrderType === "LIMIT") {
-                    inputPrice.value = ask.price.toFixed(decimals);
-                }
-                inputQty.value = formatAmountInput(ask.qty);
-                inputTotal.value = (ask.qty * ask.price).toFixed(2);
-            });
-            
-            obAsks.appendChild(row);
-        });
-        
-        // Spread / Mid Price
-        obMidVal.textContent = `$${lastPrice.toFixed(decimals)}`;
-        obMidDir.textContent = Math.random() > 0.4 ? "▲" : "▼";
-        obMidDir.className = obMidDir.textContent === "▲" ? "mid-price-dir text-success" : "mid-price-dir text-danger";
-        
-        // Renderizar Bids (Compra) - Verde
-        obBids.innerHTML = "";
-        let runningTotalBid = 0;
-        const bidsList = [];
-        bidsData.forEach(([price, qty]) => {
-            runningTotalBid += qty;
-            bidsList.push({ price, qty, total: runningTotalBid });
-        });
-        
-        bidsList.forEach(bid => {
-            const row = document.createElement("div");
-            row.className = "ob-row bid";
-            const maxTotal = bidsList[bidsList.length - 1] ? bidsList[bidsList.length - 1].total : 1;
-            const depthVal = Math.min((bid.total / (maxTotal * 1.1)) * 100, 100);
-            
-            row.innerHTML = `
-                <div class="ob-depth-bar" style="width: ${depthVal}%"></div>
-                <span class="ob-price">${bid.price.toFixed(decimals)}</span>
-                <span class="text-right">${bid.qty.toFixed(amountDecs)}</span>
-                <span class="text-right">${(bid.qty * bid.price).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
-            `;
-            
-            row.addEventListener("click", () => {
-                if (manualOrderType === "LIMIT") {
-                    inputPrice.value = bid.price.toFixed(decimals);
-                }
-                inputQty.value = formatAmountInput(bid.qty);
-                inputTotal.value = (bid.qty * bid.price).toFixed(2);
-            });
-            
-            obBids.appendChild(row);
-        });
+    // REST fallback para profundidad cuando WebSocket no está disponible
+    if (lastPrice <= 0) return;
 
-        currentBids = bidsData;
-        currentAsks = asksData;
-        if (priceChart) { priceChart.update('none'); }
+    let bidsData = [];
+    let asksData = [];
 
-    }, 1500);
+    try {
+        const res = await fetch(`${API_BASE}/depth?worker_id=${activeWorkerId}`);
+        if (res.ok) {
+            const depth = await res.json();
+            bidsData = depth.bids || [];
+            asksData = depth.asks || [];
+        }
+    } catch (e) {
+        console.warn("Error fetching live depth:", e);
+    }
+
+    updateOrderBookDisplay(bidsData, asksData);
 }
 
 
@@ -1748,12 +1939,15 @@ async function changeAssetSymbolTo(feederType, symbol) {
         
         if (res.ok) {
             // Limpiar datos del gráfico para refrescar con el nuevo histórico
-            chartLabels = [];
-            chartData = [];
-            if (priceChart) {
-                priceChart.data.labels = [];
-                priceChart.data.datasets[0].data = [];
-                priceChart.update();
+            tickBuffer = [];
+            tradeMarkers = [];
+            if (candleSeries) {
+                candleSeries.setData([]);
+                candleSeries.setMarkers([]);
+            }
+            if (entryPriceLine) {
+                candleSeries.removePriceLine(entryPriceLine);
+                entryPriceLine = null;
             }
             fetchStatus();
             fetchLogs();
@@ -1803,9 +1997,13 @@ setInterval(() => {
     loadWorkers();
 }, 10000);
 
-// Order book y simulated trades siguen corriendo siempre
+// Order book: WebSocket primero, REST como fallback
 setInterval(() => {
-    runOrderBookSimulation();
+    if (!wsUsePollingFallback) {
+        requestDepth();  // Vía WebSocket cuando está vivo
+    } else {
+        runOrderBookSimulation();  // REST fallback
+    }
 }, 1500);
 
 setInterval(() => {

@@ -206,12 +206,37 @@ class TradingWorker:
         self.feeder_task = asyncio.create_task(self.feeder.start())
         self.sync_task = asyncio.create_task(self._periodic_sync())
 
+        # Notificar a clientes WebSocket del cambio de estado
+        await ws_server.broadcast(
+            self.worker_id,
+            make_event("worker_status", {
+                "worker_id": self.worker_id,
+                "is_running": True,
+                "symbol": self.symbol,
+                "feeder_type": self.feeder_type,
+                "name": self.name,
+            }),
+        )
+
     async def stop(self):
         if not self.is_running:
             return
 
         self.is_running = False
         self.db.log("INFO", f"Deteniendo Worker '{self.name}'...", self.worker_id)
+
+        # Notificar a clientes WebSocket del cambio de estado
+        await ws_server.broadcast(
+            self.worker_id,
+            make_event("worker_status", {
+                "worker_id": self.worker_id,
+                "is_running": False,
+                "symbol": self.symbol,
+                "feeder_type": self.feeder_type,
+                "name": self.name,
+            }),
+        )
+
         await self.feeder.stop()
 
         if self.feeder_task:
@@ -277,6 +302,9 @@ class TradingWorker:
                                     "edge": getattr(self.strategy, "edge", 0.0),
                                     "last_position": getattr(
                                         self.strategy, "last_position", None
+                                    ),
+                                    "entry_price": getattr(
+                                        self.strategy, "entry_price", 0.0
                                     ),
                                 }),
                             )
@@ -933,6 +961,31 @@ class TradingEngine:
         self.db = db
         self.workers = {}
         self._load_workers()
+        self._setup_log_broadcast()
+
+    def _setup_log_broadcast(self):
+        """Registra un hook en DatabaseManager para transmitir logs vía WebSocket."""
+
+        def broadcast_log(level, message, worker_id, timestamp):
+            try:
+                asyncio.get_event_loop().create_task(
+                    ws_server.broadcast(
+                        worker_id,
+                        make_event(
+                            "log",
+                            {
+                                "level": level,
+                                "message": message,
+                                "timestamp": timestamp.isoformat(),
+                                "worker_id": worker_id,
+                            },
+                        ),
+                    )
+                )
+            except Exception:
+                pass  # El broadcast de logs nunca debe romper el flujo principal
+
+        self.db.add_log_hook(broadcast_log)
 
     def _load_workers(self):
         # Intentar leer configuraciones de múltiples workers de .env

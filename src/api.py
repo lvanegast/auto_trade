@@ -184,11 +184,10 @@ async def get_status(worker_id: str = "worker_1"):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/depth")
-async def get_depth(worker_id: str = "worker_1"):
-    """Retorna las órdenes activas en el libro de órdenes (bids y asks) para el gráfico de profundidad."""
+async def _get_depth_data(worker_id: str) -> dict:
+    """Obtiene datos del libro de órdenes para un worker (compartido por REST y WebSocket)."""
     if worker_id not in engine.workers:
-        raise HTTPException(status_code=404, detail="Worker no encontrado")
+        return {"bids": [], "asks": []}
 
     worker = engine.workers[worker_id]
     symbol = worker.symbol
@@ -273,6 +272,14 @@ async def get_depth(worker_id: str = "worker_1"):
     except Exception as e:
         print("Error generating simulated depth:", e)
         return {"bids": [], "asks": []}
+
+
+@app.get("/api/depth")
+async def get_depth(worker_id: str = "worker_1"):
+    """Retorna las órdenes activas en el libro de órdenes (bids y asks) para el gráfico de profundidad."""
+    if worker_id not in engine.workers:
+        raise HTTPException(status_code=404, detail="Worker no encontrado")
+    return await _get_depth_data(worker_id)
 
 
 @app.get("/api/trades")
@@ -537,10 +544,17 @@ async def websocket_endpoint(websocket: WebSocket, worker_id: str):
     """Streaming en tiempo real para un worker específico.
 
     Eventos enviados:
+        - initial_state: estado completo al conectar
         - price_update: nuevo precio recibido
-        - status_update: cambio de estado del worker
+        - worker_status: cambio de estado del worker (start/stop)
         - trade_update: nuevo trade ejecutado
-        - log: nueva entrada de log
+        - depth_update: libro de órdenes (respuesta a comando "depth")
+        - log: nueva entrada de log (tiempo real)
+        - heartbeat: keep-alive periódico
+
+    Comandos aceptados del cliente:
+        - "ping" → responde {"type":"pong"}
+        - "depth" → responde {"type":"depth_update","data":{...}}
     """
     if worker_id not in engine.workers:
         await websocket.close(code=4004, reason="Worker no encontrado")
@@ -558,9 +572,16 @@ async def websocket_endpoint(websocket: WebSocket, worker_id: str):
             try:
                 # Esperar mensajes del cliente (pings, comandos) con timeout
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
-                # Por ahora solo usamos pings, el cliente puede enviar "ping"
                 if data == "ping":
                     await websocket.send_text('{"type":"pong"}')
+                elif data == "depth":
+                    depth_data = await _get_depth_data(worker_id)
+                    import json as json_mod
+                    await websocket.send_text(
+                        json_mod.dumps(
+                            make_event("depth_update", depth_data), default=str
+                        )
+                    )
             except asyncio.TimeoutError:
                 # Heartbeat: verificar que el cliente siga vivo
                 try:

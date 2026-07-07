@@ -15,8 +15,17 @@ class DatabaseManager:
         self.dbname = os.getenv("DB_NAME", "trading_bot")
         self.user = os.getenv("DB_USER", "trading_user")
         self.password = os.getenv("DB_PASSWORD", "trading_password")
+        self._log_hooks = []
 
         self.init_db()
+
+    def add_log_hook(self, hook):
+        """Registra un callback para transmitir logs en tiempo real.
+
+        El callback recibe: (level, message, worker_id, timestamp)
+        Se llama sincrónicamente después de cada inserción exitosa en logs.
+        """
+        self._log_hooks.append(hook)
 
     def _get_connection(self):
         """Retorna una conexión a la base de datos PostgreSQL."""
@@ -152,6 +161,12 @@ class DatabaseManager:
             with conn.cursor() as cursor:
                 cursor.execute(query, (now, level, message, worker_id))
                 conn.commit()
+            # Notificar hooks de log en tiempo real (no deben lanzar excepciones)
+            for hook in self._log_hooks:
+                try:
+                    hook(level, message, worker_id, now)
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[Error de Logs] No se pudo guardar log en DB: {e}")
             if conn:
