@@ -35,7 +35,9 @@ class TradingWorker:
         self.base_asset, self.quote_asset = self._parse_symbol()
 
         # Inicializar estrategia de arbitraje de latencia
-        self.strategy = LeadLagArbitrageStrategy(self.symbol)
+        self.strategy = LeadLagArbitrageStrategy(
+            self.symbol, db=self.db, worker_id=self.worker_id
+        )
 
         if self.feeder_type == "oanda":
             self.feeder = OandaFeeder(self.symbol, self.queue)
@@ -56,6 +58,8 @@ class TradingWorker:
         self.engine_task = None
         self.feeder_task = None
         self.sync_task = None
+        self.last_bid = 0.0
+        self.last_ask = 0.0
 
         # Cliente de ejecución para Alpaca
         self.alpaca_client = None
@@ -173,6 +177,29 @@ class TradingWorker:
         if self.base_asset not in assets:
             self._update_db_portfolio(self.base_asset, 0.0)
 
+    def _restore_position_from_db(self):
+        """Restaura el estado de la posición abierta desde la DB al iniciar el worker."""
+        pos = self.db.get_open_position_by_worker(self.worker_id)
+        if pos:
+            self.strategy.last_position = pos["side"]
+            self.strategy.entry_price = float(pos["entry_price"])
+            self.strategy.entry_lead_price = float(pos["entry_lead_price"])
+            self.strategy._position_id = pos["id"]
+            from datetime import timezone
+            entry_time = pos["entry_time"]
+            if entry_time.tzinfo is None:
+                entry_time = entry_time.replace(tzinfo=timezone.utc)
+            now = datetime.datetime.now(timezone.utc)
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
+            elapsed = (now - entry_time).total_seconds()
+            self.strategy.entry_time = asyncio.get_event_loop().time() - elapsed
+            self.db.log(
+                "INFO",
+                f"Posición restaurada desde DB: {pos['side']} @ {pos['entry_price']} (ID: {pos['id']})",
+                self.worker_id,
+            )
+
     async def start(self):
         if self.is_running:
             return
@@ -184,6 +211,9 @@ class TradingWorker:
             f"Iniciando Worker '{self.name}' ({self.feeder_type.upper()}) para {self.symbol}...",
             self.worker_id,
         )
+
+        # Restaurar posición abierta desde DB si existe
+        self._restore_position_from_db()
 
         # Sincronizar balances reales según corresponda
         if self.alpaca_client and self.feeder_type == "alpaca":
@@ -286,6 +316,8 @@ class TradingWorker:
                 event = await self.queue.get()
                 try:
                     if event.event_type == "PRICE_UPDATE":
+                        self.last_bid = event.bid
+                        self.last_ask = event.ask
                         signal = self.strategy.on_price_update(event)
                         # Broadcast del precio a clientes WebSocket (no bloqueante)
                         if ws_server.has_clients(self.worker_id):
@@ -305,6 +337,9 @@ class TradingWorker:
                                     ),
                                     "entry_price": getattr(
                                         self.strategy, "entry_price", 0.0
+                                    ),
+                                    "position_id": getattr(
+                                        self.strategy, "_position_id", None
                                     ),
                                 }),
                             )
@@ -418,6 +453,7 @@ class TradingWorker:
                     external_order_id=str(order.id),
                     status=order_status,
                     worker_id=self.worker_id,
+                    position_id=getattr(signal, "position_id", None),
                 )
                 await self._sync_alpaca_portfolio()
             except Exception as e:
@@ -472,6 +508,7 @@ class TradingWorker:
                         external_order_id=str(trade_id),
                         status="COMPLETED",
                         worker_id=self.worker_id,
+                        position_id=getattr(signal, "position_id", None),
                     )
                     await self._sync_oanda_portfolio()
                 else:
@@ -567,6 +604,7 @@ class TradingWorker:
                             external_order_id=str(order_id),
                             status="COMPLETED",
                             worker_id=self.worker_id,
+                            position_id=getattr(signal, "position_id", None),
                         )
                         await self._sync_kalshi_portfolio()
                     else:
@@ -595,6 +633,7 @@ class TradingWorker:
                         amount=contracts_count,
                         status="COMPLETED",
                         worker_id=self.worker_id,
+                        position_id=getattr(signal, "position_id", None),
                     )
                     self._update_db_portfolio(self.quote_asset, new_quote)
                     self._update_db_portfolio(self.base_asset, new_base)
@@ -622,6 +661,7 @@ class TradingWorker:
                         amount=base_balance,
                         status="COMPLETED",
                         worker_id=self.worker_id,
+                        position_id=getattr(signal, "position_id", None),
                     )
                     self._update_db_portfolio(self.quote_asset, new_quote)
                     self._update_db_portfolio(self.base_asset, new_base)
@@ -659,6 +699,7 @@ class TradingWorker:
                 amount=amount_to_buy,
                 status="COMPLETED",
                 worker_id=self.worker_id,
+                position_id=getattr(signal, "position_id", None),
             )
             self._update_db_portfolio(self.quote_asset, new_quote)
             self._update_db_portfolio(self.base_asset, new_base)
@@ -692,6 +733,7 @@ class TradingWorker:
                 amount=amount_to_sell,
                 status="COMPLETED",
                 worker_id=self.worker_id,
+                position_id=getattr(signal, "position_id", None),
             )
             self._update_db_portfolio(self.quote_asset, new_quote)
             self._update_db_portfolio(self.base_asset, new_base)

@@ -198,6 +198,7 @@
                 <div class="workspace-card bottom-tabs-card">
                     <div class="bottom-tabs-header">
                         <button class="bottom-tab-btn active" data-target="tab-panel-open-orders">Órdenes Abiertas</button>
+                        <button class="bottom-tab-btn" data-target="tab-panel-positions">Posiciones</button>
                         <button class="bottom-tab-btn" data-target="tab-panel-portfolio">Mi Portafolio</button>
                         <button class="bottom-tab-btn" data-target="tab-panel-trades">Historial de Operaciones</button>
                         <button class="bottom-tab-btn" data-target="tab-panel-logs">Consola de Eventos</button>
@@ -225,6 +226,52 @@
                                     </tr>
                                 </tbody>
                             </table>
+                        </div>
+                    </div>
+
+                    <!-- Tab: Posiciones (XTB-Style) -->
+                    <div class="bottom-tab-panel hidden" id="tab-panel-positions">
+                        <div class="position-sub-tabs">
+                            <button class="pos-sub-tab active" data-pos-tab="open">Abiertas</button>
+                            <button class="pos-sub-tab" data-pos-tab="closed">Cerradas</button>
+                            <button class="pos-sub-tab" data-pos-tab="history">Historial</button>
+                        </div>
+
+                        <div id="pos-tab-open" class="pos-tab-content">
+                            <div class="position-cards-grid" id="open-positions-grid">
+                                <div class="text-center text-muted" style="padding: 24px;">Cargando posiciones...</div>
+                            </div>
+                        </div>
+
+                        <div id="pos-tab-closed" class="pos-tab-content hidden">
+                            <div class="position-cards-grid" id="closed-positions-grid">
+                                <div class="text-center text-muted" style="padding: 24px;">Cargando posiciones cerradas...</div>
+                            </div>
+                        </div>
+
+                        <div id="pos-tab-history" class="pos-tab-content hidden">
+                            <div class="table-scroller">
+                                <table class="trading-table">
+                                    <thead>
+                                        <tr>
+                                            <th>ID</th>
+                                            <th>Par</th>
+                                            <th>Lado</th>
+                                            <th>Entrada</th>
+                                            <th>Salida</th>
+                                            <th>Monto</th>
+                                            <th>P&L</th>
+                                            <th>Motivo</th>
+                                            <th>Fecha</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="position-history-table-body">
+                                        <tr>
+                                            <td colspan="9" class="text-center text-muted">Cargando historial...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
 
@@ -446,6 +493,6 @@
         </div>
     </div>
 
-    <script src="app.js?v=6"></script>
+    <script src="app.js?v=10"></script>
 </body>
 </html>

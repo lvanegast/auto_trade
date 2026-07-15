@@ -118,6 +118,7 @@ function connectWebSocket(workerId) {
         // Cargar estado inicial desde REST mientras el WS calienta
         fetchStatus();
         fetchTrades();
+        fetchPositions();
         loadWorkers();
     };
 
@@ -206,6 +207,7 @@ function handleWsEvent(event) {
             // Nuevo trade: refrescar tablas y agregar marcador en el gráfico
             fetchTrades();
             fetchStatus();
+            fetchPositions();
             if (data.price && data.side) {
                 addTradeMarker(Math.floor(Date.now() / 1000), data.side, data.price);
             }
@@ -421,6 +423,11 @@ function addChartPoint(price) {
     pushTick(price);
 }
 
+function formatCurrency(value) {
+    if (value === null || value === undefined) return "$0.00";
+    return "$" + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 function updateTickerDisplay(data) {
     const priceEl = document.getElementById("ticker-price");
     const symbolEl = document.getElementById("ticker-symbol");
@@ -463,13 +470,13 @@ function updatePortfolioDisplay(data) {
     // Actualizar balances en el panel de trading
     if (data.portfolio && data.quote_asset) {
         availableQuote = data.portfolio[data.quote_asset] || 0;
-        document.getElementById("available-quote").textContent =
-            formatCurrency(availableQuote) + " " + data.quote_asset;
+        const el = document.getElementById("available-quote") || document.getElementById("available-funds-label");
+        if (el) el.textContent = formatCurrency(availableQuote) + " " + data.quote_asset;
     }
     if (data.portfolio && data.base_asset) {
         availableBase = data.portfolio[data.base_asset] || 0;
-        document.getElementById("available-base").textContent =
-            availableBase.toFixed(6) + " " + data.base_asset;
+        const el = document.getElementById("available-base");
+        if (el) el.textContent = availableBase.toFixed(6) + " " + data.base_asset;
     }
 }
 
@@ -684,6 +691,15 @@ const portfolioWalletTableBody = document.getElementById("portfolio-wallet-table
 const tradesTableBody = document.getElementById("trades-table-body");
 const logConsole = document.getElementById("log-console");
 
+// Position panel elements
+const openPositionsGrid = document.getElementById("open-positions-grid");
+const closedPositionsGrid = document.getElementById("closed-positions-grid");
+const positionHistoryTableBody = document.getElementById("position-history-table-body");
+const posSubTabs = document.querySelectorAll(".pos-sub-tab");
+const posTabOpen = document.getElementById("pos-tab-open");
+const posTabClosed = document.getElementById("pos-tab-closed");
+const posTabHistory = document.getElementById("pos-tab-history");
+
 const detailEma9 = document.getElementById("detail-ema9");
 const detailEma21 = document.getElementById("detail-ema21");
 const detailRsiVal = document.getElementById("detail-rsi-val");
@@ -746,6 +762,7 @@ function aggregateTicks(ticks, tfMinutes) {
     let open = 0, high = -Infinity, low = Infinity, close = 0;
 
     for (const tick of ticks) {
+        if (!tick.time || !tick.price || tick.time <= 0 || tick.price <= 0) continue;
         const tMs = tick.time * 1000;
         const bucket = Math.floor(tMs / bucketMs) * bucketMs;
 
@@ -756,10 +773,12 @@ function aggregateTicks(ticks, tfMinutes) {
             low = tick.price;
             close = tick.price;
         } else if (bucket !== bucketStart) {
-            candles.push({
-                time: Math.floor(bucketStart / 1000),
-                open, high, low, close,
-            });
+            if (isFinite(open) && isFinite(high) && isFinite(low) && isFinite(close)) {
+                candles.push({
+                    time: Math.floor(bucketStart / 1000),
+                    open, high, low, close,
+                });
+            }
             bucketStart = bucket;
             open = tick.price;
             high = tick.price;
@@ -771,7 +790,7 @@ function aggregateTicks(ticks, tfMinutes) {
             if (tick.price < low) low = tick.price;
         }
     }
-    if (bucketStart !== null) {
+    if (bucketStart !== null && isFinite(open) && isFinite(high) && isFinite(low) && isFinite(close)) {
         candles.push({
             time: Math.floor(bucketStart / 1000),
             open, high, low, close,
@@ -859,22 +878,22 @@ function buildChart(containerId, feederType) {
 
 function initChart(feederType) {
     feederType = feederType || "alpaca";
+    _currentCandleBucket = null;
+    _currentCandle = null;
+    candleBuffer = [];
     buildChart("priceChart", feederType);
 
-    // Cargar datos existentes si hay
-    if (tickBuffer.length > 0) {
-        const candles = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
-        if (candles.length > 0 && candleSeries) {
-            candleSeries.setData(candles);
+    if (tickBuffer.length > 0 && candleSeries) {
+        candleBuffer = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
+        if (candleBuffer.length > 0) {
+            try { candleSeries.setData(candleBuffer.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close }))); } catch (_) {}
         }
     }
 
-    // Restaurar marcadores de trade
     if (tradeMarkers.length > 0 && candleSeries) {
         candleSeries.setMarkers(tradeMarkers);
     }
 
-    // Configurar timeframe buttons
     document.querySelectorAll(".tf-btn").forEach(btn => {
         btn.addEventListener("click", function () {
             document.querySelectorAll(".tf-btn").forEach(b => b.classList.remove("active"));
@@ -887,7 +906,6 @@ function initChart(feederType) {
         });
     });
 
-    // Activar botón del timeframe actual
     const activeBtn = document.querySelector(`.tf-btn[data-tf="${currentTimeframe}"]`);
     if (activeBtn) activeBtn.classList.add("active");
 }
@@ -895,9 +913,13 @@ function initChart(feederType) {
 function applyTimeframe() {
     /** Re-agrega todas las velas para el timeframe seleccionado. */
     if (!candleSeries || tickBuffer.length === 0) return;
-    const candles = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
-    candleSeries.setData(candles);
-    // Re-aplicar marcadores
+    _currentCandleBucket = null;
+    _currentCandle = null;
+    candleBuffer = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
+    const valid = candleBuffer.filter(c => c.time > 0 && isFinite(c.open) && isFinite(c.high) && isFinite(c.low) && isFinite(c.close));
+    if (valid.length > 0) {
+        candleSeries.setData(valid.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })));
+    }
     if (tradeMarkers.length > 0) {
         candleSeries.setMarkers(tradeMarkers);
     }
@@ -907,13 +929,29 @@ function applyTimeframe() {
 // Funciones de actualización del gráfico (Lightweight Charts)
 // ============================================================
 
+let _currentCandleBucket = null;
+let _currentCandle = null;
+let candleBuffer = [];
+let _chartDirty = false;
+let _rafId = null;
+
+function _flushChart() {
+    _rafId = null;
+    if (!candleSeries || candleBuffer.length === 0) return;
+    _chartDirty = false;
+    try {
+        candleSeries.setData(candleBuffer.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })));
+    } catch (e) {
+        console.warn("[flushChart] setData failed:", e.message);
+    }
+}
+
 function pushTick(price) {
-    /** Agrega un tick al buffer y actualiza la vela actual. */
+    /** Agrega un tick al buffer y mantiene candleBuffer sincronizado. */
     if (!price || price <= 0) return;
     const now = Math.floor(Date.now() / 1000);
     tickBuffer.push({ time: now, price: price });
 
-    // Limitar buffer a ~8 horas de ticks
     const maxTicks = 30000;
     if (tickBuffer.length > maxTicks) {
         tickBuffer = tickBuffer.slice(-maxTicks);
@@ -921,20 +959,31 @@ function pushTick(price) {
 
     if (!candleSeries) return;
 
-    const tfMin = TF_MINUTES[currentTimeframe];
-    const bucketMs = tfMin * 60 * 1000;
-    const bucket = Math.floor(now * 1000 / bucketMs) * bucketMs;
+    try {
+        const tfMin = TF_MINUTES[currentTimeframe] || 1;
+        const bucketMs = tfMin * 60 * 1000;
+        const bucket = Math.floor((now * 1000) / bucketMs) * bucketMs;
+        const bucketSec = Math.floor(bucket / 1000);
 
-    // Tomar ticks relevantes para el periodo actual y anterior
-    const relevantTicks = tickBuffer.filter(t => {
-        const tBucket = Math.floor(t.time * 1000 / bucketMs) * bucketMs;
-        return tBucket >= bucket - bucketMs;
-    }).slice(-500);
+        const last = candleBuffer.length > 0 ? candleBuffer[candleBuffer.length - 1] : null;
+        if (!last || last.time !== bucketSec) {
+            candleBuffer.push({ time: bucketSec, open: price, high: price, low: price, close: price });
+        } else {
+            last.close = price;
+            if (price > last.high) last.high = price;
+            if (price < last.low) last.low = price;
+        }
 
-    const candles = aggregateTicks(relevantTicks, tfMin);
-    if (candles.length > 0) {
-        const lastCandle = candles[candles.length - 1];
-        candleSeries.update(lastCandle);
+        if (candleBuffer.length > 1000) {
+            candleBuffer = candleBuffer.slice(-800);
+        }
+
+        if (!_chartDirty) {
+            _chartDirty = true;
+            _rafId = requestAnimationFrame(_flushChart);
+        }
+    } catch (e) {
+        console.warn("[pushTick] Error:", e.message);
     }
 }
 
@@ -995,7 +1044,7 @@ function clearTradeLines() {
 }
 
 function updateDepthOnChart(bids, asks) {
-    /** Actualiza la serie de volumen/depth en el gráfico. */
+    /** Actualiza la serie de volumen/depth en el gráfico, alineado a buckets de velas. */
     if (!volumeSeries || !priceChart) return;
     let totalBidVol = 0;
     if (bids && bids.length > 0) {
@@ -1006,7 +1055,11 @@ function updateDepthOnChart(bids, asks) {
         asks.slice(0, 5).forEach(a => { totalAskVol += a[1]; });
     }
     const netVol = totalBidVol - totalAskVol;
-    const time = Math.floor(Date.now() / 1000);
+    const now = Math.floor(Date.now() / 1000);
+    const tfMin = TF_MINUTES[currentTimeframe];
+    const bucketMs = tfMin * 60 * 1000;
+    const bucket = Math.floor((now * 1000) / bucketMs) * bucketMs;
+    const time = Math.floor(bucket / 1000);
     try {
         volumeSeries.update({ time, value: netVol, color: netVol >= 0 ? "rgba(2,192,118,0.25)" : "rgba(248,73,96,0.25)" });
     } catch (_) { /* ignore */ }
@@ -1023,12 +1076,182 @@ bottomTabBtns.forEach(btn => {
         bottomTabBtns.forEach(b => b.classList.remove("active"));
         bottomTabPanels.forEach(p => p.classList.add("hidden"));
         
-        // Activar seleccionado
-        btn.classList.add("active");
-        const targetId = btn.getAttribute("data-target");
-        document.getElementById(targetId).classList.remove("hidden");
+    // Activar seleccionado
+    btn.classList.add("active");
+    const targetId = btn.getAttribute("data-target");
+    document.getElementById(targetId).classList.remove("hidden");
+});
+});
+
+// --- POSICIONES: SUB-TABS ---
+posSubTabs.forEach(tab => {
+    tab.addEventListener("click", () => {
+        posSubTabs.forEach(t => t.classList.remove("active"));
+        tab.classList.add("active");
+        const posTab = tab.getAttribute("data-pos-tab");
+        posTabOpen.classList.toggle("hidden", posTab !== "open");
+        posTabClosed.classList.toggle("hidden", posTab !== "closed");
+        posTabHistory.classList.toggle("hidden", posTab !== "history");
     });
 });
+
+// --- POSICIONES: FETCH & RENDER ---
+async function fetchPositions() {
+    try {
+        const [openRes, closedRes, histRes] = await Promise.all([
+            fetch(`${API_BASE}/positions?worker_id=${activeWorkerId}&status=OPEN`),
+            fetch(`${API_BASE}/positions?worker_id=${activeWorkerId}&status=CLOSED&limit=20`),
+            fetch(`${API_BASE}/positions?worker_id=${activeWorkerId}&limit=50`)
+        ]);
+        const openPositions = openRes.ok ? await openRes.json() : [];
+        const closedPositions = closedRes.ok ? await closedRes.json() : [];
+        const allPositions = histRes.ok ? await histRes.json() : [];
+
+        renderOpenPositions(openPositions);
+        renderClosedPositions(closedPositions);
+        renderPositionHistory(allPositions);
+    } catch (err) {
+        console.error("Error fetching positions:", err);
+    }
+}
+
+function renderOpenPositions(positions) {
+    if (!openPositionsGrid) return;
+    if (!positions || positions.length === 0) {
+        openPositionsGrid.innerHTML = '<div class="pos-empty-msg">No hay posiciones abiertas</div>';
+        return;
+    }
+    openPositionsGrid.innerHTML = positions.map(p => buildPositionCard(p, true)).join("");
+}
+
+function renderClosedPositions(positions) {
+    if (!closedPositionsGrid) return;
+    if (!positions || positions.length === 0) {
+        closedPositionsGrid.innerHTML = '<div class="pos-empty-msg">No hay posiciones cerradas recientes</div>';
+        return;
+    }
+    closedPositionsGrid.innerHTML = positions.map(p => buildPositionCard(p, false)).join("");
+}
+
+function renderPositionHistory(positions) {
+    if (!positionHistoryTableBody) return;
+    if (!positions || positions.length === 0) {
+        positionHistoryTableBody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">Sin historial de posiciones</td></tr>';
+        return;
+    }
+    positionHistoryTableBody.innerHTML = positions.map(p => {
+        const isBuy = p.side === "BUY";
+        const sideClass = isBuy ? "badge-buy" : "badge-sell";
+        const entry = parseFloat(p.entry_price) || 0;
+        const close = parseFloat(p.close_price) || 0;
+        const amount = parseFloat(p.amount) || 0;
+        const pnl = p.pnl != null ? parseFloat(p.pnl) : (isBuy ? (close - entry) * amount : (entry - close) * amount);
+        const pnlClass = pnl >= 0 ? "text-success" : "text-danger";
+        const pnlSign = pnl >= 0 ? "+" : "";
+        const entryTime = p.entry_time ? new Date(p.entry_time).toLocaleString() : "-";
+        return `<tr>
+            <td class="font-mono">#${p.id}</td>
+            <td>${getDisplayBase(p.symbol)}</td>
+            <td><span class="${sideClass}">${p.side}</span></td>
+            <td class="font-mono">$${entry.toFixed(entry < 1.5 ? 4 : 2)}</td>
+            <td class="font-mono">${close > 0 ? "$" + close.toFixed(close < 1.5 ? 4 : 2) : "-"}</td>
+            <td class="font-mono">${amount.toFixed(4)}</td>
+            <td class="font-mono ${pnlClass}">${pnlSign}$${pnl.toFixed(2)}</td>
+            <td class="text-muted" style="max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${p.close_reason || "-"}</td>
+            <td class="pos-card-time">${entryTime}</td>
+        </tr>`;
+    }).join("");
+}
+
+function buildPositionCard(pos, isOpen) {
+    const isBuy = pos.side === "BUY";
+    const sideClass = isBuy ? "buy" : "sell";
+    const entry = parseFloat(pos.entry_price) || 0;
+    const amount = parseFloat(pos.amount) || 0;
+    const leadPrice = parseFloat(pos.entry_lead_price) || 0;
+    const closePrice = parseFloat(pos.close_price) || 0;
+    const currentPrice = lastPrice || 0;
+
+    let pnl = 0, pnlPct = 0;
+    if (isOpen && currentPrice > 0 && entry > 0) {
+        pnl = isBuy ? (currentPrice - entry) * amount : (entry - currentPrice) * amount;
+        pnlPct = isBuy ? ((currentPrice - entry) / entry) * 100 : ((entry - currentPrice) / entry) * 100;
+    } else if (!isOpen && closePrice > 0 && entry > 0) {
+        pnl = pos.pnl != null ? parseFloat(pos.pnl) : (isBuy ? (closePrice - entry) * amount : (entry - closePrice) * amount);
+        pnlPct = isBuy ? ((closePrice - entry) / entry) * 100 : ((entry - closePrice) / entry) * 100;
+    }
+
+    const pnlClass = pnl >= 0 ? "text-success" : "text-danger";
+    const pnlSign = pnl >= 0 ? "+" : "";
+    const cardClass = isOpen ? "" : " closed";
+    const entryTime = pos.entry_time ? new Date(pos.entry_time).toLocaleString() : "-";
+    const decimals = entry < 1.5 ? 4 : 2;
+
+    let footerHtml = "";
+    if (isOpen) {
+        footerHtml = `<div class="pos-card-footer">
+            <button class="btn-close-position" onclick="closePosition(${pos.id})">Cerrar Posición</button>
+        </div>`;
+    }
+
+    return `<div class="pos-card${cardClass}">
+        <div class="pos-card-header">
+            <span class="pos-card-symbol">${getDisplayBase(pos.symbol)}</span>
+            <span class="pos-card-side ${sideClass}">${pos.side}</span>
+        </div>
+        <div class="pos-card-body">
+            <div class="pos-card-field">
+                <span class="pos-card-label">Entrada</span>
+                <span class="pos-card-value">$${entry.toFixed(decimals)}</span>
+            </div>
+            <div class="pos-card-field">
+                <span class="pos-card-label">Cantidad</span>
+                <span class="pos-card-value">${amount.toFixed(4)}</span>
+            </div>
+            <div class="pos-card-field">
+                <span class="pos-card-label">Líder (Binance)</span>
+                <span class="pos-card-value">$${leadPrice.toFixed(decimals)}</span>
+            </div>
+            <div class="pos-card-field">
+                <span class="pos-card-label">${isOpen ? "Actual" : "Salida"}</span>
+                <span class="pos-card-value">${isOpen ? "$" + currentPrice.toFixed(decimals) : (closePrice > 0 ? "$" + closePrice.toFixed(decimals) : "-")}</span>
+            </div>
+        </div>
+        <div class="pos-card-pnl">
+            <span class="pos-pnl-label">P&L</span>
+            <span class="pos-pnl-value ${pnlClass}">${pnlSign}$${pnl.toFixed(2)}</span>
+            <span class="pos-pnl-pct ${pnlClass}">${pnlSign}${pnlPct.toFixed(2)}%</span>
+        </div>
+        <div class="pos-card-time">${entryTime} · #${pos.id}</div>
+        ${footerHtml}
+    </div>`;
+}
+
+async function closePosition(positionId) {
+    if (!confirm("¿Cerrar esta posición? Se ejecutará una orden de cierre.")) return;
+
+    try {
+        const res = await fetch(`${API_BASE}/position/close`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ worker_id: activeWorkerId, position_id: positionId })
+        });
+        if (res.ok) {
+            setTimeout(() => {
+                fetchPositions();
+                fetchTrades();
+                fetchStatus();
+            }, 500);
+        } else {
+            const err = await res.json();
+            alert(`Error: ${err.detail || "No se pudo cerrar la posición"}`);
+        }
+    } catch (err) {
+        console.error("Error closing position:", err);
+        alert("Error de conexión al cerrar posición.");
+    }
+}
+window.closePosition = closePosition;
 
 
 // --- TOGGLE PANELS DERECHA (MANUAL / BOT AUTOMÁTICO) ---
@@ -1247,6 +1470,7 @@ function switchWorker(workerId) {
     fetchStatus();
     fetchLogs();
     fetchTrades();
+    fetchPositions();
 }
 
 
@@ -1346,19 +1570,22 @@ async function fetchStatus() {
         }
 
         // Alimentar gráfica desde el histórico del backend si cambiamos de activo o no hay datos
-        if (data.price_history && (data.symbol !== lastActiveSymbol || tickBuffer.length === 0)) {
-            // Cargar historial de precios en el buffer de ticks
+        if (data.price_history && data.price_history.length > 0 && (data.symbol !== lastActiveSymbol || tickBuffer.length === 0)) {
             tickBuffer = data.price_history.map(item => {
                 const d = new Date(item.timestamp);
                 const secs = Math.floor(d.getTime() / 1000);
-                return { time: secs, price: item.price };
-            });
-            if (candleSeries) {
-                const candles = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
-                candleSeries.setData(candles);
+                return { time: Number(secs) || 0, price: Number(item.price) || 0 };
+            }).filter(t => t.time > 0 && t.price > 0);
+            if (candleSeries && tickBuffer.length > 0) {
+                _currentCandleBucket = null;
+                _currentCandle = null;
+                candleBuffer = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
+                const valid = candleBuffer.filter(c => c.time > 0 && isFinite(c.open) && isFinite(c.high) && isFinite(c.low) && isFinite(c.close));
+                if (valid.length > 0) {
+                    try { candleSeries.setData(valid.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close }))); } catch (_) {}
+                }
             }
         } else {
-            // Alimentar gráfica con tick individual en tiempo real
             if (!isPredictionMarket) {
                 pushTick(lastPrice);
             }
@@ -1620,6 +1847,7 @@ async function cancelOrder(tradeId, externalOrderId) {
             fetchStatus();
             fetchLogs();
             fetchTrades();
+            fetchPositions();
         } else {
             const err = await res.json();
             alert(`Error al cancelar orden: ${err.detail || "Error desconocido"}`);
@@ -1701,6 +1929,7 @@ async function handleExecuteOrder() {
                 fetchStatus();
                 fetchLogs();
                 fetchTrades();
+                fetchPositions();
             }, 800);
         } else {
             const errData = await res.json();
@@ -1725,6 +1954,7 @@ async function startBot() {
         if (res.ok) {
             fetchStatus();
             fetchLogs();
+            fetchPositions();
         }
     } catch (err) {
         console.error("Error al arrancar el bot:", err);
@@ -1737,6 +1967,7 @@ async function stopBot() {
         if (res.ok) {
             fetchStatus();
             fetchLogs();
+            fetchPositions();
         }
     } catch (err) {
         console.error("Error al detener el bot:", err);
@@ -1941,6 +2172,8 @@ async function changeAssetSymbolTo(feederType, symbol) {
             // Limpiar datos del gráfico para refrescar con el nuevo histórico
             tickBuffer = [];
             tradeMarkers = [];
+            _currentCandleBucket = null;
+            _currentCandle = null;
             if (candleSeries) {
                 candleSeries.setData([]);
                 candleSeries.setMarkers([]);
@@ -1952,6 +2185,7 @@ async function changeAssetSymbolTo(feederType, symbol) {
             fetchStatus();
             fetchLogs();
             fetchTrades();
+            fetchPositions();
         } else {
             const err = await res.json();
             alert(`Error al cambiar símbolo: ${err.detail || "Error desconocido"}`);
@@ -1990,6 +2224,10 @@ setInterval(() => {
 
 setInterval(() => {
     if (wsUsePollingFallback) fetchTrades();
+}, 3000);
+
+setInterval(() => {
+    if (wsUsePollingFallback) fetchPositions();
 }, 3000);
 
 setInterval(() => {

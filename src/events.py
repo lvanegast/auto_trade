@@ -27,6 +27,7 @@ class SignalEvent(TradingEvent):
         price: float,
         reason: str = "",
         amount: float = None,
+        position_id: int = None,
     ):
         super().__init__("SIGNAL")
         self.symbol = symbol
@@ -34,6 +35,7 @@ class SignalEvent(TradingEvent):
         self.price = price
         self.reason = reason
         self.amount = amount
+        self.position_id = position_id
 
     def __str__(self):
         amount_str = f" x {self.amount}" if self.amount is not None else ""

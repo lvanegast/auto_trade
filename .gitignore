@@ -23,6 +23,7 @@ config.json
 
 # Claude
 CLAUDE.md
+AGENTS.md
 
 # OS
 .DS_Store

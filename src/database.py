@@ -84,10 +84,30 @@ class DatabaseManager:
                 worker_id VARCHAR(50) NOT NULL DEFAULT 'worker_1'
             );
             """,
+            # Tabla de posiciones abiertas (persistencia de estado del strategy)
+            """
+            CREATE TABLE IF NOT EXISTS positions (
+                id SERIAL PRIMARY KEY,
+                worker_id VARCHAR(50) NOT NULL DEFAULT 'worker_1',
+                symbol VARCHAR(100) NOT NULL,
+                side VARCHAR(10) NOT NULL,
+                entry_price NUMERIC(18, 8) NOT NULL,
+                entry_lead_price NUMERIC(18, 8) NOT NULL DEFAULT 0.0,
+                amount NUMERIC(18, 8) NOT NULL DEFAULT 1.0,
+                entry_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
+                close_price NUMERIC(18, 8),
+                close_time TIMESTAMP,
+                close_reason TEXT,
+                pnl NUMERIC(18, 8),
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
             # Migraciones para asegurar la longitud de las columnas
             "ALTER TABLE trades ALTER COLUMN symbol TYPE VARCHAR(100);",
             "ALTER TABLE portfolio_state ALTER COLUMN asset TYPE VARCHAR(100);",
             "ALTER TABLE portfolio_state ADD COLUMN IF NOT EXISTS worker_id VARCHAR(50) NOT NULL DEFAULT 'worker_1';",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS position_id INTEGER;",
         ]
 
         conn = None
@@ -184,11 +204,12 @@ class DatabaseManager:
         external_order_id: str = None,
         status: str = "COMPLETED",
         worker_id: str = "worker_1",
+        position_id: int = None,
     ) -> int:
         """Guarda un registro de trade en la base de datos."""
         query = """
-        INSERT INTO trades (timestamp, symbol, side, price, amount, total, status, external_order_id, worker_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
+        INSERT INTO trades (timestamp, symbol, side, price, amount, total, status, external_order_id, worker_id, position_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
         """
         now = datetime.now()
         total = price * amount
@@ -208,6 +229,7 @@ class DatabaseManager:
                         status,
                         external_order_id,
                         worker_id,
+                        position_id,
                     ),
                 )
                 trade_id = cursor.fetchone()[0]
@@ -376,6 +398,165 @@ class DatabaseManager:
                 worker_id,
             )
             return []
+        finally:
+            if conn:
+                conn.close()
+
+    def save_position(
+        self,
+        worker_id: str,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        entry_lead_price: float = 0.0,
+        amount: float = 1.0,
+    ) -> int:
+        """Guarda una posición abierta. Retorna el ID de la posición."""
+        query = """
+        INSERT INTO positions (worker_id, symbol, side, entry_price, entry_lead_price, amount, entry_time, status)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, 'OPEN') RETURNING id;
+        """
+        now = datetime.now()
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    query,
+                    (worker_id, symbol, side, entry_price, entry_lead_price, amount, now),
+                )
+                pos_id = cursor.fetchone()[0]
+                conn.commit()
+                self.log(
+                    "INFO",
+                    f"Posición abierta guardada: {side} {amount} {symbol} @ {entry_price} (ID: {pos_id})",
+                    worker_id,
+                )
+                return pos_id
+        except Exception as e:
+            self.log("ERROR", f"Error al guardar posición: {e}", worker_id)
+            if conn:
+                conn.rollback()
+            return -1
+        finally:
+            if conn:
+                conn.close()
+
+    def close_position(
+        self,
+        position_id: int,
+        close_price: float,
+        close_reason: str,
+        worker_id: str = "worker_1",
+    ):
+        """Cierra una posición abierta y calcula P&L."""
+        query = """
+        UPDATE positions
+        SET status = 'CLOSED', close_price = %s, close_time = %s, close_reason = %s,
+            pnl = CASE
+                WHEN side = 'BUY' THEN (%s - entry_price) * amount
+                WHEN side = 'SELL' THEN (entry_price - %s) * amount
+                ELSE 0
+            END
+        WHERE id = %s AND status = 'OPEN';
+        """
+        now = datetime.now()
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    query, (close_price, now, close_reason, close_price, close_price, position_id)
+                )
+                conn.commit()
+                self.log(
+                    "INFO",
+                    f"Posición #{position_id} cerrada: {close_reason} @ {close_price}",
+                    worker_id,
+                )
+        except Exception as e:
+            self.log("ERROR", f"Error al cerrar posición #{position_id}: {e}", worker_id)
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+                conn.close()
+
+    def get_open_positions(self, worker_id: str = None):
+        """Obtiene todas las posiciones abiertas."""
+        if worker_id:
+            query = "SELECT * FROM positions WHERE worker_id = %s AND status = 'OPEN' ORDER BY entry_time DESC;"
+            args = (worker_id,)
+        else:
+            query = "SELECT * FROM positions WHERE status = 'OPEN' ORDER BY entry_time DESC;"
+            args = ()
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, args)
+                return cursor.fetchall()
+        except Exception as e:
+            self.log("ERROR", f"Error al recuperar posiciones abiertas: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
+
+    def get_position_history(self, limit=50, worker_id: str = None):
+        """Obtiene el historial de posiciones cerradas."""
+        if worker_id:
+            query = "SELECT * FROM positions WHERE worker_id = %s AND status = 'CLOSED' ORDER BY close_time DESC LIMIT %s;"
+            args = (worker_id, limit)
+        else:
+            query = "SELECT * FROM positions WHERE status = 'CLOSED' ORDER BY close_time DESC LIMIT %s;"
+            args = (limit,)
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, args)
+                return cursor.fetchall()
+        except Exception as e:
+            self.log("ERROR", f"Error al recuperar historial de posiciones: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
+
+    def get_all_positions(self, limit=50, worker_id: str = None):
+        """Obtiene todas las posiciones (abiertas + cerradas)."""
+        if worker_id:
+            query = "SELECT * FROM positions WHERE worker_id = %s ORDER BY created_at DESC LIMIT %s;"
+            args = (worker_id, limit)
+        else:
+            query = "SELECT * FROM positions ORDER BY created_at DESC LIMIT %s;"
+            args = (limit,)
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, args)
+                return cursor.fetchall()
+        except Exception as e:
+            self.log("ERROR", f"Error al recuperar posiciones: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
+
+    def get_open_position_by_worker(self, worker_id: str):
+        """Obtiene la posición abierta más reciente de un worker."""
+        query = "SELECT * FROM positions WHERE worker_id = %s AND status = 'OPEN' ORDER BY entry_time DESC LIMIT 1;"
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, (worker_id,))
+                return cursor.fetchone()
+        except Exception as e:
+            self.log("ERROR", f"Error al recuperar posición abierta para {worker_id}: {e}")
+            return None
         finally:
             if conn:
                 conn.close()

@@ -170,6 +170,7 @@ async def get_status(worker_id: str = "worker_1"):
             "name": worker.name,
             "last_position": getattr(worker.strategy, "last_position", None),
             "avg_entry_price": avg_entry_price,
+            "position_id": getattr(worker.strategy, "_position_id", None),
             "indicators": indicators,
             "price_history": price_history,
             "teorical_probability": getattr(
@@ -250,22 +251,25 @@ async def _get_depth_data(worker_id: str) -> dict:
 
         import random
 
+        # Usar bid/ask reales del último quote si están disponibles
+        real_bid = getattr(worker, "last_bid", 0.0)
+        real_ask = getattr(worker, "last_ask", 0.0)
+        if real_bid > 0 and real_ask > 0 and real_ask > real_bid:
+            spread = real_ask - real_bid
+            mid = (real_bid + real_ask) / 2.0
+        else:
+            spread = last_price * 0.0006
+            mid = last_price
+
         bids = []
         asks = []
         for i in range(1, 15):
-            price_offset = last_price * (i * 0.001)
-            bids.append(
-                [
-                    round(last_price - price_offset, 5),
-                    round(random.uniform(0.1, 5.0), 4),
-                ]
-            )
-            asks.append(
-                [
-                    round(last_price + price_offset, 5),
-                    round(random.uniform(0.1, 5.0), 4),
-                ]
-            )
+            bid_price = mid - spread * 0.5 - (i * spread * 0.4)
+            ask_price = mid + spread * 0.5 + (i * spread * 0.4)
+            bid_size = random.uniform(0.5, 8.0) * (1.0 + random.uniform(-0.3, 0.3))
+            ask_size = random.uniform(0.5, 8.0) * (1.0 + random.uniform(-0.3, 0.3))
+            bids.append([round(bid_price, 5), round(bid_size, 4)])
+            asks.append([round(ask_price, 5), round(ask_size, 4)])
 
         return {"bids": bids, "asks": asks}
 
@@ -456,6 +460,104 @@ async def cancel_order(body: dict):
         return {"message": f"Orden marcada como cancelada. Nota: {e}"}
 
 
+@app.get("/api/positions")
+async def get_positions(limit: int = 50, worker_id: str = None, status: str = None):
+    """Retorna posiciones. status: 'OPEN', 'CLOSED', o None (todas)."""
+    try:
+        if status == "OPEN":
+            positions = db.get_open_positions(worker_id=worker_id)
+        elif status == "CLOSED":
+            positions = db.get_position_history(limit=limit, worker_id=worker_id)
+        else:
+            positions = db.get_all_positions(limit=limit, worker_id=worker_id)
+        formatted = []
+        for p in positions:
+            entry_time = p["entry_time"]
+            close_time = p.get("close_time")
+            formatted.append({
+                "id": p["id"],
+                "worker_id": p["worker_id"],
+                "symbol": p["symbol"],
+                "side": p["side"],
+                "entry_price": float(p["entry_price"]),
+                "entry_lead_price": float(p["entry_lead_price"]),
+                "amount": float(p["amount"]),
+                "entry_time": entry_time.isoformat() if entry_time else None,
+                "status": p["status"],
+                "close_price": float(p["close_price"]) if p.get("close_price") else None,
+                "close_time": close_time.isoformat() if close_time else None,
+                "close_reason": p.get("close_reason"),
+                "pnl": float(p["pnl"]) if p.get("pnl") is not None else None,
+            })
+        return formatted
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/position/close")
+async def close_position(body: dict):
+    """Cierra una posición abierta manualmente."""
+    worker_id = body.get("worker_id", "worker_1")
+    position_id = body.get("position_id")
+
+    if worker_id not in engine.workers:
+        raise HTTPException(status_code=404, detail="Worker no encontrado")
+
+    worker = engine.workers[worker_id]
+    strategy = worker.strategy
+
+    # Si se proporciona position_id, cerrar esa posición específica
+    if position_id:
+        pos = None
+        for p in db.get_open_positions(worker_id=worker_id):
+            if p["id"] == position_id:
+                pos = p
+                break
+        if not pos:
+            raise HTTPException(status_code=404, detail="Posición no encontrada o ya cerrada")
+
+        # Obtener precio actual
+        price = 0.0
+        if len(strategy.prices_df) > 0:
+            price = float(strategy.prices_df.iloc[-1]["price"])
+
+        # Si la posición activa del strategy coincide, cerrarla también
+        if strategy._position_id == position_id and strategy.last_position is not None:
+            side = "SELL" if strategy.last_position == "BUY" else "BUY"
+            signal = SignalEvent(
+                symbol=worker.symbol,
+                side=side,
+                price=price,
+                reason="Cierre manual por el usuario desde el Dashboard",
+                amount=float(pos["amount"]),
+                position_id=position_id,
+            )
+            await worker.queue.put(signal)
+            return {"message": f"Posición #{position_id} enviada a cerrar."}
+        else:
+            # Cerrar directamente en DB
+            db.close_position(position_id, price, "Cierre manual por el usuario", worker_id=worker_id)
+            return {"message": f"Posición #{position_id} cerrada en DB."}
+
+    # Sin position_id: cerrar la posición activa del strategy
+    if strategy.last_position is None:
+        raise HTTPException(status_code=400, detail="No hay posición activa para cerrar")
+
+    price = 0.0
+    if len(strategy.prices_df) > 0:
+        price = float(strategy.prices_df.iloc[-1]["price"])
+
+    side = "SELL" if strategy.last_position == "BUY" else "BUY"
+    signal = SignalEvent(
+        symbol=worker.symbol,
+        side=side,
+        price=price,
+        reason="Cierre manual por el usuario desde el Dashboard",
+    )
+    await worker.queue.put(signal)
+    return {"message": f"Posición {strategy.last_position} enviada a cerrar a {price}."}
+
+
 @app.post("/api/worker/config")
 async def configure_worker(body: dict):
     """Permite cambiar el símbolo del worker dinámicamente."""
@@ -512,9 +614,11 @@ async def configure_worker(body: dict):
             worker.feeder = MockFeeder(worker.symbol, worker.queue, interval=1.0)
 
         # Re-inicializar la estrategia con el nuevo símbolo
-        from src.strategy.ema_rsi import EmaRsiStrategy
+        from src.strategy.lead_lag_arbitrage import LeadLagArbitrageStrategy
 
-        worker.strategy = EmaRsiStrategy(worker.symbol)
+        worker.strategy = LeadLagArbitrageStrategy(
+            worker.symbol, db=db, worker_id=worker_id
+        )
 
         # Si tiene cliente Alpaca y la ejecución es real/paper (no simulación), pre-cargar historial
         if worker.alpaca_client and worker.feeder_type == "alpaca":
@@ -619,6 +723,7 @@ async def _send_initial_state(websocket: WebSocket, worker, worker_id: str):
                 "base_asset": worker.base_asset,
                 "quote_asset": worker.quote_asset,
                 "last_position": getattr(worker.strategy, "last_position", None),
+                "position_id": getattr(worker.strategy, "_position_id", None),
                 "teorical_probability": getattr(worker.strategy, "teorical_probability", 0.50),
                 "edge": getattr(worker.strategy, "edge", 0.0),
             },
