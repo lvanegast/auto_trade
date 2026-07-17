@@ -976,7 +976,14 @@ class TradingWorker:
                 for b in symbol_bars:
                     dt = b.timestamp.astimezone()
                     dt_naive = dt.replace(tzinfo=None)
-                    rows.append({"timestamp": dt_naive, "price": float(b.close)})
+                    rows.append({
+                        "timestamp": dt_naive,
+                        "open": float(b.open),
+                        "high": float(b.high),
+                        "low": float(b.low),
+                        "close": float(b.close),
+                        "price": float(b.close)
+                    })
                 hist_df = pd.DataFrame(rows)
                 self.strategy.prices_df = hist_df.sort_values("timestamp").reset_index(
                     drop=True

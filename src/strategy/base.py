@@ -8,7 +8,7 @@ from src.events import PriceUpdateEvent, SignalEvent
 class BaseStrategy(ABC):
     def __init__(self, symbol: str):
         self.symbol = symbol
-        self.prices_df = pd.DataFrame(columns=["timestamp", "price"])
+        self.prices_df = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "price"])
 
         # Cargar intervalo de agregación (por defecto 60 segundos)
         try:
@@ -27,7 +27,14 @@ class BaseStrategy(ABC):
 
         if self.prices_df.empty:
             # Primera barra: la agregamos y no evaluamos señal (falta historial)
-            new_row = pd.DataFrame([{"timestamp": bar_time, "price": event.price}])
+            new_row = pd.DataFrame([{
+                "timestamp": bar_time,
+                "open": event.price,
+                "high": event.price,
+                "low": event.price,
+                "close": event.price,
+                "price": event.price
+            }])
             self.prices_df = pd.concat([self.prices_df, new_row], ignore_index=True)
         else:
             # Eliminar tzinfo para comparaciones limpias si es necesario (naive)
@@ -44,7 +51,12 @@ class BaseStrategy(ABC):
             if bar_time == last_bar_time:
                 # Mismo intervalo: la barra sigue abierta.
                 # Actualizamos el precio (este es el precio "en desarrollo" / open candle).
+                self.prices_df.at[last_idx, "close"] = event.price
                 self.prices_df.at[last_idx, "price"] = event.price
+                if event.price > self.prices_df.at[last_idx, "high"]:
+                    self.prices_df.at[last_idx, "high"] = event.price
+                if event.price < self.prices_df.at[last_idx, "low"]:
+                    self.prices_df.at[last_idx, "low"] = event.price
             elif bar_time > last_bar_time:
                 # Ha comenzado una nueva barra!
                 # La barra anterior (`last_bar_time`) se ha cerrado definitivamente.
@@ -52,7 +64,14 @@ class BaseStrategy(ABC):
                 signal = self.evaluate_signal(event)
 
                 # Después de evaluar la señal en las barras cerradas, añadimos la nueva barra abierta:
-                new_row = pd.DataFrame([{"timestamp": bar_time, "price": event.price}])
+                new_row = pd.DataFrame([{
+                    "timestamp": bar_time,
+                    "open": event.price,
+                    "high": event.price,
+                    "low": event.price,
+                    "close": event.price,
+                    "price": event.price
+                }])
                 self.prices_df = pd.concat([self.prices_df, new_row], ignore_index=True)
 
                 # Limitar historial para no consumir memoria infinita

@@ -746,6 +746,29 @@ const quoteAssetLabels = document.querySelectorAll(".quote-asset-lbl");
 const baseAssetLabels = document.querySelectorAll(".base-asset-lbl");
 
 
+function parseApiDate(timestampStr) {
+    if (!timestampStr) return new Date();
+    if (timestampStr instanceof Date) return timestampStr;
+    let formatted = String(timestampStr);
+    if (!formatted.includes("Z") && !/[+-]\d{2}:\d{2}$/.test(formatted)) {
+        formatted = formatted.replace(" ", "T");
+        if (!formatted.includes("T")) {
+            formatted += "T00:00:00Z";
+        } else {
+            formatted += "Z";
+        }
+    }
+    return new Date(formatted);
+}
+
+function _isCandleValid(c) {
+    return c && typeof c.time === "number" && c.time > 0 &&
+        typeof c.open === "number" && isFinite(c.open) && c.open > 0 &&
+        typeof c.high === "number" && isFinite(c.high) && c.high > 0 &&
+        typeof c.low === "number" && isFinite(c.low) && c.low > 0 &&
+        typeof c.close === "number" && isFinite(c.close) && c.close > 0;
+}
+
 // --- INICIALIZACIÓN DE LA GRÁFICA ---
 // (currentFeederTypeForChart movido arriba con las otras variables del gráfico)
 
@@ -797,6 +820,51 @@ function aggregateTicks(ticks, tfMinutes) {
         });
     }
     return candles;
+}
+
+function aggregateCandles(candles, tfMinutes) {
+    if (!candles || !candles.length) return [];
+    if (tfMinutes === 1) return candles;
+    
+    const bucketMs = tfMinutes * 60 * 1000;
+    const aggregated = [];
+    let bucketStart = null;
+    let open = 0, high = -Infinity, low = Infinity, close = 0;
+    
+    for (const c of candles) {
+        if (!c.time || c.time <= 0) continue;
+        const tMs = c.time * 1000;
+        const bucket = Math.floor(tMs / bucketMs) * bucketMs;
+        
+        if (bucketStart === null) {
+            bucketStart = bucket;
+            open = c.open;
+            high = c.high;
+            low = c.low;
+            close = c.close;
+        } else if (bucket !== bucketStart) {
+            aggregated.push({
+                time: Math.floor(bucketStart / 1000),
+                open, high, low, close
+            });
+            bucketStart = bucket;
+            open = c.open;
+            high = c.high;
+            low = c.low;
+            close = c.close;
+        } else {
+            close = c.close;
+            if (c.high > high) high = c.high;
+            if (c.low < low) low = c.low;
+        }
+    }
+    if (bucketStart !== null) {
+        aggregated.push({
+            time: Math.floor(bucketStart / 1000),
+            open, high, low, close
+        });
+    }
+    return aggregated;
 }
 
 function buildChart(containerId, feederType) {
@@ -883,15 +951,19 @@ function initChart(feederType) {
     candleBuffer = [];
     buildChart("priceChart", feederType);
 
-    if (tickBuffer.length > 0 && candleSeries) {
-        candleBuffer = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
+    if (candleSeries) {
+        if (rawCandles.length > 0) {
+            candleBuffer = aggregateCandles(rawCandles, TF_MINUTES[currentTimeframe]);
+        } else if (tickBuffer.length > 0) {
+            candleBuffer = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
+        }
         if (candleBuffer.length > 0) {
             try { candleSeries.setData(candleBuffer.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close }))); } catch (_) {}
         }
     }
 
     if (tradeMarkers.length > 0 && candleSeries) {
-        candleSeries.setMarkers(tradeMarkers);
+        try { candleSeries.setMarkers(tradeMarkers); } catch (_) {}
     }
 
     document.querySelectorAll(".tf-btn").forEach(btn => {
@@ -912,16 +984,24 @@ function initChart(feederType) {
 
 function applyTimeframe() {
     /** Re-agrega todas las velas para el timeframe seleccionado. */
-    if (!candleSeries || tickBuffer.length === 0) return;
+    if (!candleSeries) return;
     _currentCandleBucket = null;
     _currentCandle = null;
-    candleBuffer = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
+    if (rawCandles.length > 0) {
+        candleBuffer = aggregateCandles(rawCandles, TF_MINUTES[currentTimeframe]);
+    } else if (tickBuffer.length > 0) {
+        candleBuffer = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
+    } else {
+        return;
+    }
     const valid = candleBuffer.filter(c => c.time > 0 && isFinite(c.open) && isFinite(c.high) && isFinite(c.low) && isFinite(c.close));
     if (valid.length > 0) {
-        candleSeries.setData(valid.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })));
+        try {
+            candleSeries.setData(valid.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })));
+        } catch (_) {}
     }
     if (tradeMarkers.length > 0) {
-        candleSeries.setMarkers(tradeMarkers);
+        try { candleSeries.setMarkers(tradeMarkers); } catch (_) {}
     }
 }
 
@@ -932,6 +1012,7 @@ function applyTimeframe() {
 let _currentCandleBucket = null;
 let _currentCandle = null;
 let candleBuffer = [];
+let rawCandles = [];
 let _chartDirty = false;
 let _rafId = null;
 
@@ -965,17 +1046,40 @@ function pushTick(price) {
         const bucket = Math.floor((now * 1000) / bucketMs) * bucketMs;
         const bucketSec = Math.floor(bucket / 1000);
 
-        const last = candleBuffer.length > 0 ? candleBuffer[candleBuffer.length - 1] : null;
-        if (!last || last.time !== bucketSec) {
-            candleBuffer.push({ time: bucketSec, open: price, high: price, low: price, close: price });
+        if (rawCandles.length > 0) {
+            // Actualizar/añadir vela de 1 minuto en rawCandles
+            const rawBucketMs = 60 * 1000;
+            const rawBucket = Math.floor((now * 1000) / rawBucketMs) * rawBucketMs;
+            const rawBucketSec = Math.floor(rawBucket / 1000);
+            
+            const rawLast = rawCandles[rawCandles.length - 1];
+            if (!rawLast || rawLast.time !== rawBucketSec) {
+                rawCandles.push({ time: rawBucketSec, open: price, high: price, low: price, close: price });
+            } else {
+                rawLast.close = price;
+                if (price > rawLast.high) rawLast.high = price;
+                if (price < rawLast.low) rawLast.low = price;
+            }
+            
+            if (rawCandles.length > 1000) {
+                rawCandles = rawCandles.slice(-800);
+            }
+            
+            // Re-agregar para el timeframe actual
+            candleBuffer = aggregateCandles(rawCandles, tfMin);
         } else {
-            last.close = price;
-            if (price > last.high) last.high = price;
-            if (price < last.low) last.low = price;
-        }
-
-        if (candleBuffer.length > 1000) {
-            candleBuffer = candleBuffer.slice(-800);
+            const last = candleBuffer.length > 0 ? candleBuffer[candleBuffer.length - 1] : null;
+            if (!last || last.time !== bucketSec) {
+                candleBuffer.push({ time: bucketSec, open: price, high: price, low: price, close: price });
+            } else {
+                last.close = price;
+                if (price > last.high) last.high = price;
+                if (price < last.low) last.low = price;
+            }
+            
+            if (candleBuffer.length > 1000) {
+                candleBuffer = candleBuffer.slice(-800);
+            }
         }
 
         if (!_chartDirty) {
@@ -1148,7 +1252,7 @@ function renderPositionHistory(positions) {
         const pnl = p.pnl != null ? parseFloat(p.pnl) : (isBuy ? (close - entry) * amount : (entry - close) * amount);
         const pnlClass = pnl >= 0 ? "text-success" : "text-danger";
         const pnlSign = pnl >= 0 ? "+" : "";
-        const entryTime = p.entry_time ? new Date(p.entry_time).toLocaleString() : "-";
+        const entryTime = p.entry_time ? parseApiDate(p.entry_time).toLocaleString() : "-";
         return `<tr>
             <td class="font-mono">#${p.id}</td>
             <td>${getDisplayBase(p.symbol)}</td>
@@ -1184,7 +1288,7 @@ function buildPositionCard(pos, isOpen) {
     const pnlClass = pnl >= 0 ? "text-success" : "text-danger";
     const pnlSign = pnl >= 0 ? "+" : "";
     const cardClass = isOpen ? "" : " closed";
-    const entryTime = pos.entry_time ? new Date(pos.entry_time).toLocaleString() : "-";
+    const entryTime = pos.entry_time ? parseApiDate(pos.entry_time).toLocaleString() : "-";
     const decimals = entry < 1.5 ? 4 : 2;
 
     let footerHtml = "";
@@ -1572,15 +1676,36 @@ async function fetchStatus() {
         // Alimentar gráfica desde el histórico del backend si cambiamos de activo o no hay datos
         if (data.price_history && data.price_history.length > 0 && (data.symbol !== lastActiveSymbol || tickBuffer.length === 0)) {
             tickBuffer = data.price_history.map(item => {
-                const d = new Date(item.timestamp);
+                const d = parseApiDate(item.timestamp);
                 const secs = Math.floor(d.getTime() / 1000);
                 return { time: Number(secs) || 0, price: Number(item.price) || 0 };
             }).filter(t => t.time > 0 && t.price > 0);
-            if (candleSeries && tickBuffer.length > 0) {
+
+            rawCandles = data.price_history.map(item => {
+                const d = parseApiDate(item.timestamp);
+                const secs = Math.floor(d.getTime() / 1000);
+                return {
+                    time: Number(secs) || 0,
+                    open: item.open !== undefined ? Number(item.open) : Number(item.price),
+                    high: item.high !== undefined ? Number(item.high) : Number(item.price),
+                    low: item.low !== undefined ? Number(item.low) : Number(item.price),
+                    close: item.close !== undefined ? Number(item.close) : Number(item.price)
+                };
+            }).filter(_isCandleValid);
+
+            if (candleSeries && rawCandles.length > 0) {
+                _currentCandleBucket = null;
+                _currentCandle = null;
+                candleBuffer = aggregateCandles(rawCandles, TF_MINUTES[currentTimeframe]);
+                const valid = candleBuffer.filter(_isCandleValid);
+                if (valid.length > 0) {
+                    try { candleSeries.setData(valid.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close }))); } catch (_) {}
+                }
+            } else if (candleSeries && tickBuffer.length > 0) {
                 _currentCandleBucket = null;
                 _currentCandle = null;
                 candleBuffer = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
-                const valid = candleBuffer.filter(c => c.time > 0 && isFinite(c.open) && isFinite(c.high) && isFinite(c.low) && isFinite(c.close));
+                const valid = candleBuffer.filter(_isCandleValid);
                 if (valid.length > 0) {
                     try { candleSeries.setData(valid.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close }))); } catch (_) {}
                 }
@@ -1772,7 +1897,7 @@ async function fetchTrades() {
             openOrdersTableBody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No hay órdenes abiertas activas.</td></tr>';
         } else {
             openOrders.forEach(order => {
-                const date = new Date(order.timestamp);
+                const date = parseApiDate(order.timestamp);
                 const dateStr = date.toLocaleString();
                 const sideClass = order.side.toLowerCase() === 'buy' ? 'badge-buy' : 'badge-sell';
                 const decimals = isForexOrEvent ? 4 : 2;
@@ -1801,7 +1926,7 @@ async function fetchTrades() {
         }
         
         completedTrades.forEach(trade => {
-            const date = new Date(trade.timestamp);
+            const date = parseApiDate(trade.timestamp);
             const dateStr = date.toLocaleString();
             const sideClass = trade.side.toLowerCase() === 'buy' ? 'badge-buy' : 'badge-sell';
             const decimals = isForexOrEvent ? 4 : 2;
@@ -1874,7 +1999,7 @@ async function fetchLogs() {
         }
         
         data.forEach(log => {
-            const date = new Date(log.timestamp);
+            const date = parseApiDate(log.timestamp);
             const timeStr = date.toLocaleTimeString();
             const levelClass = log.level.toLowerCase();
             
@@ -2172,6 +2297,7 @@ async function changeAssetSymbolTo(feederType, symbol) {
             // Limpiar datos del gráfico para refrescar con el nuevo histórico
             tickBuffer = [];
             tradeMarkers = [];
+            rawCandles = [];
             _currentCandleBucket = null;
             _currentCandle = null;
             if (candleSeries) {

@@ -148,12 +148,17 @@ async def get_status(worker_id: str = "worker_1"):
         # Obtener historial de precios registrado en la estrategia
         price_history = []
         if len(worker.strategy.prices_df) > 0:
+            has_ohlc = all(col in worker.strategy.prices_df.columns for col in ["open", "high", "low", "close"])
             price_history = [
                 {
                     "timestamp": row["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
                     if hasattr(row["timestamp"], "strftime")
                     else str(row["timestamp"]),
                     "price": float(row["price"]),
+                    "open": float(row["open"]) if has_ohlc else float(row["price"]),
+                    "high": float(row["high"]) if has_ohlc else float(row["price"]),
+                    "low": float(row["low"]) if has_ohlc else float(row["price"]),
+                    "close": float(row["close"]) if has_ohlc else float(row["price"]),
                 }
                 for _, row in worker.strategy.prices_df.iterrows()
             ]
