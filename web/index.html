@@ -203,6 +203,7 @@
                         <button class="bottom-tab-btn" data-target="tab-panel-trades">Historial de Operaciones</button>
                         <button class="bottom-tab-btn" data-target="tab-panel-logs">Consola de Eventos</button>
                         <button class="bottom-tab-btn" data-target="tab-panel-indicators">Indicadores Técnicos</button>
+                        <button class="bottom-tab-btn" data-target="tab-panel-arbitrage">Arbitraje Cross</button>
                     </div>
 
                     <!-- Tab 0: Open Orders Table -->
@@ -360,6 +361,51 @@
                                         <span>100</span>
                                     </div>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tab 4: Cross-Platform Arbitrage -->
+                    <div class="bottom-tab-panel hidden" id="tab-panel-arbitrage">
+                        <!-- Active Arbitrage Alert Banner -->
+                        <div id="arb-alert-banner" style="display: none; padding: 12px 16px; margin-bottom: 12px; background: linear-gradient(135deg, rgba(2, 192, 118, 0.15), rgba(0, 200, 255, 0.10)); border: 1px solid #02c076; border-radius: 8px; animation: pulse-glow 2s infinite;">
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
+                                <span style="font-size: 18px; animation: flash 1s infinite;">🔔</span>
+                                <span style="font-size: 14px; font-weight: 700; color: #02c076; text-transform: uppercase; letter-spacing: 1px;">Oportunidad de Arbitraje Detectada</span>
+                            </div>
+                            <div id="arb-alert-details" style="font-size: 13px; color: #eaecef; line-height: 1.6;"></div>
+                        </div>
+
+                        <!-- Market Prices Comparison Grid -->
+                        <div style="margin-bottom: 16px;">
+                            <h4 style="font-size: 13px; font-weight: 600; color: #eaecef; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">Precios Cross-Platform (Tiempo Real)</h4>
+                            <div id="arb-market-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px;">
+                                <!-- Filled by JS -->
+                            </div>
+                        </div>
+
+                        <!-- Active Opportunities Table -->
+                        <div>
+                            <h4 style="font-size: 13px; font-weight: 600; color: #eaecef; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">Oportunidades Activas</h4>
+                            <div class="table-scroller">
+                                <table class="trading-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Evento</th>
+                                            <th>Kalshi YES</th>
+                                            <th>Poly YES</th>
+                                            <th>Dirección</th>
+                                            <th>Edge</th>
+                                            <th>Costo Total</th>
+                                            <th>Ganancia</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="arb-opportunities-table-body">
+                                        <tr>
+                                            <td colspan="7" class="text-center text-muted" style="padding: 24px;">Escaneando mercados...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
                             </div>
                         </div>
                     </div>

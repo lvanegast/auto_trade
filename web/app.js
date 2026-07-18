@@ -2331,6 +2331,119 @@ if (searchAssetInput) {
 }
 
 
+// ============================================================
+//  CROSS-PLATFORM ARBITRAGE PANEL
+// ============================================================
+async function fetchArbitrageData() {
+    try {
+        const res = await fetch(`${API_BASE}/arbitrage`);
+        if (!res.ok) return;
+        const data = await res.json();
+        renderArbitragePanel(data);
+    } catch (e) {
+        // Silenciar errores de arbitraje (puede no estar disponible aún)
+    }
+}
+
+function renderArbitragePanel(data) {
+    const { opportunities, market_prices, active_pairs_count } = data;
+
+    // 1. Render market prices comparison grid
+    const grid = document.getElementById("arb-market-grid");
+    if (grid && market_prices) {
+        let html = "";
+        for (const [eventId, info] of Object.entries(market_prices)) {
+            const kPrice = info.kalshi ? info.kalshi.price : null;
+            const pPrice = info.polymarket ? info.polymarket.price : null;
+            const kBid = info.kalshi ? info.kalshi.bid : null;
+            const kAsk = info.kalshi ? info.kalshi.ask : null;
+            const pBid = info.polymarket ? info.polymarket.bid : null;
+            const pAsk = info.polymarket ? info.polymarket.ask : null;
+
+            let diffHtml = '<span style="color:#848e9c;">Sin datos</span>';
+            if (kPrice !== null && pPrice !== null) {
+                const diff = Math.abs(kPrice - pPrice);
+                const diffPct = (diff * 100).toFixed(2);
+                const diffColor = diff > 0.03 ? "#02c076" : diff > 0.01 ? "#f0b90b" : "#848e9c";
+                diffHtml = `<span style="color:${diffColor}; font-weight:700;">${diffPct}%</span>`;
+            }
+
+            html += `
+            <div style="background:#1e2329; border:1px solid #2d3139; border-radius:8px; padding:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                    <span style="font-size:12px; font-weight:600; color:#eaecef;">${info.event_label}</span>
+                    <span style="font-size:10px; padding:2px 6px; background:rgba(0,230,255,0.1); color:#00e6ff; border-radius:3px;">${info.category}</span>
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px;">
+                    <div style="text-align:center;">
+                        <div style="font-size:10px; color:#848e9c; margin-bottom:2px;">KALSHI YES</div>
+                        <div style="font-size:18px; font-weight:700; color:#00c8ff; font-family:'JetBrains Mono',monospace;">
+                            ${kPrice !== null ? (kPrice * 100).toFixed(1) + '%' : '—'}
+                        </div>
+                        ${kBid !== null ? `<div style="font-size:9px; color:#848e9c;">Bid ${kBid.toFixed(2)} / Ask ${kAsk.toFixed(2)}</div>` : ''}
+                    </div>
+                    <div style="text-align:center;">
+                        <div style="font-size:10px; color:#848e9c; margin-bottom:2px;">POLY YES</div>
+                        <div style="font-size:18px; font-weight:700; color:#a03ffc; font-family:'JetBrains Mono',monospace;">
+                            ${pPrice !== null ? (pPrice * 100).toFixed(1) + '%' : '—'}
+                        </div>
+                        ${pBid !== null ? `<div style="font-size:9px; color:#848e9c;">Bid ${pBid.toFixed(2)} / Ask ${pAsk.toFixed(2)}</div>` : ''}
+                    </div>
+                </div>
+                <div style="text-align:center; padding-top:6px; border-top:1px solid #2d3139;">
+                    <span style="font-size:10px; color:#848e9c;">Spread: </span>${diffHtml}
+                </div>
+            </div>`;
+        }
+        grid.innerHTML = html || '<div style="color:#848e9c; padding:12px; text-align:center;">No hay datos de precios disponibles. Inicie los workers de Kalshi y Polymarket.</div>';
+    }
+
+    // 2. Render opportunities table
+    const tbody = document.getElementById("arb-opportunities-table-body");
+    if (tbody) {
+        if (opportunities && opportunities.length > 0) {
+            let rows = "";
+            for (const opp of opportunities) {
+                const dirColor = opp.direction.includes("KALSHI") ? "#00c8ff" : "#a03ffc";
+                const dirLabel = opp.direction === "BUY_YES_KALSHI_SELL_NO_POLY"
+                    ? "BUY Kalshi → HEDGE Poly"
+                    : "BUY Poly → HEDGE Kalshi";
+                rows += `
+                <tr style="border-bottom:1px solid #2d3139;">
+                    <td style="padding:10px; font-size:12px; color:#eaecef; font-weight:500;">${opp.event_label || opp.event_id}</td>
+                    <td style="padding:10px; text-align:center; font-family:'JetBrains Mono',monospace; color:#00c8ff;">${(opp.kalshi_yes * 100).toFixed(1)}%</td>
+                    <td style="padding:10px; text-align:center; font-family:'JetBrains Mono',monospace; color:#a03ffc;">${(opp.polymarket_yes * 100).toFixed(1)}%</td>
+                    <td style="padding:10px; text-align:center; color:${dirColor}; font-weight:600; font-size:11px;">${dirLabel}</td>
+                    <td style="padding:10px; text-align:center; font-family:'JetBrains Mono',monospace; font-weight:700; color:#02c076;">${(opp.edge_pct * 100).toFixed(2)}%</td>
+                    <td style="padding:10px; text-align:center; font-family:'JetBrains Mono',monospace; color:#f0b90b;">${(opp.total_cost * 100).toFixed(2)}%</td>
+                    <td style="padding:10px; text-align:center; font-family:'JetBrains Mono',monospace; color:#02c076; font-weight:700;">${(opp.guaranteed_profit * 100).toFixed(2)}¢</td>
+                </tr>`;
+            }
+            tbody.innerHTML = rows;
+
+            // Update alert banner
+            const banner = document.getElementById("arb-alert-banner");
+            const details = document.getElementById("arb-alert-details");
+            if (banner && details) {
+                banner.style.display = "block";
+                const best = opportunities[0];
+                details.innerHTML = `
+                    <strong>Mercado:</strong> ${best.event_label || best.event_id} &nbsp;|&nbsp;
+                    <strong>Kalshi YES:</strong> ${(best.kalshi_yes * 100).toFixed(1)}% &nbsp;|&nbsp;
+                    <strong>Poly YES:</strong> ${(best.polymarket_yes * 100).toFixed(1)}% &nbsp;|&nbsp;
+                    <strong>Edge:</strong> ${(best.edge_pct * 100).toFixed(2)}% &nbsp;|&nbsp;
+                    <strong>Ganancia garantizada:</strong> ${(best.guaranteed_profit * 100).toFixed(2)}¢ por contrato
+                `;
+            }
+        } else {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted" style="padding:24px;">Sin oportunidades de arbitraje en este momento. El bot escanea continuamente...</td></tr>';
+            const banner = document.getElementById("arb-alert-banner");
+            if (banner) banner.style.display = "none";
+        }
+    }
+}
+
+
 
 // --- INICIALIZAR LA APLICACIÓN ---
 initChart();
@@ -2373,3 +2486,6 @@ setInterval(() => {
 setInterval(() => {
     if (wsUsePollingFallback) runLiveTradesSimulation();
 }, 900);
+
+// Cross-platform arbitrage polling (always, low frequency)
+setInterval(fetchArbitrageData, 5000);

@@ -618,12 +618,20 @@ async def configure_worker(body: dict):
         else:
             worker.feeder = MockFeeder(worker.symbol, worker.queue, interval=1.0)
 
-        # Re-inicializar la estrategia con el nuevo símbolo
-        from src.strategy.lead_lag_arbitrage import LeadLagArbitrageStrategy
-
-        worker.strategy = LeadLagArbitrageStrategy(
-            worker.symbol, db=db, worker_id=worker_id
-        )
+        # Re-inicializar la estrategia según tipo de feeder
+        if worker.feeder_type in ("kalshi", "polymarket"):
+            from src.strategy.cross_platform_arb import CrossPlatformArbitrageStrategy
+            worker.strategy = CrossPlatformArbitrageStrategy(
+                worker.symbol,
+                feeder_type=worker.feeder_type,
+                db=db,
+                worker_id=worker_id,
+            )
+        else:
+            from src.strategy.lead_lag_arbitrage import LeadLagArbitrageStrategy
+            worker.strategy = LeadLagArbitrageStrategy(
+                worker.symbol, db=db, worker_id=worker_id
+            )
 
         # Si tiene cliente Alpaca y la ejecución es real/paper (no simulación), pre-cargar historial
         if worker.alpaca_client and worker.feeder_type == "alpaca":
@@ -646,6 +654,42 @@ async def configure_worker(body: dict):
         raise HTTPException(
             status_code=500, detail=f"Fallo al reconfigurar el activo: {e}"
         )
+
+
+@app.get("/api/arbitrage")
+async def get_arbitrage_opportunities():
+    """Retorna todas las oportunidades de arbitraje cross-platform detectadas en tiempo real."""
+    from src.strategy.cross_platform_tracker import cross_platform_tracker
+    from src.strategy.market_pairs import get_active_pairs
+
+    pairs = get_active_pairs()
+    all_opportunities = cross_platform_tracker.scan_all_pairs(min_edge_pct=0.01)
+
+    # Enriquecer con info del pair
+    results = []
+    for opp in all_opportunities:
+        pair = next((p for p in pairs if p["event_id"] == opp["event_id"]), None)
+        if pair:
+            opp["event_label"] = pair["event_label"]
+            opp["category"] = pair["category"]
+        results.append(opp)
+
+    # También incluir el estado de precios de todos los pares conocidos
+    price_map = {}
+    for pair in pairs:
+        both = cross_platform_tracker.get_both_prices(pair["event_id"])
+        price_map[pair["event_id"]] = {
+            "event_label": pair["event_label"],
+            "category": pair["category"],
+            "kalshi": both["kalshi"],
+            "polymarket": both["polymarket"],
+        }
+
+    return {
+        "opportunities": results,
+        "market_prices": price_map,
+        "active_pairs_count": len(pairs),
+    }
 
 
 @app.websocket("/ws/{worker_id}")
@@ -731,6 +775,7 @@ async def _send_initial_state(websocket: WebSocket, worker, worker_id: str):
                 "position_id": getattr(worker.strategy, "_position_id", None),
                 "teorical_probability": getattr(worker.strategy, "teorical_probability", 0.50),
                 "edge": getattr(worker.strategy, "edge", 0.0),
+                "arbitrage_opportunity": getattr(worker.strategy, "last_arbitrage_opportunity", None),
             },
         )
         await websocket.send_text(json_mod.dumps(event, default=str))

@@ -6,6 +6,7 @@ import datetime
 from src.database import DatabaseManager
 from src.events import SignalEvent
 from src.strategy.lead_lag_arbitrage import LeadLagArbitrageStrategy
+from src.strategy.cross_platform_arb import CrossPlatformArbitrageStrategy
 from src.feeders.mock_feeder import MockFeeder
 from src.feeders.oanda_feeder import OandaFeeder
 from src.feeders.ig_feeder import IGFeeder
@@ -34,10 +35,22 @@ class TradingWorker:
 
         self.base_asset, self.quote_asset = self._parse_symbol()
 
-        # Inicializar estrategia de arbitraje de latencia
-        self.strategy = LeadLagArbitrageStrategy(
-            self.symbol, db=self.db, worker_id=self.worker_id
-        )
+        # Inicializar estrategia según tipo de feeder
+        if self.feeder_type in ("kalshi", "polymarket"):
+            min_edge = float(os.getenv("MIN_ARB_EDGE_PCT", "0.03"))
+            position_size = float(os.getenv("ARB_POSITION_SIZE_PCT", "0.5"))
+            self.strategy = CrossPlatformArbitrageStrategy(
+                self.symbol,
+                feeder_type=self.feeder_type,
+                min_edge_pct=min_edge,
+                position_size_pct=position_size,
+                db=self.db,
+                worker_id=self.worker_id,
+            )
+        else:
+            self.strategy = LeadLagArbitrageStrategy(
+                self.symbol, db=self.db, worker_id=self.worker_id
+            )
 
         if self.feeder_type == "oanda":
             self.feeder = OandaFeeder(self.symbol, self.queue)
@@ -183,7 +196,8 @@ class TradingWorker:
         if pos:
             self.strategy.last_position = pos["side"]
             self.strategy.entry_price = float(pos["entry_price"])
-            self.strategy.entry_lead_price = float(pos["entry_lead_price"])
+            if hasattr(self.strategy, "entry_lead_price"):
+                self.strategy.entry_lead_price = float(pos["entry_lead_price"])
             self.strategy._position_id = pos["id"]
             from datetime import timezone
             entry_time = pos["entry_time"]
@@ -340,6 +354,9 @@ class TradingWorker:
                                     ),
                                     "position_id": getattr(
                                         self.strategy, "_position_id", None
+                                    ),
+                                    "arbitrage_opportunity": getattr(
+                                        self.strategy, "last_arbitrage_opportunity", None
                                     ),
                                 }),
                             )
@@ -906,102 +923,163 @@ class TradingWorker:
             )
 
     async def _warm_up_strategy(self):
-        if self.feeder_type != "alpaca":
-            return
+        try:
+            if self.feeder_type == "alpaca":
+                self.db.log(
+                    "INFO",
+                    f"Pre-cargando historial de {self.symbol} desde Alpaca...",
+                    self.worker_id,
+                )
+                api_key = os.getenv("ALPACA_API_KEY")
+                secret_key = os.getenv("ALPACA_SECRET_KEY")
+                is_crypto = (
+                    self.feeder.is_crypto if hasattr(self.feeder, "is_crypto") else True
+                )
+                bar_interval = (
+                    self.strategy.bar_interval
+                    if hasattr(self.strategy, "bar_interval")
+                    else 60
+                )
+
+                from alpaca.data.timeframe import TimeFrame
+
+                if bar_interval <= 60:
+                    tf = TimeFrame.Minute
+                    minutes_back = 2000 # Incrementar para evitar el vacío por retraso del feed gratuito de Alpaca (gap de ~5 horas)
+                elif bar_interval <= 300:
+                    tf = TimeFrame.Minute
+                    minutes_back = 5000
+                else:
+                    tf = TimeFrame.Hour
+                    minutes_back = 10000
+
+                from datetime import timedelta, timezone
+
+                start_time = datetime.datetime.now(timezone.utc) - timedelta(
+                    minutes=minutes_back
+                )
+
+                import pandas as pd
+
+                if is_crypto:
+                    from alpaca.data.historical import CryptoHistoricalDataClient
+                    from alpaca.data.requests import CryptoBarsRequest
+
+                    client = CryptoHistoricalDataClient(api_key, secret_key)
+                    request_params = CryptoBarsRequest(
+                        symbol_or_symbols=self.feeder.symbol,
+                        timeframe=tf,
+                        start=start_time,
+                        end=datetime.datetime.now(timezone.utc),
+                    )
+                    bars = await asyncio.to_thread(client.get_crypto_bars, request_params)
+                else:
+                    from alpaca.data.historical import StockHistoricalDataClient
+                    from alpaca.data.requests import StockBarsRequest
+
+                    client = StockHistoricalDataClient(api_key, secret_key)
+                    request_params = StockBarsRequest(
+                        symbol_or_symbols=self.feeder.symbol,
+                        timeframe=tf,
+                        start=start_time,
+                        end=datetime.datetime.now(timezone.utc),
+                    )
+                    bars = await asyncio.to_thread(client.get_stock_bars, request_params)
+
+                if bars and self.feeder.symbol in bars.data:
+                    symbol_bars = bars.data[self.feeder.symbol]
+                    rows = []
+                    for b in symbol_bars:
+                        dt = b.timestamp.astimezone()
+                        dt_naive = dt.replace(tzinfo=None)
+                        rows.append({
+                            "timestamp": dt_naive,
+                            "open": float(b.open),
+                            "high": float(b.high),
+                            "low": float(b.low),
+                            "close": float(b.close),
+                            "price": float(b.close)
+                        })
+                    hist_df = pd.DataFrame(rows)
+                    self.strategy.prices_df = hist_df.sort_values("timestamp").reset_index(
+                        drop=True
+                    )
+                    self.db.log(
+                        "INFO",
+                        f"Pre-carga completada. {len(self.strategy.prices_df)} velas cargadas.",
+                        self.worker_id,
+                    )
+                else:
+                    self.db.log(
+                        "WARNING",
+                        "No se recibieron barras históricas de Alpaca. Generando fallback sintético...",
+                        self.worker_id,
+                    )
+                    await self._generate_synthetic_history()
+            else:
+                # Otros feeders (simulación / paper): Generar historial sintético para evitar arrancar con pantalla en blanco
+                await self._generate_synthetic_history()
+
+        except Exception as e:
+            self.db.log(
+                "ERROR", f"Error al pre-cargar datos históricos: {e}. Generando fallback sintético...", self.worker_id
+            )
+            try:
+                await self._generate_synthetic_history()
+            except Exception:
+                pass
+
+    async def _generate_synthetic_history(self):
         try:
             self.db.log(
                 "INFO",
-                f"Pre-cargando historial de {self.symbol} desde Alpaca...",
+                f"Generando historial sintético para {self.symbol} ({self.feeder_type})...",
                 self.worker_id,
             )
-            api_key = os.getenv("ALPACA_API_KEY")
-            secret_key = os.getenv("ALPACA_SECRET_KEY")
-            is_crypto = (
-                self.feeder.is_crypto if hasattr(self.feeder, "is_crypto") else True
-            )
-            bar_interval = (
-                self.strategy.bar_interval
-                if hasattr(self.strategy, "bar_interval")
-                else 60
-            )
-
-            from alpaca.data.timeframe import TimeFrame
-
-            if bar_interval <= 60:
-                tf = TimeFrame.Minute
-                minutes_back = 100
-            elif bar_interval <= 300:
-                tf = TimeFrame.Minute
-                minutes_back = 500
-            else:
-                tf = TimeFrame.Hour
-                minutes_back = 2400
-
-            from datetime import timedelta, timezone
-
-            start_time = datetime.datetime.now(timezone.utc) - timedelta(
-                minutes=minutes_back
-            )
-
             import pandas as pd
+            import random
 
-            if is_crypto:
-                from alpaca.data.historical import CryptoHistoricalDataClient
-                from alpaca.data.requests import CryptoBarsRequest
-
-                client = CryptoHistoricalDataClient(api_key, secret_key)
-                request_params = CryptoBarsRequest(
-                    symbol_or_symbols=self.feeder.symbol,
-                    timeframe=tf,
-                    start=start_time,
-                    end=datetime.datetime.now(timezone.utc),
-                )
-                bars = await asyncio.to_thread(client.get_crypto_bars, request_params)
-            else:
-                from alpaca.data.historical import StockHistoricalDataClient
-                from alpaca.data.requests import StockBarsRequest
-
-                client = StockHistoricalDataClient(api_key, secret_key)
-                request_params = StockBarsRequest(
-                    symbol_or_symbols=self.feeder.symbol,
-                    timeframe=tf,
-                    start=start_time,
-                    end=datetime.datetime.now(timezone.utc),
-                )
-                bars = await asyncio.to_thread(client.get_stock_bars, request_params)
-
-            if bars and self.feeder.symbol in bars.data:
-                symbol_bars = bars.data[self.feeder.symbol]
-                rows = []
-                for b in symbol_bars:
-                    dt = b.timestamp.astimezone()
-                    dt_naive = dt.replace(tzinfo=None)
-                    rows.append({
-                        "timestamp": dt_naive,
-                        "open": float(b.open),
-                        "high": float(b.high),
-                        "low": float(b.low),
-                        "close": float(b.close),
-                        "price": float(b.close)
-                    })
-                hist_df = pd.DataFrame(rows)
-                self.strategy.prices_df = hist_df.sort_values("timestamp").reset_index(
-                    drop=True
-                )
-                self.db.log(
-                    "INFO",
-                    f"Pre-carga completada. {len(self.strategy.prices_df)} velas cargadas.",
-                    self.worker_id,
-                )
-            else:
-                self.db.log(
-                    "WARNING",
-                    "No se recibieron barras históricas para pre-cargar.",
-                    self.worker_id,
-                )
+            # Determinar precio inicial realista
+            start_price = 0.50 if self.feeder_type in ["kalshi", "polymarket"] else 63000.0 if "BTC" in self.symbol else 3400.0 if "ETH" in self.symbol else 100.0
+            
+            # Generar 120 velas de 1 minuto hacia atrás
+            now = datetime.datetime.now()
+            rows = []
+            current_price = start_price
+            for i in range(120, 0, -1):
+                dt = now - datetime.timedelta(minutes=i)
+                # Camino aleatorio (Random Walk)
+                if self.feeder_type in ["kalshi", "polymarket"]:
+                    change = random.uniform(-0.015, 0.015)
+                    current_price = max(0.05, min(0.95, current_price + change))
+                else:
+                    change = random.uniform(-0.003, 0.003)
+                    current_price = max(1.0, current_price * (1 + change))
+                
+                # Crear valores OHLC realistas
+                open_p = current_price
+                close_p = current_price * (1 + random.uniform(-0.001, 0.001))
+                high_p = max(open_p, close_p) * (1 + random.uniform(0, 0.002))
+                low_p = min(open_p, close_p) * (1 - random.uniform(0, 0.002))
+                
+                rows.append({
+                    "timestamp": dt,
+                    "open": open_p,
+                    "high": high_p,
+                    "low": low_p,
+                    "close": close_p,
+                    "price": close_p
+                })
+            
+            self.strategy.prices_df = pd.DataFrame(rows)
+            self.db.log(
+                "INFO",
+                f"Historial sintético generado. {len(self.strategy.prices_df)} velas cargadas.",
+                self.worker_id,
+            )
         except Exception as e:
             self.db.log(
-                "ERROR", f"Error al pre-cargar datos históricos: {e}", self.worker_id
+                "ERROR", f"Error al generar historial sintético: {e}", self.worker_id
             )
 
 

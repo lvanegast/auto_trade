@@ -1468,4 +1468,15 @@ select option, select optgroup {
     display: none;
 }
 
+/* --- CROSS-PLATFORM ARBITRAGE --- */
+@keyframes pulse-glow {
+    0%, 100% { box-shadow: 0 0 5px rgba(2, 192, 118, 0.2); }
+    50% { box-shadow: 0 0 20px rgba(2, 192, 118, 0.4), 0 0 40px rgba(0, 200, 255, 0.1); }
+}
+
+@keyframes flash {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
 
