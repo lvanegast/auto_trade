@@ -3,6 +3,7 @@ CrossPlatformTracker: Singleton que almacena precios en tiempo real de ambos pla
 para que las estrategias de arbitraje puedan comparar precios cross-platform.
 
 Patrón similar a BinanceTracker pero para mercados de predicción.
+Soporta: kalshi, limitless, polymarket (legacy).
 """
 
 
@@ -15,7 +16,7 @@ class CrossPlatformTracker:
         _prices = {
             "event_id": {
                 "kalshi": {"price": 0.65, "bid": 0.64, "ask": 0.66, "ts": ...},
-                "polymarket": {"price": 0.60, "bid": 0.59, "ask": 0.61, "ts": ...},
+                "limitless": {"price": 0.60, "bid": 0.59, "ask": 0.61, "ts": ...},
             }
         }
     """
@@ -69,12 +70,12 @@ class CrossPlatformTracker:
         Returns:
             {
                 "kalshi": {"price": ..., "bid": ..., "ask": ..., "ts": ...} | None,
-                "polymarket": {"price": ..., "bid": ..., "ask": ..., "ts": ...} | None,
+                "limitless": {"price": ..., "bid": ..., "ask": ..., "ts": ...} | None,
             }
         """
         return {
             "kalshi": self._prices.get(event_id, {}).get("kalshi"),
-            "polymarket": self._prices.get(event_id, {}).get("polymarket"),
+            "limitless": self._prices.get(event_id, {}).get("limitless"),
         }
 
     def get_all_event_ids(self) -> list[str]:
@@ -105,51 +106,51 @@ class CrossPlatformTracker:
 
         both = self.get_both_prices(event_id)
         kalshi = both["kalshi"]
-        poly = both["polymarket"]
+        limitless = both["limitless"]
 
-        if kalshi is None or poly is None:
+        if kalshi is None or limitless is None:
             return None
 
         # Verificar que los datos no estén obsoletos
         now = time.time()
         if (now - kalshi["ts"]) > max_staleness_sec:
             return None
-        if (now - poly["ts"]) > max_staleness_sec:
+        if (now - limitless["ts"]) > max_staleness_sec:
             return None
 
         k_yes = kalshi["price"]
-        p_yes = poly["price"]
+        l_yes = limitless["price"]
 
-        # Escenario 1: Comprar YES en Kalshi, NO en Polymarket
-        # Costo = k_yes + (1 - p_yes)
-        cost_1 = k_yes + (1.0 - p_yes)
+        # Escenario 1: Comprar YES en Kalshi, NO en Limitless
+        # Costo = k_yes + (1 - l_yes)
+        cost_1 = k_yes + (1.0 - l_yes)
         edge_1 = 1.0 - cost_1  # Ganancia garantizada por contrato
 
-        # Escenario 2: Comprar YES en Polymarket, NO en Kalshi
-        # Costo = p_yes + (1 - k_yes)
-        cost_2 = p_yes + (1.0 - k_yes)
+        # Escenario 2: Comprar YES en Limitless, NO en Kalshi
+        # Costo = l_yes + (1 - k_yes)
+        cost_2 = l_yes + (1.0 - k_yes)
         edge_2 = 1.0 - cost_2
 
         best = None
         if edge_1 > edge_2 and edge_1 >= min_edge_pct:
             best = {
-                "direction": "BUY_YES_KALSHI_SELL_NO_POLY",
+                "direction": "BUY_YES_KALSHI_SELL_NO_LIMITLESS",
                 "buy_platform": "kalshi",
                 "buy_side": "YES",
                 "buy_price": k_yes,
-                "hedge_platform": "polymarket",
+                "hedge_platform": "limitless",
                 "hedge_side": "NO",
-                "hedge_price": 1.0 - p_yes,
+                "hedge_price": 1.0 - l_yes,
                 "total_cost": cost_1,
                 "guaranteed_profit": edge_1,
                 "edge_pct": edge_1,
             }
         elif edge_2 >= min_edge_pct:
             best = {
-                "direction": "BUY_YES_POLY_SELL_NO_KALSHI",
-                "buy_platform": "polymarket",
+                "direction": "BUY_YES_LIMITLESS_SELL_NO_KALSHI",
+                "buy_platform": "limitless",
                 "buy_side": "YES",
-                "buy_price": p_yes,
+                "buy_price": l_yes,
                 "hedge_platform": "kalshi",
                 "hedge_side": "NO",
                 "hedge_price": 1.0 - k_yes,
@@ -161,7 +162,7 @@ class CrossPlatformTracker:
         if best:
             best["event_id"] = event_id
             best["kalshi_yes"] = k_yes
-            best["polymarket_yes"] = p_yes
+            best["limitless_yes"] = l_yes
             best["timestamp"] = now
 
         return best

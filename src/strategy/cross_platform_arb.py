@@ -1,7 +1,7 @@
 """
 Estrategia de Arbitraje Cross-Platform para mercados de predicción.
 
-Detecta discrepancias de precios entre Kalshi y Polymarket para el mismo
+Detecta discrepancias de precios entre Kalshi y Limitless Exchange para el mismo
 evento real y genera señales de arbitraje (comprar YES barato + cubrir NO caro).
 
 Requiere:
@@ -14,7 +14,7 @@ from src.strategy.base import BaseStrategy
 from src.strategy.cross_platform_tracker import cross_platform_tracker
 from src.strategy.market_pairs import (
     get_pair_by_kalshi_ticker,
-    get_pair_by_polymarket_token,
+    get_pair_by_limitless_slug,
 )
 from src.events import PriceUpdateEvent, SignalEvent
 
@@ -59,8 +59,8 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         if self.feeder_type == "kalshi":
             pair = get_pair_by_kalshi_ticker(self.symbol)
             return pair["event_id"] if pair else None
-        elif self.feeder_type == "polymarket":
-            pair = get_pair_by_polymarket_token(self.symbol)
+        elif self.feeder_type == "limitless":
+            pair = get_pair_by_limitless_slug(self.symbol)
             return pair["event_id"] if pair else None
         return None
 
@@ -129,7 +129,7 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
                     self.symbol,
                     "BUY",
                     current_price,
-                    opp["polymarket_yes"] if self.feeder_type == "kalshi" else opp["kalshi_yes"],
+                    opp["limitless_yes"] if self.feeder_type == "kalshi" else opp["kalshi_yes"],
                 )
 
             profit_str = f"{opp['edge_pct']:.2%}"
@@ -145,7 +145,7 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
                     "INFO",
                     f"[Cross-Arb] Oportunidad: {self.event_id} | "
                     f"Kalshi YES={opp['kalshi_yes']:.4f} | "
-                    f"Polymarket YES={opp['polymarket_yes']:.4f} | "
+                    f"Limitless YES={opp['limitless_yes']:.4f} | "
                     f"Edge: {profit_str}",
                     self.worker_id,
                 )

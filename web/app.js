@@ -626,6 +626,7 @@ let recentTradesList = [];
 let currentBids = [];
 let currentAsks = [];
 let isPredictionMarket = false;
+let eventExpirationTime = null;
 
 function getDisplayBase(asset) {
     if (/^\d+$/.test(asset) && asset.length > 12) {
@@ -752,11 +753,6 @@ function parseApiDate(timestampStr) {
     let formatted = String(timestampStr);
     if (!formatted.includes("Z") && !/[+-]\d{2}:\d{2}$/.test(formatted)) {
         formatted = formatted.replace(" ", "T");
-        if (!formatted.includes("T")) {
-            formatted += "T00:00:00Z";
-        } else {
-            formatted += "Z";
-        }
     }
     return new Date(formatted);
 }
@@ -1651,6 +1647,11 @@ async function fetchStatus() {
         
         // Trazado dinámico de visualización: Gráfica para Crypto/Forex, Dial Radial para Predicciones
         isPredictionMarket = data.feeder_type === "kalshi" || data.feeder_type === "polymarket";
+        if (data.expiration) {
+            eventExpirationTime = new Date(data.expiration);
+        } else {
+            eventExpirationTime = null;
+        }
         if (isPredictionMarket) {
             if (radialGaugeContainer) radialGaugeContainer.style.display = "flex";
             if (priceChartCanvas) priceChartCanvas.style.display = "block";
@@ -2529,3 +2530,49 @@ setInterval(() => {
 
 // Cross-platform arbitrage polling (always, low frequency)
 setInterval(fetchArbitrageData, 5000);
+
+// Countdown timer update for events
+function updateCountdown() {
+    const timerBadge = document.getElementById("event-timer-badge");
+    if (!timerBadge) return;
+    
+    if (!eventExpirationTime) {
+        timerBadge.style.display = "none";
+        return;
+    }
+
+    const now = new Date();
+    const diffMs = eventExpirationTime.getTime() - now.getTime();
+
+    timerBadge.style.display = "inline-block";
+
+    if (diffMs <= 0) {
+        timerBadge.textContent = "VENCE: EXPIRADO";
+        timerBadge.style.background = "rgba(246, 70, 93, 0.15)";
+        timerBadge.style.color = "#f6465d";
+        timerBadge.style.borderColor = "rgba(246, 70, 93, 0.3)";
+        return;
+    }
+
+    const diffSecs = Math.floor(diffMs / 1000);
+    const days = Math.floor(diffSecs / 86400);
+    const hours = Math.floor((diffSecs % 86400) / 3600);
+    const mins = Math.floor((diffSecs % 3600) / 60);
+    const secs = diffSecs % 60;
+
+    let timeStr = "";
+    if (days > 0) {
+        timeStr = `${days}d ${hours}h ${mins}m`;
+    } else if (hours > 0) {
+        timeStr = `${hours}h ${mins}m ${secs}s`;
+    } else {
+        timeStr = `${mins}m ${secs}s`;
+    }
+
+    timerBadge.textContent = `VENCE: ${timeStr.toUpperCase()}`;
+    timerBadge.style.background = "rgba(240, 185, 11, 0.15)";
+    timerBadge.style.color = "#f0b90b";
+    timerBadge.style.borderColor = "rgba(240, 185, 11, 0.3)";
+}
+
+setInterval(updateCountdown, 1000);

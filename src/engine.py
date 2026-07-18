@@ -400,6 +400,20 @@ class TradingWorker:
 
         price = signal.price
 
+        # Determinar cantidad a operar: priorizar signal.amount, fallback a 50% del balance
+        # Si signal.amount está entre 0 y 1 (exclusivo), se interpreta como % del balance
+        if getattr(signal, "amount", None) is not None:
+            if 0 < signal.amount < 1:
+                pct = signal.amount
+                requested_amount = None
+                requested_pct = pct
+            else:
+                requested_amount = signal.amount
+                requested_pct = None
+        else:
+            requested_amount = None
+            requested_pct = None
+
         # 1. EJECUCIÓN CON ALPACA (Acciones / Criptomonedas)
         if self.alpaca_client and self.feeder_type == "alpaca":
             from alpaca.trading.requests import MarketOrderRequest
@@ -407,8 +421,16 @@ class TradingWorker:
 
             try:
                 if signal.side == "BUY":
-                    spend_amount = quote_balance * 0.5
-                    amount_to_buy = spend_amount / price
+                    if requested_pct is not None:
+                        spend_amount = quote_balance * requested_pct
+                        amount_to_buy = spend_amount / price
+                    elif requested_amount is not None:
+                        spend_amount = requested_amount * price
+                        amount_to_buy = requested_amount
+                    else:
+                        spend_amount = quote_balance * 0.5
+                        amount_to_buy = spend_amount / price
+
                     is_crypto_symbol = "/" in self.feeder.symbol
                     qty = (
                         round(amount_to_buy, 6)
@@ -431,11 +453,18 @@ class TradingWorker:
                         time_in_force=TimeInForce.GTC,
                     )
                 else:
+                    if requested_pct is not None:
+                        amount_to_sell = base_balance * requested_pct
+                    elif requested_amount is not None:
+                        amount_to_sell = requested_amount
+                    else:
+                        amount_to_sell = base_balance
+
                     is_crypto_symbol = "/" in self.feeder.symbol
                     qty = (
-                        round(base_balance, 6)
+                        round(amount_to_sell, 6)
                         if is_crypto_symbol
-                        else round(base_balance, 4)
+                        else round(amount_to_sell, 4)
                     )
 
                     if qty <= 0:
@@ -487,7 +516,12 @@ class TradingWorker:
         # 2. EJECUCIÓN CON OANDA (Forex)
         if self.feeder_type == "oanda" and self.oanda_account_id and self.oanda_token:
             try:
-                units = int(quote_balance * 0.5)
+                if requested_pct is not None:
+                    units = int(quote_balance * requested_pct)
+                elif requested_amount is not None:
+                    units = int(requested_amount)
+                else:
+                    units = int(quote_balance * 0.5)
                 if units <= 0:
                     units = 1000
                 if signal.side == "SELL":
@@ -548,19 +582,21 @@ class TradingWorker:
             # Si hay llaves reales, ejecutamos orden firmada
             if self.kalshi_api_key_id and self.kalshi_private_key_path:
                 try:
-                    # En Kalshi, operamos contratos (YES/NO).
-                    # Por defecto compraremos contratos YES.
-                    # Calculamos contratos a comprar gastando el 50% del balance de USD
-                    spend_amount = quote_balance * 0.5
-                    # El precio del contrato está expresado en centavos (ej. 50 = $0.50).
-                    # El precio de la señal está en dólares.
-                    price_cents = int(price * 100)
-                    contracts_count = int(spend_amount / price)
+                    if requested_pct is not None:
+                        spend_amount = quote_balance * requested_pct
+                        contracts_count = int(spend_amount / price)
+                    elif requested_amount is not None:
+                        contracts_count = int(requested_amount)
+                        spend_amount = contracts_count * price
+                    else:
+                        spend_amount = quote_balance * 0.5
+                        contracts_count = int(spend_amount / price)
 
                     if contracts_count <= 0:
-                        contracts_count = 10  # Lote mínimo por defecto
+                        contracts_count = 10
 
-                    # Cargar llave privada RSA para firmar
+                    price_cents = int(price * 100)
+
                     from cryptography.hazmat.primitives import hashes, serialization
                     from cryptography.hazmat.primitives.asymmetric import padding
                     import base64
@@ -574,7 +610,6 @@ class TradingWorker:
                     timestamp = str(int(datetime.datetime.now().timestamp() * 1000))
                     method = "POST"
 
-                    # Generar firma: timestamp + method + path
                     message = f"{timestamp}{method}{path}".encode("utf-8")
                     signature = private_key.sign(
                         message,
@@ -594,13 +629,12 @@ class TradingWorker:
                         "Content-Type": "application/json",
                     }
 
-                    # Estructura del cuerpo del POST Kalshi v2
                     side_to_place = "yes" if signal.side == "BUY" else "no"
                     order_data = {
                         "ticker": self.symbol,
                         "side": side_to_place,
                         "count": contracts_count,
-                        "price": price_cents,  # Precio límite en centavos (0-99)
+                        "price": price_cents,
                         "type": "limit",
                         "action": "buy" if signal.side == "BUY" else "sell",
                         "client_order_id": str(uuid.uuid4()),
@@ -643,8 +677,15 @@ class TradingWorker:
             else:
                 # Simulación local para Kalshi si no hay keys
                 if signal.side == "BUY":
-                    spend_amount = quote_balance * 0.5
-                    contracts_count = spend_amount / price
+                    if requested_pct is not None:
+                        spend_amount = quote_balance * requested_pct
+                        contracts_count = spend_amount / price
+                    elif requested_amount is not None:
+                        spend_amount = requested_amount * price
+                        contracts_count = requested_amount
+                    else:
+                        spend_amount = quote_balance * 0.5
+                        contracts_count = spend_amount / price
                     new_quote = quote_balance - spend_amount
                     new_base = base_balance + contracts_count
 
@@ -672,15 +713,21 @@ class TradingWorker:
                             self.worker_id,
                         )
                         return
-                    revenue = base_balance * price
+                    if requested_pct is not None:
+                        amount_to_sell = min(base_balance * requested_pct, base_balance)
+                    elif requested_amount is not None:
+                        amount_to_sell = min(requested_amount, base_balance)
+                    else:
+                        amount_to_sell = base_balance
+                    revenue = amount_to_sell * price
                     new_quote = quote_balance + revenue
-                    new_base = 0.0
+                    new_base = base_balance - amount_to_sell
 
                     self.db.save_trade(
                         symbol=self.symbol,
                         side="SELL",
                         price=price,
-                        amount=base_balance,
+                        amount=amount_to_sell,
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
@@ -696,8 +743,11 @@ class TradingWorker:
 
         # 4. SIMULACIÓN LOCAL MOCK / FALLBACK GENERAL
         if signal.side == "BUY":
-            if getattr(signal, "amount", None) is not None:
-                amount_to_buy = signal.amount
+            if requested_pct is not None:
+                spend_amount = quote_balance * requested_pct
+                amount_to_buy = spend_amount / price
+            elif requested_amount is not None:
+                amount_to_buy = requested_amount
                 spend_amount = amount_to_buy * price
             else:
                 spend_amount = quote_balance * 0.5
@@ -731,8 +781,10 @@ class TradingWorker:
                 self.worker_id,
             )
         elif signal.side == "SELL":
-            if getattr(signal, "amount", None) is not None:
-                amount_to_sell = signal.amount
+            if requested_pct is not None:
+                amount_to_sell = min(base_balance * requested_pct, base_balance)
+            elif requested_amount is not None:
+                amount_to_sell = min(requested_amount, base_balance)
             else:
                 amount_to_sell = base_balance
 
@@ -766,6 +818,8 @@ class TradingWorker:
             )
 
     async def _sync_alpaca_portfolio(self):
+        if self.execution_type == "simulation":
+            return
         if not self.alpaca_client or self.feeder_type != "alpaca":
             return
 
@@ -870,6 +924,8 @@ class TradingWorker:
             self.db.log("ERROR", f"Error al sincronizar con OANDA: {e}", self.worker_id)
 
     async def _sync_kalshi_portfolio(self):
+        if self.execution_type == "simulation":
+            return
         if not self.kalshi_api_key_id or not self.kalshi_private_key_path:
             return
         try:

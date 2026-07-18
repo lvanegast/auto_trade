@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from src.strategy.base import BaseStrategy
 from src.events import PriceUpdateEvent, SignalEvent
 from src.feeders.connection_manager import AsyncWebSocketManager
@@ -12,12 +13,15 @@ class BinanceTracker:
 
     latest_btc_price: float = 0.0
     latest_eth_price: float = 0.0
+    last_update_time: float = 0.0
 
 
 class _BinanceWebSocketManager(AsyncWebSocketManager):
     """Gestor del WebSocket de Binance para el tracker de precios líder."""
 
     async def on_message(self, data: dict):
+        import time as _time
+
         stream = data.get("stream", "")
         ticker_data = data.get("data", {})
 
@@ -25,8 +29,10 @@ class _BinanceWebSocketManager(AsyncWebSocketManager):
 
         if "btcusdt" in stream:
             BinanceTracker.latest_btc_price = price
+            BinanceTracker.last_update_time = _time.monotonic()
         elif "ethusdt" in stream:
             BinanceTracker.latest_eth_price = price
+            BinanceTracker.last_update_time = _time.monotonic()
 
 
 # Singleton del WebSocket de Binance (compartido entre todos los workers)
@@ -39,8 +45,16 @@ async def ensure_binance_websocket():
     global _binance_ws_manager
 
     async with _binance_ws_lock:
-        if _binance_ws_manager is not None:
+        if _binance_ws_manager is not None and _binance_ws_manager._running:
             return
+
+        if _binance_ws_manager is not None:
+            logger.warning("BinanceTracker WebSocket no estaba activo. Reconectando...")
+            try:
+                await _binance_ws_manager.disconnect()
+            except Exception:
+                pass
+            _binance_ws_manager = None
 
         url = "wss://stream.binance.com:9443/stream?streams=btcusdt@ticker/ethusdt@ticker"
         _binance_ws_manager = _BinanceWebSocketManager(
@@ -58,32 +72,52 @@ class LeadLagArbitrageStrategy(BaseStrategy):
     def __init__(
         self,
         symbol: str,
-        arbitrage_threshold: float = 0.0012,  # Umbral de desviación (0.12% o 12 bps)
-        min_profit_target: float = 0.0020,  # Target de salida (0.20%)
-        max_hold_seconds: float = 8.0,  # Tiempo máximo para mantener la posición
-        stop_loss_pct: float = None,  # Stop loss porcentual (None = desactivado)
+        arbitrage_threshold: float = 0.0010,
+        min_profit_target: float = 0.0015,
+        max_hold_seconds: float = 15.0,
+        stop_loss_pct: float = None,
+        trailing_stop_pct: float = None,
+        cooldown_seconds: float = 5.0,
+        position_size_pct: float = 0.15,
         db=None,
         worker_id: str = "worker_1",
     ):
         super().__init__(symbol)
-        self.arbitrage_threshold = arbitrage_threshold
-        self.min_profit_target = min_profit_target
-        self.max_hold_seconds = max_hold_seconds
-        self.stop_loss_pct = stop_loss_pct if stop_loss_pct is not None else float(
-            __import__("os").getenv("STOP_LOSS_PCT", "0.0")
+        self.arbitrage_threshold = float(
+            os.getenv("ARBITRAGE_THRESHOLD", str(arbitrage_threshold))
         )
-        self.min_profit_target = min_profit_target if min_profit_target != 0.0020 else float(
-            __import__("os").getenv("TAKE_PROFIT_PCT", str(min_profit_target))
+        self.min_profit_target = float(
+            os.getenv("TAKE_PROFIT_PCT", str(min_profit_target))
         )
+        self.max_hold_seconds = float(
+            os.getenv("MAX_HOLD_SECONDS", str(max_hold_seconds))
+        )
+        self.stop_loss_pct = float(
+            os.getenv("STOP_LOSS_PCT", str(stop_loss_pct if stop_loss_pct is not None else 0.005))
+        )
+        self.trailing_stop_pct = float(
+            os.getenv("TRAILING_STOP_PCT", str(trailing_stop_pct if trailing_stop_pct is not None else 0.0010))
+        )
+        self.cooldown_seconds = float(
+            os.getenv("COOLDOWN_SECONDS", str(cooldown_seconds))
+        )
+        self.position_size_pct = float(
+            os.getenv("POSITION_SIZE_PCT", str(position_size_pct))
+        )
+
         self.db = db
         self.worker_id = worker_id
-        self._position_id = None  # ID de la posición en DB
+        self._position_id = None
 
         # Estado de la posición
-        self.last_position = None  # 'BUY', 'SELL', None
+        self.last_position = None
         self.entry_price = 0.0
         self.entry_time = None
         self.entry_lead_price = 0.0
+        self._peak_profit = 0.0
+        self._last_exit_time = 0.0
+        self._trade_count = 0
+        self._win_count = 0
 
     @property
     def teorical_probability(self) -> float:
@@ -91,8 +125,6 @@ class LeadLagArbitrageStrategy(BaseStrategy):
             return BinanceTracker.latest_btc_price
         elif "ETH" in self.symbol:
             return BinanceTracker.latest_eth_price
-        
-        # Para mercados de predicción, la probabilidad es el precio del contrato (0.0 - 1.0)
         if len(self.prices_df) > 0:
             return float(self.prices_df.iloc[-1]["price"])
         return 0.50
@@ -108,151 +140,146 @@ class LeadLagArbitrageStrategy(BaseStrategy):
 
     @property
     def kelly_recommendation(self) -> float:
-        return self.arbitrage_threshold
+        return self.position_size_pct
 
     def evaluate_signal(self, event: PriceUpdateEvent) -> SignalEvent:
-        """Evaluación principal de la estrategia sobre barra cerrada (no usada en tick-a-tick)."""
         return None
 
     def on_price_update(self, event: PriceUpdateEvent) -> SignalEvent:
-        """Sobrescribe la actualización de precio tick-a-tick para arbitraje de latencia."""
-        # Asegurar que el listener de Binance esté corriendo (idempotente gracias al lock)
         asyncio.create_task(ensure_binance_websocket())
-
         super().on_price_update(event)
 
         current_price = event.price
-        # Determinar el precio del líder (Binance) para este símbolo
         lead_price = 0.0
         if "BTC" in self.symbol:
             lead_price = BinanceTracker.latest_btc_price
         elif "ETH" in self.symbol:
             lead_price = BinanceTracker.latest_eth_price
         else:
-            # Para contratos de predicción vinculados a BTC/ETH por defecto
             lead_price = BinanceTracker.latest_btc_price
 
-        # Si Binance aún no tiene cotizaciones cargadas, no operamos
         if lead_price <= 0.0:
             return None
 
-        # Gestionar salida por tiempo o por beneficio si tenemos posición activa
         if self.last_position is not None:
             return self._evaluate_exit(current_price, lead_price)
 
-        # Evaluar entrada
-        # Desviación porcentual = (lead_price - current_price) / current_price
+        now = asyncio.get_event_loop().time()
+
+        # Cooldown: no entrar demasiado rápido después de un cierre
+        if self._last_exit_time > 0 and (now - self._last_exit_time) < self.cooldown_seconds:
+            return None
+
         deviation = (lead_price - current_price) / current_price
 
-        # Caso 1: Binance se disparó arriba y el precio actual (Alpaca/Polymarket) se quedó atrás
         if deviation > self.arbitrage_threshold:
-            self.last_position = "BUY"
-            self.entry_price = current_price
-            self.entry_lead_price = lead_price
-            self.entry_time = asyncio.get_event_loop().time()
-
-            # Persistir posición en DB
-            if self.db:
-                self._position_id = self.db.save_position(
-                    self.worker_id, self.symbol, "BUY", current_price, lead_price
-                )
-
-            logger.info(
-                f"[Arbitraje] Entrada COMPRA en {self.symbol} a {current_price}. "
-                f"Líder (Binance): {lead_price} (Desviación: {deviation:+.4%})"
-            )
-
-            return SignalEvent(
-                symbol=self.symbol,
-                side="BUY",
-                price=current_price,
-                reason=f"Arbitraje Lead-Lag: Binance lidera a {lead_price} (Desviación: {deviation:+.4%})",
-                amount=1.0,
-                position_id=self._position_id,
-            )
-
-        # Caso 2: Binance cayó fuerte y el precio local se quedó arriba (oportunidad de Venta/Corto)
+            return self._enter_position("BUY", current_price, lead_price, deviation)
         elif deviation < -self.arbitrage_threshold:
-            self.last_position = "SELL"
-            self.entry_price = current_price
-            self.entry_lead_price = lead_price
-            self.entry_time = asyncio.get_event_loop().time()
-
-            # Persistir posición en DB
-            if self.db:
-                self._position_id = self.db.save_position(
-                    self.worker_id, self.symbol, "SELL", current_price, lead_price
-                )
-
-            logger.info(
-                f"[Arbitraje] Entrada VENTA en {self.symbol} a {current_price}. "
-                f"Líder (Binance): {lead_price} (Desviación: {deviation:+.4%})"
-            )
-
-            return SignalEvent(
-                symbol=self.symbol,
-                side="SELL",
-                price=current_price,
-                reason=f"Arbitraje Lead-Lag: Binance lidera a {lead_price} (Desviación: {deviation:+.4%})",
-                amount=1.0,
-                position_id=self._position_id,
-            )
+            return self._enter_position("SELL", current_price, lead_price, deviation)
 
         return None
 
+    def _enter_position(self, side: str, current_price: float, lead_price: float, deviation: float) -> SignalEvent:
+        self.last_position = side
+        self.entry_price = current_price
+        self.entry_lead_price = lead_price
+        self.entry_time = asyncio.get_event_loop().time()
+        self._peak_profit = 0.0
+
+        if self.db:
+            self._position_id = self.db.save_position(
+                self.worker_id, self.symbol, side, current_price, lead_price,
+                amount=self.position_size_pct,
+            )
+
+        logger.info(
+            f"[Arbitraje] Entrada {side} en {self.symbol} a {current_price}. "
+            f"Líder (Binance): {lead_price} (Desviación: {deviation:+.4%})"
+        )
+
+        return SignalEvent(
+            symbol=self.symbol,
+            side=side,
+            price=current_price,
+            reason=f"Lead-Lag: Binance {lead_price} vs Local {current_price} (Δ: {deviation:+.4%})",
+            amount=self.position_size_pct,
+            position_id=self._position_id,
+        )
+
     def _evaluate_exit(self, current_price: float, lead_price: float) -> SignalEvent:
-        """Determina si debemos cerrar la posición de arbitraje por límite de tiempo, beneficio o stop-loss."""
         now = asyncio.get_event_loop().time()
         elapsed = now - self.entry_time
 
-        # Calcular retorno actual
         if self.last_position == "BUY":
             profit_pct = (current_price - self.entry_price) / self.entry_price
         else:
             profit_pct = (self.entry_price - current_price) / self.entry_price
 
-        # Salida 1: Se alcanzó el profit target mínimo
+        self._peak_profit = max(self._peak_profit, profit_pct)
+
+        # Salida 1: Profit target
         if profit_pct >= self.min_profit_target:
-            side = "SELL" if self.last_position == "BUY" else "BUY"
-            reason = f"Profit Target alcanzado: {profit_pct:+.2%} en {elapsed:.1f}s"
-            return self._trigger_exit(side, current_price, reason)
+            return self._trigger_exit(
+                current_price,
+                f"Profit Target: {profit_pct:+.2%} en {elapsed:.1f}s"
+            )
 
-        # Salida 2: Stop Loss alcanzado
+        # Salida 2: Trailing stop (si el profit bajó X% desde el máximo)
+        if self.trailing_stop_pct > 0 and self._peak_profit > self.min_profit_target * 0.5:
+            drawdown = self._peak_profit - profit_pct
+            if drawdown >= self.trailing_stop_pct:
+                return self._trigger_exit(
+                    current_price,
+                    f"Trailing Stop: pico {self._peak_profit:+.2%} → actual {profit_pct:+.2%} (drawdown: {drawdown:.2%}) en {elapsed:.1f}s"
+                )
+
+        # Salida 3: Stop loss
         if self.stop_loss_pct > 0 and profit_pct <= -self.stop_loss_pct:
-            side = "SELL" if self.last_position == "BUY" else "BUY"
-            reason = f"Stop Loss alcanzado: {profit_pct:+.2%} (umbral: -{self.stop_loss_pct:.2%}) en {elapsed:.1f}s"
-            return self._trigger_exit(side, current_price, reason)
+            return self._trigger_exit(
+                current_price,
+                f"Stop Loss: {profit_pct:+.2%} en {elapsed:.1f}s"
+            )
 
-        # Salida 3: Tiempo de mantenimiento máximo alcanzado (Time Stop)
+        # Salida 4: Time stop
         if elapsed >= self.max_hold_seconds:
-            side = "SELL" if self.last_position == "BUY" else "BUY"
-            reason = f"Time Stop alcanzado ({elapsed:.1f}s). Retorno: {profit_pct:+.2%}"
-            return self._trigger_exit(side, current_price, reason)
+            return self._trigger_exit(
+                current_price,
+                f"Time Stop ({elapsed:.1f}s): {profit_pct:+.2%}"
+            )
 
         return None
 
-    def _trigger_exit(self, side: str, price: float, reason: str) -> SignalEvent:
-        # Cerrar posición en DB si existe
+    def _trigger_exit(self, price: float, reason: str) -> SignalEvent:
         closed_position_id = self._position_id
+        closing_side = "SELL" if self.last_position == "BUY" else "BUY"
+
         if self._position_id and self.db:
             self.db.close_position(
                 self._position_id, price, reason, worker_id=self.worker_id
             )
 
+        self._trade_count += 1
+        if self.last_position == "BUY" and price > self.entry_price:
+            self._win_count += 1
+        elif self.last_position == "SELL" and price < self.entry_price:
+            self._win_count += 1
+
+        self._last_exit_time = asyncio.get_event_loop().time()
         self.last_position = None
         self.entry_price = 0.0
         self.entry_lead_price = 0.0
         self.entry_time = None
         self._position_id = None
+        self._peak_profit = 0.0
 
-        logger.info(f"[Arbitraje] Cierre de posición: {reason}")
+        logger.info(f"[Arbitraje] Cierre: {reason} | Win rate: {self._win_count}/{self._trade_count}")
+
         return SignalEvent(
-            symbol=self.symbol, side=side, price=price, reason=reason, amount=1.0,
-            position_id=closed_position_id,
+            symbol=self.symbol, side=closing_side, price=price, reason=reason,
+            amount=self.position_size_pct, position_id=closed_position_id,
         )
 
     def calculate_indicators(self):
-        """Calcula EMAs y RSI referenciales para la visualización del UI."""
         df = self.prices_df.copy()
         if len(df) < 2:
             df["ema_short"] = df["price"]

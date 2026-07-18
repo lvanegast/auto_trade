@@ -1,6 +1,7 @@
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2.pool import SimpleConnectionPool
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -17,7 +18,28 @@ class DatabaseManager:
         self.password = os.getenv("DB_PASSWORD", "trading_password")
         self._log_hooks = []
 
+        # Connection pool: min 2, max 10 connections
+        self._pool = None
+        self._init_pool()
+
         self.init_db()
+
+    def _init_pool(self):
+        """Inicializa el pool de conexiones a PostgreSQL."""
+        try:
+            self._pool = SimpleConnectionPool(
+                minconn=2,
+                maxconn=10,
+                host=self.host,
+                port=self.port,
+                dbname=self.dbname,
+                user=self.user,
+                password=self.password,
+            )
+            print("[DB] Pool de conexiones inicializado.")
+        except Exception as e:
+            print(f"[DB] Error al crear pool de conexiones: {e}")
+            self._pool = None
 
     def add_log_hook(self, hook):
         """Registra un callback para transmitir logs en tiempo real.
@@ -28,7 +50,9 @@ class DatabaseManager:
         self._log_hooks.append(hook)
 
     def _get_connection(self):
-        """Retorna una conexión a la base de datos PostgreSQL."""
+        """Retorna una conexión del pool (o crea una nueva si el pool falló)."""
+        if self._pool:
+            return self._pool.getconn()
         return psycopg2.connect(
             host=self.host,
             port=self.port,
@@ -36,6 +60,11 @@ class DatabaseManager:
             user=self.user,
             password=self.password,
         )
+
+    def _return_connection(self, conn):
+        """Devuelve una conexión al pool."""
+        if self._pool and conn:
+            self._pool.putconn(conn)
 
     def init_db(self):
         """Inicializa las tablas en PostgreSQL para el bot de trading."""
@@ -124,8 +153,7 @@ class DatabaseManager:
                 conn.rollback()
             raise e
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def set_state(self, key: str, value: str):
         """Inserta o actualiza una variable de estado en bot_state."""
@@ -147,8 +175,7 @@ class DatabaseManager:
             if conn:
                 conn.rollback()
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def get_state(self, key: str, default=None) -> str:
         """Obtiene un valor de estado guardado."""
@@ -164,8 +191,7 @@ class DatabaseManager:
             print(f"[Error de DB] Error al leer estado '{key}': {e}")
             return default
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def log(self, level: str, message: str, worker_id: str = "system"):
         """Guarda un log en la consola y en PostgreSQL."""
@@ -192,8 +218,7 @@ class DatabaseManager:
             if conn:
                 conn.rollback()
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def save_trade(
         self,
@@ -246,8 +271,7 @@ class DatabaseManager:
                 conn.rollback()
             return -1
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def get_trades(self, limit=50, worker_id: str = None):
         """Obtiene el historial de transacciones."""
@@ -267,8 +291,7 @@ class DatabaseManager:
             self.log("ERROR", f"Error al recuperar trades: {e}")
             return []
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def get_pending_trades(self, worker_id: str = None):
         """Obtiene todos los trades pendientes (PENDING_NEW, NEW, ACCEPTED)."""
@@ -288,8 +311,7 @@ class DatabaseManager:
             self.log("ERROR", f"Error al recuperar trades pendientes: {e}")
             return []
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def update_trade_status(self, external_order_id: str, status: str):
         """Actualiza el estado de una orden por su id externo o id local."""
@@ -321,8 +343,7 @@ class DatabaseManager:
             if conn:
                 conn.rollback()
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def get_logs(self, limit=50, worker_id: str = None):
         """Obtiene el historial de logs de auditoría."""
@@ -342,8 +363,7 @@ class DatabaseManager:
             print(f"[Error de DB] Error al recuperar logs: {e}")
             return []
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def update_portfolio(
         self,
@@ -374,8 +394,7 @@ class DatabaseManager:
             if conn:
                 conn.rollback()
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def get_portfolio(self, worker_id: str = "worker_1"):
         """Obtiene el estado más reciente de cada activo en el portafolio para un worker específico."""
@@ -399,8 +418,7 @@ class DatabaseManager:
             )
             return []
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def save_position(
         self,
@@ -439,8 +457,7 @@ class DatabaseManager:
                 conn.rollback()
             return -1
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def close_position(
         self,
@@ -479,8 +496,7 @@ class DatabaseManager:
             if conn:
                 conn.rollback()
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def get_open_positions(self, worker_id: str = None):
         """Obtiene todas las posiciones abiertas."""
@@ -500,8 +516,7 @@ class DatabaseManager:
             self.log("ERROR", f"Error al recuperar posiciones abiertas: {e}")
             return []
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def get_position_history(self, limit=50, worker_id: str = None):
         """Obtiene el historial de posiciones cerradas."""
@@ -521,8 +536,7 @@ class DatabaseManager:
             self.log("ERROR", f"Error al recuperar historial de posiciones: {e}")
             return []
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def get_all_positions(self, limit=50, worker_id: str = None):
         """Obtiene todas las posiciones (abiertas + cerradas)."""
@@ -542,8 +556,7 @@ class DatabaseManager:
             self.log("ERROR", f"Error al recuperar posiciones: {e}")
             return []
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)
 
     def get_open_position_by_worker(self, worker_id: str):
         """Obtiene la posición abierta más reciente de un worker."""
@@ -558,5 +571,4 @@ class DatabaseManager:
             self.log("ERROR", f"Error al recuperar posición abierta para {worker_id}: {e}")
             return None
         finally:
-            if conn:
-                conn.close()
+            self._return_connection(conn)

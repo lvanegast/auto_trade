@@ -189,6 +189,14 @@ async def get_status(worker_id: str = "worker_1"):
                     for _, row in other_worker.strategy.prices_df.iterrows()
                 ]
 
+        # Obtener fecha de expiración si es un mercado de predicción con event_id
+        expiration = None
+        if hasattr(worker.strategy, "event_id") and worker.strategy.event_id:
+            from src.strategy.market_pairs import get_pair_by_event_id
+            pair = get_pair_by_event_id(worker.strategy.event_id)
+            if pair:
+                expiration = pair.get("expiration")
+
         return {
             "status": "ONLINE" if is_running else "OFFLINE",
             "trading_mode": db.get_state("trading_mode", "paper").upper(),
@@ -205,6 +213,7 @@ async def get_status(worker_id: str = "worker_1"):
             "indicators": indicators,
             "price_history": price_history,
             "comparison_history": comparison_history,
+            "expiration": expiration,
             "teorical_probability": getattr(
                 worker.strategy, "teorical_probability", 0.50
             ),

@@ -133,6 +133,7 @@
                                 <button class="tf-btn" data-tf="1h">1h</button>
                             </div>
                             <span class="chart-source-badge" id="chart-source-name">Alpaca API</span>
+                            <span class="chart-source-badge" id="event-timer-badge" style="display: none; background: rgba(240, 185, 11, 0.15); color: #f0b90b; border: 1px solid rgba(240, 185, 11, 0.3); font-weight: 600; letter-spacing: 0.5px;">Vence: --</span>
                         </div>
                         <div class="indicator-quick-view" style="display: flex; gap: 15px; align-items: center;">
                             <!-- Event Probability Gauge (shown only for event/prediction markets) -->
@@ -487,7 +488,7 @@
                             <span class="bot-badge offline" id="bot-badge-status">OFFLINE</span>
                         </div>
                         <p class="bot-description">
-                            Ejecuta compras y ventas automáticas basadas en la estrategia del cruce de EMA 9/21 y RSI.
+                            Ejecuta compras y ventas automáticas basadas en arbitraje Lead-Lag (Binance vs precio local).
                         </p>
                     </div>
 
@@ -504,7 +505,7 @@
                         </div>
                         <div class="param-row">
                             <span>Estrategia</span>
-                            <strong>EMA Crossover + RSI</strong>
+                            <strong>Lead-Lag Arbitrage (Binance Leader)</strong>
                         </div>
                         <div class="param-row">
                             <span>Intervalo de Velas</span>
