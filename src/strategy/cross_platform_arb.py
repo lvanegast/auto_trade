@@ -219,3 +219,7 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
             amount=self.position_size_pct,
             position_id=closed_position_id,
         )
+
+    def evaluate_signal(self, event: PriceUpdateEvent) -> SignalEvent:
+        """No se usa para arbitraje en tiempo real (evaluado tick a tick en on_price_update)."""
+        return None

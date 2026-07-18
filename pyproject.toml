@@ -14,6 +14,7 @@ dependencies = [
     "trading-ig>=0.0.1",
     "alpaca-py>=0.43.4",
     "websockets>=16.0",
+    "cryptography>=49.0.0",
 ]
 
 [tool.uv]

@@ -75,11 +75,10 @@ const WS_MAX_DELAY = 60000;     // 60s cap
 const WS_RESET_AFTER = 30000;   // Resetear contador tras 30s conectado
 
 function connectWebSocket(workerId) {
-    if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-        // Ya conectado al mismo worker
+    if (wsConnection) {
         if (wsConnection._workerId === workerId) return;
-        // Cambio de worker: cerrar y reconectar
-        wsConnection.close();
+        try { wsConnection.close(); } catch (_) {}
+        wsConnection = null;
     }
 
     // Limpiar timers pendientes
@@ -278,7 +277,7 @@ function updateOrderBookDisplay(bidsData, asksData) {
     if ((!bidsData || bidsData.length === 0) && (!asksData || asksData.length === 0)) {
         if (lastPrice <= 0) return;
         const spreadPct = 0.0003;
-        const tickSpacing = isForexOrEvent ? 0.0005 : 0.25;
+        const tickSpacing = isPredictionMarket ? 0.01 : isForexOrEvent ? 0.0005 : 0.25;
         bidsData = [];
         asksData = [];
         for (let i = 1; i <= 5; i++) {
@@ -602,6 +601,7 @@ function renderSidebarAssetCards(feederType, activeSymbol) {
 let priceChart = null;        // IChartApi
 let candleSeries = null;      // ISeriesApi<"Candlestick">
 let volumeSeries = null;      // ISeriesApi<"Histogram"> (depth/volume)
+let comparisonSeries = null;  // ISeriesApi<"Line"> (comparison chart for cross-platform)
 let entryPriceLine = null;    // Active position price line
 let tradeMarkers = [];        // Historical trade markers [{time, position, color, shape, text}]
 
@@ -940,7 +940,19 @@ function buildChart(containerId, feederType) {
         scaleMargins: { top: 0.85, bottom: 0 },
     });
 
+    // Serie de comparación para arbitraje cross-platform
+    comparisonSeries = priceChart.addLineSeries({
+        color: "#ff9900", // Naranja brillante y premium para el otro mercado
+        lineWidth: 2,
+        priceLineVisible: false,
+        title: feederType === "kalshi" ? "POLYMARKET" : "KALSHI",
+        axisLabelVisible: true,
+    });
+
     currentFeederTypeForChart = feederType;
+    window.priceChart = priceChart;
+    window.candleSeries = candleSeries;
+    window.comparisonSeries = comparisonSeries;
     return priceChart;
 }
 
@@ -1641,7 +1653,7 @@ async function fetchStatus() {
         isPredictionMarket = data.feeder_type === "kalshi" || data.feeder_type === "polymarket";
         if (isPredictionMarket) {
             if (radialGaugeContainer) radialGaugeContainer.style.display = "flex";
-            if (priceChartCanvas) priceChartCanvas.style.display = "none";
+            if (priceChartCanvas) priceChartCanvas.style.display = "block";
             
             let prob = (data.teorical_probability !== undefined && data.teorical_probability < 1.5) ? data.teorical_probability : (lastPrice < 1.5 ? lastPrice : 0.50);
             prob = Math.max(0.01, Math.min(0.99, prob));
@@ -1715,6 +1727,31 @@ async function fetchStatus() {
                 pushTick(lastPrice);
             }
         }
+        
+        // Alimentar gráfica de comparación si es arbitraje cross-platform
+        if (comparisonSeries) {
+            if (data.comparison_history && data.comparison_history.length > 0) {
+                const otherPlatform = data.feeder_type === "kalshi" ? "POLYMARKET" : "KALSHI";
+                comparisonSeries.applyOptions({ title: otherPlatform });
+                
+                const compData = data.comparison_history.map(item => {
+                    const d = parseApiDate(item.timestamp);
+                    const secs = Math.floor(d.getTime() / 1000);
+                    return { time: Number(secs) || 0, value: Number(item.price) || 0 };
+                }).filter(t => t.time > 0 && t.value > 0);
+                
+                try {
+                    comparisonSeries.setData(compData);
+                } catch (e) {
+                    console.warn("[comparisonSeries] setData failed:", e.message);
+                }
+            } else {
+                try {
+                    comparisonSeries.setData([]);
+                } catch (_) {}
+            }
+        }
+
         lastActiveSymbol = data.symbol;
 
         // Sincronizar balances del portafolio
@@ -2303,6 +2340,9 @@ async function changeAssetSymbolTo(feederType, symbol) {
             if (candleSeries) {
                 candleSeries.setData([]);
                 candleSeries.setMarkers([]);
+            }
+            if (comparisonSeries) {
+                try { comparisonSeries.setData([]); } catch (_) {}
             }
             if (entryPriceLine) {
                 candleSeries.removePriceLine(entryPriceLine);

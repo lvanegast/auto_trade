@@ -230,21 +230,26 @@ class TradingWorker:
         self._restore_position_from_db()
 
         # Sincronizar balances reales según corresponda
-        if self.alpaca_client and self.feeder_type == "alpaca":
-            await self._sync_alpaca_portfolio()
-
-        elif self.feeder_type == "oanda" and self.oanda_account_id and self.oanda_token:
-            await self._sync_oanda_portfolio()
-        elif (
-            self.feeder_type == "kalshi"
-            and self.kalshi_api_key_id
-            and self.kalshi_private_key_path
-        ):
-            await self._sync_kalshi_portfolio()
+        try:
+            if self.alpaca_client and self.feeder_type == "alpaca":
+                await self._sync_alpaca_portfolio()
+            elif self.feeder_type == "oanda" and self.oanda_account_id and self.oanda_token:
+                await self._sync_oanda_portfolio()
+            elif (
+                self.feeder_type == "kalshi"
+                and self.kalshi_api_key_id
+                and self.kalshi_private_key_path
+            ):
+                await self._sync_kalshi_portfolio()
+        except Exception as e:
+            self.db.log(
+                "WARNING",
+                f"No se pudo sincronizar el portafolio real ({e}). Continuando en modo de simulación.",
+                self.worker_id,
+            )
 
         # Pre-cargar historial para evitar arranque en frío
-        if self.feeder_type == "alpaca":
-            await self._warm_up_strategy()
+        await self._warm_up_strategy()
 
         self.engine_task = asyncio.create_task(self._event_loop())
         self.feeder_task = asyncio.create_task(self.feeder.start())

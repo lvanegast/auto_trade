@@ -111,7 +111,7 @@ async def get_status(worker_id: str = "worker_1"):
 
         # Calcular indicadores en tiempo real
         indicators = {"ema_short": 0.0, "ema_long": 0.0, "rsi": 0.0}
-        if len(worker.strategy.prices_df) >= 2:
+        if len(worker.strategy.prices_df) >= 2 and hasattr(worker.strategy, "calculate_indicators"):
             try:
                 df_ind = worker.strategy.calculate_indicators()
                 if not df_ind.empty:
@@ -163,6 +163,32 @@ async def get_status(worker_id: str = "worker_1"):
                 for _, row in worker.strategy.prices_df.iterrows()
             ]
 
+        # Obtener historial de comparación si es arbitraje cross-platform
+        comparison_history = []
+        if hasattr(worker.strategy, "event_id") and worker.strategy.event_id:
+            # Buscar el otro worker que tenga el mismo event_id pero diferente platform
+            other_worker = None
+            for w_id, w in engine.workers.items():
+                if w_id != worker_id and hasattr(w.strategy, "event_id") and w.strategy.event_id == worker.strategy.event_id:
+                    other_worker = w
+                    break
+            
+            if other_worker and len(other_worker.strategy.prices_df) > 0:
+                has_ohlc_other = all(col in other_worker.strategy.prices_df.columns for col in ["open", "high", "low", "close"])
+                comparison_history = [
+                    {
+                        "timestamp": row["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+                        if hasattr(row["timestamp"], "strftime")
+                        else str(row["timestamp"]),
+                        "price": float(row["price"]),
+                        "open": float(row["open"]) if has_ohlc_other else float(row["price"]),
+                        "high": float(row["high"]) if has_ohlc_other else float(row["price"]),
+                        "low": float(row["low"]) if has_ohlc_other else float(row["price"]),
+                        "close": float(row["close"]) if has_ohlc_other else float(row["price"]),
+                    }
+                    for _, row in other_worker.strategy.prices_df.iterrows()
+                ]
+
         return {
             "status": "ONLINE" if is_running else "OFFLINE",
             "trading_mode": db.get_state("trading_mode", "paper").upper(),
@@ -178,6 +204,7 @@ async def get_status(worker_id: str = "worker_1"):
             "position_id": getattr(worker.strategy, "_position_id", None),
             "indicators": indicators,
             "price_history": price_history,
+            "comparison_history": comparison_history,
             "teorical_probability": getattr(
                 worker.strategy, "teorical_probability", 0.50
             ),
