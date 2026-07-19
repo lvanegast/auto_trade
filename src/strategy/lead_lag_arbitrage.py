@@ -76,6 +76,7 @@ class LeadLagArbitrageStrategy(BaseStrategy):
         min_profit_target: float = 0.0015,
         max_hold_seconds: float = 15.0,
         stop_loss_pct: float = None,
+        stop_loss_usd: float = None,
         trailing_stop_pct: float = None,
         cooldown_seconds: float = 5.0,
         position_size_pct: float = 0.15,
@@ -94,6 +95,9 @@ class LeadLagArbitrageStrategy(BaseStrategy):
         )
         self.stop_loss_pct = float(
             os.getenv("STOP_LOSS_PCT", str(stop_loss_pct if stop_loss_pct is not None else 0.005))
+        )
+        self.stop_loss_usd = float(
+            os.getenv("STOP_LOSS_USD", str(stop_loss_usd if stop_loss_usd is not None else 15.0))
         )
         self.trailing_stop_pct = float(
             os.getenv("TRAILING_STOP_PCT", str(trailing_stop_pct if trailing_stop_pct is not None else 0.0010))
@@ -115,6 +119,7 @@ class LeadLagArbitrageStrategy(BaseStrategy):
         self.entry_time = None
         self.entry_lead_price = 0.0
         self._peak_profit = 0.0
+        self._breakeven_activated = False
         self._last_exit_time = 0.0
         self._trade_count = 0
         self._win_count = 0
@@ -217,6 +222,13 @@ class LeadLagArbitrageStrategy(BaseStrategy):
 
         self._peak_profit = max(self._peak_profit, profit_pct)
 
+        # USD-based P&L estimate (position_size_pct * entry_price * profit_pct * leverage)
+        estimated_pnl_usd = abs(profit_pct) * self.position_size_pct * self.entry_price
+
+        # Breakeven trailing: when profit hits +0.10%, lock stop to entry price
+        if not self._breakeven_activated and profit_pct >= self.min_profit_target * 0.5:
+            self._breakeven_activated = True
+
         # Salida 1: Profit target
         if profit_pct >= self.min_profit_target:
             return self._trigger_exit(
@@ -233,7 +245,16 @@ class LeadLagArbitrageStrategy(BaseStrategy):
                     f"Trailing Stop: pico {self._peak_profit:+.2%} → actual {profit_pct:+.2%} (drawdown: {drawdown:.2%}) en {elapsed:.1f}s"
                 )
 
-        # Salida 3: Stop loss
+        # Salida 3a: USD stop loss (hard cap)
+        if self.stop_loss_usd > 0 and profit_pct < 0:
+            loss_usd = abs(profit_pct) * self.position_size_pct * self.entry_price
+            if loss_usd >= self.stop_loss_usd:
+                return self._trigger_exit(
+                    current_price,
+                    f"Stop Loss USD: -${loss_usd:.2f} en {elapsed:.1f}s"
+                )
+
+        # Salida 3b: Percentage stop loss (fallback)
         if self.stop_loss_pct > 0 and profit_pct <= -self.stop_loss_pct:
             return self._trigger_exit(
                 current_price,
@@ -283,6 +304,7 @@ class LeadLagArbitrageStrategy(BaseStrategy):
         self.entry_time = None
         self._position_id = None
         self._peak_profit = 0.0
+        self._breakeven_activated = False
 
         logger.info(f"[Arbitraje] Cierre: {reason} | Win rate: {self._win_count}/{self._trade_count}")
 

@@ -719,8 +719,8 @@ async def get_arbitrage_opportunities():
         price_map[pair["event_id"]] = {
             "event_label": pair["event_label"],
             "category": pair["category"],
-            "kalshi": both["kalshi"],
-            "polymarket": both["polymarket"],
+            "kalshi": both.get("kalshi", {}),
+            "limitless": both.get("limitless", {}),
         }
 
     return {

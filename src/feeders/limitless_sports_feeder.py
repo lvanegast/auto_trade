@@ -53,15 +53,17 @@ class LimitlessSportsFeeder(BaseFeeder):
 
     async def _run_polling(self):
         from limitless_sdk.api import HttpClient
+        from limitless_sdk.market_pages import MarketPageFetcher
         from limitless_sdk.markets import MarketFetcher
 
         http_client = HttpClient()
-        market_fetcher = MarketFetcher(http_client)
+        self._page_fetcher = MarketPageFetcher(http_client)
+        self._market_fetcher = MarketFetcher(http_client)
 
         try:
             while self.running:
                 try:
-                    await self._scan_sports_markets(market_fetcher)
+                    await self._scan_sports_markets()
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
@@ -70,7 +72,7 @@ class LimitlessSportsFeeder(BaseFeeder):
         finally:
             await http_client.close()
 
-    async def _scan_sports_markets(self, market_fetcher):
+    async def _scan_sports_markets(self):
         from src.strategy.cross_platform_tracker import cross_platform_tracker
 
         sport_categories = [
@@ -80,7 +82,7 @@ class LimitlessSportsFeeder(BaseFeeder):
 
         for cat_id in sport_categories:
             try:
-                resp = await market_fetcher.get_market_page_markets(
+                resp = await self._page_fetcher.get_markets(
                     cat_id, {"limit": 25}
                 )
                 markets = resp.data if hasattr(resp, "data") else resp.get("data", [])
@@ -88,7 +90,7 @@ class LimitlessSportsFeeder(BaseFeeder):
                 for m in markets:
                     slug = m.slug if hasattr(m, "slug") else m.get("slug", "")
                     title = m.title if hasattr(m, "title") else m.get("title", "")
-                    vol = m.volumeFormatted if hasattr(m, "volumeFormatted") else m.get("volumeFormatted", "0")
+                    vol = getattr(m, "volume_formatted", None) or "0"
 
                     try:
                         vol_float = float(vol) if vol else 0
@@ -98,16 +100,16 @@ class LimitlessSportsFeeder(BaseFeeder):
                     if vol_float < self.min_volume:
                         continue
 
-                    await self._check_group_arb(market_fetcher, slug, title)
+                    await self._check_group_arb(slug, title)
 
             except Exception as e:
                 print(f"[Sports] Error scanning category: {e}")
 
-    async def _check_group_arb(self, market_fetcher, group_slug, group_title):
+    async def _check_group_arb(self, group_slug, group_title):
         from src.strategy.cross_platform_tracker import cross_platform_tracker
 
         try:
-            market = await market_fetcher.get_market(group_slug)
+            market = await self._market_fetcher.get_market(group_slug)
         except Exception:
             return
 
@@ -152,7 +154,7 @@ class LimitlessSportsFeeder(BaseFeeder):
             ask=primary_price,
         )
 
-        # Pass edge data to the sports arb strategy
+        # Pass edge data to the sports arb strategy (with full outcomes)
         from src.strategy.sports_arb import update_sports_edge
         update_sports_edge(
             event_id=event_id,
@@ -160,13 +162,15 @@ class LimitlessSportsFeeder(BaseFeeder):
             edge=edge,
             outcomes_count=len(outcomes),
             title=group_title,
+            outcomes=outcomes,
+            group_slug=group_slug,
         )
 
         if edge > 0.02:
             print(
-                f"[Sports ARB] {group_title} | "
+                f"[Sports ARB YES] {group_title} | "
                 f"Total YES={total_yes:.4f} | Edge={edge:+.2%} | "
-                f"{len(outcomes)} outcomes"
+                f"{len(outcomes)} outcomes | BUY ALL YES"
             )
 
             event = PriceUpdateEvent(
@@ -179,6 +183,15 @@ class LimitlessSportsFeeder(BaseFeeder):
 
         elif edge < -0.02:
             print(
-                f"[Sports OVERPRICED] {group_title} | "
-                f"Total YES={total_yes:.4f} | Overedge={edge:+.2%}"
+                f"[Sports ARB NO] {group_title} | "
+                f"Total YES={total_yes:.4f} | Overedge={edge:+.2%} | "
+                f"{len(outcomes)} outcomes | BUY ALL NO"
             )
+
+            event = PriceUpdateEvent(
+                symbol=event_id,
+                price=primary_price,
+                ask=primary_price,
+                bid=primary_price,
+            )
+            await self.queue.put(event)
