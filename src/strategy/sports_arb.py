@@ -130,6 +130,9 @@ class SportsArbitrageStrategy(BaseStrategy):
             return None
         if len(outcomes) < 2:
             return None
+        max_outcomes = int(os.getenv("MAX_ARB_OUTCOMES", "4"))
+        if len(outcomes) > max_outcomes:
+            return None
         if arb_type not in ("YES", "NO"):
             return None
 

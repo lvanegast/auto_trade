@@ -233,6 +233,10 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         if abs(edge) < self.min_edge_pct or len(outcomes) < 2:
             return None
 
+        max_outcomes = int(os.getenv("MAX_ARB_OUTCOMES", "4"))
+        if len(outcomes) > max_outcomes:
+            return None
+
         if event_id in self._arb_groups:
             return None
 
