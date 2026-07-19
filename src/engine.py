@@ -16,7 +16,9 @@ from src.feeders.binance_feeder import BinanceFeeder
 from src.feeders.polymarket_feeder import PolymarketFeeder
 from src.feeders.limitless_feeder import LimitlessFeeder
 from src.feeders.limitless_sports_feeder import LimitlessSportsFeeder
+from src.feeders.binary_arb_feeder import BinaryArbFeeder
 from src.strategy.sports_arb import SportsArbitrageStrategy
+from src.strategy.binary_arb_strategy import BinaryArbitrageStrategy
 from src.security import security_guard
 from src.websocket_server import ws_server, make_event
 
@@ -62,6 +64,12 @@ class TradingWorker:
                 db=self.db,
                 worker_id=self.worker_id,
             )
+        elif self.feeder_type == "binary_arb":
+            self.strategy = BinaryArbitrageStrategy(
+                self.symbol,
+                db=self.db,
+                worker_id=self.worker_id,
+            )
         else:
             self.strategy = LeadLagArbitrageStrategy(
                 self.symbol, db=self.db, worker_id=self.worker_id
@@ -83,6 +91,8 @@ class TradingWorker:
             self.feeder = LimitlessFeeder(self.symbol, self.queue)
         elif self.feeder_type == "limitless_sports":
             self.feeder = LimitlessSportsFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "binary_arb":
+            self.feeder = BinaryArbFeeder(self.symbol, self.queue)
         else:
             self.feeder = MockFeeder(self.symbol, self.queue, interval=1.0)
 
@@ -1271,6 +1281,14 @@ class TradingEngine:
             )
             self.workers["worker_3"] = TradingWorker(
                 "worker_3", "Limitless Sports", w3_sym, w3_type, self.db
+            )
+
+        w4_enabled = os.getenv("WORKER4_ENABLED", "false").lower() == "true"
+        if w4_enabled:
+            w4_type = os.getenv("WORKER4_FEEDER_TYPE", "binary_arb")
+            w4_sym = os.getenv("WORKER4_SYMBOL", "BINARY_ARB")
+            self.workers["worker_4"] = TradingWorker(
+                "worker_4", "Binary Arb", w4_sym, w4_type, self.db
             )
 
     @property
