@@ -152,6 +152,16 @@ class LimitlessSportsFeeder(BaseFeeder):
             ask=primary_price,
         )
 
+        # Pass edge data to the sports arb strategy
+        from src.strategy.sports_arb import update_sports_edge
+        update_sports_edge(
+            event_id=event_id,
+            total_yes=total_yes,
+            edge=edge,
+            outcomes_count=len(outcomes),
+            title=group_title,
+        )
+
         if edge > 0.02:
             print(
                 f"[Sports ARB] {group_title} | "

@@ -10,6 +10,7 @@ Requiere:
 """
 
 import asyncio
+import os
 from src.strategy.base import BaseStrategy
 from src.strategy.cross_platform_tracker import cross_platform_tracker
 from src.strategy.market_pairs import (
@@ -27,6 +28,9 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         min_edge_pct: float = 0.03,
         position_size_pct: float = 0.5,
         max_hold_seconds: float = 120.0,
+        stop_loss_pct: float = 0.05,
+        take_profit_pct: float = 0.08,
+        cooldown_seconds: float = 10.0,
         db=None,
         worker_id: str = "worker_2",
     ):
@@ -34,22 +38,31 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         self.feeder_type = feeder_type.lower()
         self.min_edge_pct = min_edge_pct
         self.position_size_pct = position_size_pct
-        self.max_hold_seconds = max_hold_seconds
+        self.max_hold_seconds = float(
+            os.getenv("CROSS_ARB_MAX_HOLD_SECONDS", str(max_hold_seconds))
+        )
+        self.stop_loss_pct = float(
+            os.getenv("CROSS_ARB_STOP_LOSS_PCT", str(stop_loss_pct))
+        )
+        self.take_profit_pct = float(
+            os.getenv("CROSS_ARB_TAKE_PROFIT_PCT", str(take_profit_pct))
+        )
+        self.cooldown_seconds = float(
+            os.getenv("CROSS_ARB_COOLDOWN_SECONDS", str(cooldown_seconds))
+        )
         self.db = db
         self.worker_id = worker_id
         self._position_id = None
         self._tracker = cross_platform_tracker
 
-        # Resolver event_id a partir del símbolo
         self.event_id = self._resolve_event_id()
 
-        # Estado de la posición
-        self.last_position = None  # 'BUY', 'SELL', None
+        self.last_position = None
         self.entry_price = 0.0
         self.entry_time = None
+        self.last_exit_time = 0.0
         self.last_arbitrage_opportunity = None
 
-        # Para UI
         self.teorical_probability = 0.50
         self.edge = 0.0
         self.kelly_recommendation = 0.0
@@ -86,6 +99,11 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         # 2. Si tenemos posición abierta, evaluar salida
         if self.last_position is not None:
             return self._evaluate_exit(current_price)
+
+        # 2b. Cooldown check: no re-entrar demasiado rápido
+        now = asyncio.get_event_loop().time()
+        if now - self.last_exit_time < self.cooldown_seconds:
+            return None
 
         # 3. Evaluar oportunidad de arbitraje
         opp = self._tracker.calculate_arbitrage(
@@ -169,7 +187,25 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         # Calcular retorno actual
         profit_pct = (current_price - self.entry_price) / self.entry_price
 
-        # Salida 1: Tiempo máximo de mantenimiento
+        # Salida 1: Take profit
+        if self.take_profit_pct > 0 and profit_pct >= self.take_profit_pct:
+            side = "SELL"
+            reason = (
+                f"Take Profit cross-platform ({profit_pct:+.2%} >= {self.take_profit_pct:.2%}). "
+                f"Hold: {elapsed:.1f}s"
+            )
+            return self._trigger_exit(side, current_price, reason)
+
+        # Salida 2: Stop loss
+        if self.stop_loss_pct > 0 and profit_pct <= -self.stop_loss_pct:
+            side = "SELL"
+            reason = (
+                f"Stop Loss cross-platform ({profit_pct:+.2%} <= -{self.stop_loss_pct:.2%}). "
+                f"Hold: {elapsed:.1f}s"
+            )
+            return self._trigger_exit(side, current_price, reason)
+
+        # Salida 3: Tiempo máximo de mantenimiento
         if elapsed >= self.max_hold_seconds:
             side = "SELL"
             reason = (
@@ -178,8 +214,7 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
             )
             return self._trigger_exit(side, current_price, reason)
 
-        # Salida 2: El arbitraje se cerró (el otro platform se movió hacia nosotros)
-        # Si la oportunidad desapareció, cerramos para liberar capital
+        # Salida 4: El arbitraje se cerró (el otro platform se movió hacia nosotros)
         if self.last_arbitrage_opportunity is not None:
             opp = self._tracker.calculate_arbitrage(
                 self.event_id, min_edge_pct=self.min_edge_pct
@@ -197,11 +232,24 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
     def _trigger_exit(self, side: str, price: float, reason: str) -> SignalEvent:
         """Cierra la posición y registra en DB."""
         closed_position_id = self._position_id
+        self.last_exit_time = asyncio.get_event_loop().time()
+
+        # Calculate P&L for security guard
+        if self.last_position == "BUY":
+            pnl = (price - self.entry_price) * self.position_size_pct
+        elif self.last_position == "SELL":
+            pnl = (self.entry_price - price) * self.position_size_pct
+        else:
+            pnl = 0.0
 
         if self._position_id and self.db:
             self.db.close_position(
                 self._position_id, price, reason, worker_id=self.worker_id
             )
+
+        # Record P&L in security guard
+        from src.security import security_guard
+        security_guard.record_pnl(self.worker_id, pnl)
 
         self.last_position = None
         self.entry_price = 0.0

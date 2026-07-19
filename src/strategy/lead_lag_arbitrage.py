@@ -253,10 +253,22 @@ class LeadLagArbitrageStrategy(BaseStrategy):
         closed_position_id = self._position_id
         closing_side = "SELL" if self.last_position == "BUY" else "BUY"
 
+        # Calculate P&L for security guard
+        if self.last_position == "BUY":
+            pnl = (price - self.entry_price) * self.position_size_pct
+        elif self.last_position == "SELL":
+            pnl = (self.entry_price - price) * self.position_size_pct
+        else:
+            pnl = 0.0
+
         if self._position_id and self.db:
             self.db.close_position(
                 self._position_id, price, reason, worker_id=self.worker_id
             )
+
+        # Record P&L in security guard
+        from src.security import security_guard
+        security_guard.record_pnl(self.worker_id, pnl)
 
         self._trade_count += 1
         if self.last_position == "BUY" and price > self.entry_price:

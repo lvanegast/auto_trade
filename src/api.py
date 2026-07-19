@@ -6,10 +6,12 @@ import os
 from src.database import DatabaseManager
 from src.engine import TradingEngine
 from src.events import SignalEvent
+from src.security import security_guard
 from src.websocket_server import ws_server, make_event
 
 # Inicializar Base de Datos
 db = DatabaseManager()
+security_guard.set_db(db)
 
 # Inicializar FastAPI
 app = FastAPI(
@@ -821,3 +823,64 @@ async def _send_initial_state(websocket: WebSocket, worker, worker_id: str):
 
 # Servir archivos estáticos del frontend en la raíz
 app.mount("/", StaticFiles(directory="web", html=True), name="web")
+
+
+# ==========================================================================
+# Security Guard Endpoints
+# ==========================================================================
+
+
+@app.post("/api/emergency-stop")
+async def emergency_stop():
+    """Kill switch: stop all trading immediately and close open positions."""
+    security_guard.trigger_kill_switch("Manual emergency stop via API")
+
+    # Stop all workers
+    await engine.stop()
+
+    # Close all open positions
+    open_positions = db.get_open_positions()
+    closed_count = 0
+    for pos in open_positions:
+        try:
+            close_price = float(pos.get("entry_price", 0.5))
+            db.close_position(
+                pos["id"], close_price, "EMERGENCY STOP", worker_id=pos["worker_id"]
+            )
+            closed_count += 1
+        except Exception as e:
+            print(f"[EmergencyStop] Error closing position {pos.get('id')}: {e}")
+
+    db.log(
+        "CRITICAL",
+        f"EMERGENCY STOP ejecutado. {closed_count} posiciones cerradas. Trading detenido.",
+        "ALL",
+    )
+
+    return {
+        "status": "EMERGENCY_STOP",
+        "positions_closed": closed_count,
+        "message": "Kill switch activado. Trading detenido. Use /api/release-stop para reanudar.",
+    }
+
+
+@app.post("/api/release-stop")
+async def release_stop():
+    """Release the kill switch (requires manual confirmation)."""
+    security_guard.release_kill_switch()
+    db.log("INFO", "Kill switch liberado manualmente.", "ALL")
+    return {"status": "RELEASED", "message": "Kill switch liberado. Trading disponible."}
+
+
+@app.post("/api/unpause-worker/{worker_id}")
+async def unpause_worker(worker_id: str):
+    """Manually unpause a worker that was auto-paused for consecutive losses."""
+    security_guard.unpause_worker(worker_id)
+    db.log("INFO", f"Worker {worker_id} reanudado manualmente.", worker_id)
+    return {"status": "UNPAUSED", "worker_id": worker_id}
+
+
+@app.get("/api/risk-metrics")
+async def get_risk_metrics():
+    """Returns current risk metrics for the dashboard."""
+    return security_guard.get_metrics()

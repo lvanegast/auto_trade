@@ -14,6 +14,10 @@ from src.feeders.alpaca_feeder import AlpacaFeeder
 from src.feeders.kalshi_feeder import KalshiFeeder
 from src.feeders.binance_feeder import BinanceFeeder
 from src.feeders.polymarket_feeder import PolymarketFeeder
+from src.feeders.limitless_feeder import LimitlessFeeder
+from src.feeders.limitless_sports_feeder import LimitlessSportsFeeder
+from src.strategy.sports_arb import SportsArbitrageStrategy
+from src.security import security_guard
 from src.websocket_server import ws_server, make_event
 
 
@@ -36,7 +40,7 @@ class TradingWorker:
         self.base_asset, self.quote_asset = self._parse_symbol()
 
         # Inicializar estrategia según tipo de feeder
-        if self.feeder_type in ("kalshi", "polymarket"):
+        if self.feeder_type in ("kalshi", "polymarket", "limitless"):
             min_edge = float(os.getenv("MIN_ARB_EDGE_PCT", "0.03"))
             position_size = float(os.getenv("ARB_POSITION_SIZE_PCT", "0.5"))
             self.strategy = CrossPlatformArbitrageStrategy(
@@ -44,6 +48,17 @@ class TradingWorker:
                 feeder_type=self.feeder_type,
                 min_edge_pct=min_edge,
                 position_size_pct=position_size,
+                db=self.db,
+                worker_id=self.worker_id,
+            )
+        elif self.feeder_type == "limitless_sports":
+            min_edge = float(os.getenv("SPORTS_ARB_EDGE_PCT", "0.03"))
+            position_size_usd = float(os.getenv("SPORTS_POSITION_SIZE_USD", "10.0"))
+            self.strategy = SportsArbitrageStrategy(
+                self.symbol,
+                feeder_type=self.feeder_type,
+                min_edge_pct=min_edge,
+                position_size_usd=position_size_usd,
                 db=self.db,
                 worker_id=self.worker_id,
             )
@@ -64,6 +79,10 @@ class TradingWorker:
             self.feeder = BinanceFeeder(self.symbol, self.queue)
         elif self.feeder_type == "polymarket":
             self.feeder = PolymarketFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "limitless":
+            self.feeder = LimitlessFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "limitless_sports":
+            self.feeder = LimitlessSportsFeeder(self.symbol, self.queue)
         else:
             self.feeder = MockFeeder(self.symbol, self.queue, interval=1.0)
 
@@ -126,7 +145,7 @@ class TradingWorker:
 
     def _parse_symbol(self) -> tuple:
         symbol = self.symbol
-        if symbol.isdigit() or self.feeder_type == "polymarket":
+        if symbol.isdigit() or self.feeder_type in ("polymarket", "limitless", "limitless_sports"):
             return symbol, "USD"
 
         if "EURUSD" in symbol:
@@ -170,11 +189,9 @@ class TradingWorker:
             return
         if self.feeder_type == "oanda" and self.oanda_account_id and self.oanda_token:
             return
-        if (
-            self.feeder_type == "kalshi"
-            and self.kalshi_api_key_id
-            and self.kalshi_private_key_path
-        ):
+        if self.feeder_type == "kalshi" and self.kalshi_api_key_id and self.kalshi_private_key_path:
+            return
+        if self.feeder_type in ("limitless", "limitless_sports"):
             return
 
         portfolio = self.db.get_portfolio(self.worker_id)
@@ -321,8 +338,21 @@ class TradingWorker:
                         and self.kalshi_private_key_path
                     ):
                         await self._sync_kalshi_portfolio()
+                    elif self.feeder_type in ("limitless", "limitless_sports"):
+                        pass  # Limitless: on-chain, no sync needed in simulation
                 except Exception as e:
                     print(f"[Sync Error] Error en sincronización periódica: {e}")
+
+                # Update security guard with current equity for drawdown tracking
+                try:
+                    balances = {
+                        item["asset"]: float(item["free_balance"])
+                        for item in self.db.get_portfolio(self.worker_id)
+                    }
+                    total = sum(balances.values())
+                    security_guard.update_equity(total)
+                except Exception:
+                    pass
         except asyncio.CancelledError:
             print(
                 f"[Worker {self.worker_id}] Tarea de sincronización periódica cancelada."
@@ -389,6 +419,18 @@ class TradingWorker:
 
     async def _execute_order(self, signal: SignalEvent):
         self.db.log("INFO", f"Procesando señal: {signal}", self.worker_id)
+
+        # SecurityGuard: pre-trade check
+        can_trade, reason = security_guard.can_trade(self.worker_id)
+        if not can_trade:
+            self.db.log(
+                "WARNING",
+                f"[SecurityGuard] Orden RECHAZADA: {reason}",
+                self.worker_id,
+            )
+            return
+
+        security_guard.record_trade()
 
         # Cargar balances actuales de la base de datos para este worker
         balances = {
@@ -1077,6 +1119,13 @@ class TradingWorker:
                         self.worker_id,
                     )
                     await self._generate_synthetic_history()
+            elif self.feeder_type in ("limitless", "limitless_sports"):
+                self.db.log(
+                    "INFO",
+                    "Limitless: generando historial sintético (no hay API de velas)...",
+                    self.worker_id,
+                )
+                await self._generate_synthetic_history()
             else:
                 # Otros feeders (simulación / paper): Generar historial sintético para evitar arrancar con pantalla en blanco
                 await self._generate_synthetic_history()
@@ -1101,7 +1150,7 @@ class TradingWorker:
             import random
 
             # Determinar precio inicial realista
-            start_price = 0.50 if self.feeder_type in ["kalshi", "polymarket"] else 63000.0 if "BTC" in self.symbol else 3400.0 if "ETH" in self.symbol else 100.0
+            start_price = 0.50 if self.feeder_type in ["kalshi", "polymarket", "limitless", "limitless_sports"] else 63000.0 if "BTC" in self.symbol else 3400.0 if "ETH" in self.symbol else 100.0
             
             # Generar 120 velas de 1 minuto hacia atrás
             now = datetime.datetime.now()
@@ -1110,7 +1159,7 @@ class TradingWorker:
             for i in range(120, 0, -1):
                 dt = now - datetime.timedelta(minutes=i)
                 # Camino aleatorio (Random Walk)
-                if self.feeder_type in ["kalshi", "polymarket"]:
+                if self.feeder_type in ["kalshi", "polymarket", "limitless", "limitless_sports"]:
                     change = random.uniform(-0.015, 0.015)
                     current_price = max(0.05, min(0.95, current_price + change))
                 else:
@@ -1191,20 +1240,20 @@ class TradingEngine:
             )
 
         if w2_enabled:
-            w2_type = os.getenv("WORKER2_FEEDER_TYPE", "kalshi")
-            w2_sym = os.getenv("WORKER2_SYMBOL", "INFLATION-26")
+            w2_type = os.getenv("WORKER2_FEEDER_TYPE", "limitless")
+            w2_sym = os.getenv("WORKER2_SYMBOL", "fed-rate-july-2026")
             self.workers["worker_2"] = TradingWorker(
-                "worker_2", "Kalshi Ventana", w2_sym, w2_type, self.db
+                "worker_2", "Limitless Macro", w2_sym, w2_type, self.db
             )
 
         if w3_enabled:
-            w3_type = os.getenv("WORKER3_FEEDER_TYPE", "polymarket")
+            w3_type = os.getenv("WORKER3_FEEDER_TYPE", "limitless_sports")
             w3_sym = os.getenv(
                 "WORKER3_SYMBOL",
-                "21742617192661590740925574347715096531393664724810793796541603527267389823616",
+                "SPORTS",
             )
             self.workers["worker_3"] = TradingWorker(
-                "worker_3", "Polymarket Ventana", w3_sym, w3_type, self.db
+                "worker_3", "Limitless Sports", w3_sym, w3_type, self.db
             )
 
     @property

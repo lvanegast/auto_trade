@@ -1646,7 +1646,7 @@ async function fetchStatus() {
         headerVolume.textContent = `428.14 ${getDisplayBase(baseAsset)}`;
         
         // Trazado dinámico de visualización: Gráfica para Crypto/Forex, Dial Radial para Predicciones
-        isPredictionMarket = data.feeder_type === "kalshi" || data.feeder_type === "polymarket";
+        isPredictionMarket = data.feeder_type === "kalshi" || data.feeder_type === "polymarket" || data.feeder_type === "limitless" || data.feeder_type === "limitless_sports";
         if (data.expiration) {
             eventExpirationTime = new Date(data.expiration);
         } else {
