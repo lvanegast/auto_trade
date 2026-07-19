@@ -62,14 +62,14 @@ class BinaryArbFeeder(BaseFeeder):
 
 async def _scan_all_markets(http_client, feeder):
     """Scan all active crypto up/down markets for binary arb."""
-    slug = await http_client.get("/markets?marketType=single&status=active&limit=50")
-
-    markets = slug.get("data", []) if isinstance(slug, dict) else []
+    from limitless_sdk.markets import MarketFetcher
+    mf = MarketFetcher(http_client)
+    resp = await mf.get_active_markets()
+    markets = resp.data if hasattr(resp, "data") else []
 
     for m in markets:
-        m_slug = m.get("slug", "")
-        title = m.get("title", "")
-        prices = m.get("prices", [])
+        m_slug = m.slug if hasattr(m, "slug") else ""
+        title = m.title if hasattr(m, "title") else ""
 
         if not any(
             kw in m_slug.lower()

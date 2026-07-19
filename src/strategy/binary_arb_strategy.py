@@ -90,6 +90,8 @@ class BinaryArbitrageStrategy(BaseStrategy):
         if self.last_position is not None:
             return self._evaluate_hold(event)
 
+        print(f"[Binary Arb Strategy] {title} | pair={pair_cost:.4f} net={net_spread:+.4f} | checking...")
+
         if net_spread < self.min_net_spread:
             return None
 

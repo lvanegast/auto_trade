@@ -156,7 +156,7 @@ class TradingWorker:
 
     def _parse_symbol(self) -> tuple:
         symbol = self.symbol
-        if symbol.isdigit() or self.feeder_type in ("polymarket", "limitless", "limitless_sports"):
+        if symbol.isdigit() or self.feeder_type in ("polymarket", "limitless", "limitless_sports", "binary_arb"):
             return symbol, "USD"
 
         if "EURUSD" in symbol:
