@@ -81,6 +81,7 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         # 1×N state
         self._arb_groups = {}
         self._pending_signals = []
+        self._last_exit_time = {}
 
         self.teorical_probability = 0.50
         self.edge = 0.0
