@@ -92,6 +92,7 @@ class TradingWorker:
         self.sync_task = None
         self.last_bid = 0.0
         self.last_ask = 0.0
+        self.trading_mode = os.getenv("ALPACA_TRADING_MODE", "paper").lower()
 
         # Cliente de ejecución para Alpaca
         self.alpaca_client = None
@@ -343,13 +344,9 @@ class TradingWorker:
                 except Exception as e:
                     print(f"[Sync Error] Error en sincronización periódica: {e}")
 
-                # Update security guard with current equity for drawdown tracking
+                # Update security guard with total equity across ALL workers for drawdown tracking
                 try:
-                    balances = {
-                        item["asset"]: float(item["free_balance"])
-                        for item in self.db.get_portfolio(self.worker_id)
-                    }
-                    total = sum(balances.values())
+                    total = self.db.get_total_equity_usd()
                     security_guard.update_equity(total)
                 except Exception:
                     pass
@@ -547,6 +544,7 @@ class TradingWorker:
                     status=order_status,
                     worker_id=self.worker_id,
                     position_id=getattr(signal, "position_id", None),
+                    trading_mode=self.trading_mode,
                 )
                 await self._sync_alpaca_portfolio()
             except Exception as e:
@@ -607,6 +605,7 @@ class TradingWorker:
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
+                        trading_mode=self.trading_mode,
                     )
                     await self._sync_oanda_portfolio()
                 else:
@@ -703,6 +702,7 @@ class TradingWorker:
                             status="COMPLETED",
                             worker_id=self.worker_id,
                             position_id=getattr(signal, "position_id", None),
+                            trading_mode=self.trading_mode,
                         )
                         await self._sync_kalshi_portfolio()
                     else:
@@ -739,6 +739,7 @@ class TradingWorker:
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
+                        trading_mode=self.trading_mode,
                     )
                     self._update_db_portfolio(self.quote_asset, new_quote)
                     self._update_db_portfolio(self.base_asset, new_base)
@@ -773,6 +774,7 @@ class TradingWorker:
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
+                        trading_mode=self.trading_mode,
                     )
                     self._update_db_portfolio(self.quote_asset, new_quote)
                     self._update_db_portfolio(self.base_asset, new_base)
@@ -814,6 +816,7 @@ class TradingWorker:
                 status="COMPLETED",
                 worker_id=self.worker_id,
                 position_id=getattr(signal, "position_id", None),
+                trading_mode=self.trading_mode,
             )
             self._update_db_portfolio(self.quote_asset, new_quote)
             self._update_db_portfolio(self.base_asset, new_base)
@@ -850,6 +853,7 @@ class TradingWorker:
                 status="COMPLETED",
                 worker_id=self.worker_id,
                 position_id=getattr(signal, "position_id", None),
+                trading_mode=self.trading_mode,
             )
             self._update_db_portfolio(self.quote_asset, new_quote)
             self._update_db_portfolio(self.base_asset, new_base)

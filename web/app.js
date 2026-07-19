@@ -1959,7 +1959,7 @@ async function fetchTrades() {
         
         // 2. RENDERIZAR HISTORIAL DE OPERACIONES
         if (completedTrades.length === 0) {
-            tradesTableBody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No se han realizado operaciones en esta ventana.</td></tr>';
+            tradesTableBody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No se han realizado operaciones en esta ventana.</td></tr>';
             return;
         }
         
@@ -1973,6 +1973,10 @@ async function fetchTrades() {
             const isFilled = trade.status.toUpperCase() === "COMPLETED" || trade.status.toUpperCase() === "FILLED";
             const statusClass = isFilled ? "text-success" : "text-muted";
             
+            const mode = (trade.trading_mode || "paper").toLowerCase();
+            const modeColor = mode === "real" ? "#f0b90b" : "#8b5cf6";
+            const modeLabel = mode === "real" ? "REAL" : "PAPER";
+            
             const row = document.createElement("tr");
             row.innerHTML = `
                 <td>${dateStr}</td>
@@ -1981,6 +1985,7 @@ async function fetchTrades() {
                 <td class="font-mono">$${trade.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: decimals })}</td>
                 <td class="font-mono">${trade.amount.toLocaleString(undefined, { minimumFractionDigits: amountDecs, maximumFractionDigits: amountDecs })}</td>
                 <td class="font-mono">$${trade.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td><span style="font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px; background:${modeColor}22; color:${modeColor}; border:1px solid ${modeColor}55;">${modeLabel}</span></td>
                 <td><span class="${statusClass}">${trade.status}</span></td>
             `;
             tradesTableBody.appendChild(row);
@@ -2576,3 +2581,111 @@ function updateCountdown() {
 }
 
 setInterval(updateCountdown, 1000);
+
+// ==========================================================================
+// Performance Metrics Module
+// ==========================================================================
+
+async function refreshMetrics() {
+    const mode = document.getElementById("metrics-mode-filter")?.value || "";
+    const params = new URLSearchParams();
+    if (mode) params.set("trading_mode", mode);
+
+    try {
+        const resp = await fetch(`/api/pnl/summary?${params}`);
+        const data = await resp.json();
+        renderMetrics(data);
+    } catch (e) {
+        console.error("[Metrics] Error fetching P&L summary:", e);
+    }
+}
+
+function renderMetrics(d) {
+    const $ = (id) => document.getElementById(id);
+    const pnl = (v) => {
+        const n = parseFloat(v) || 0;
+        return (n >= 0 ? "$" : "-$") + Math.abs(n).toFixed(2);
+    };
+    const pct = (v) => (parseFloat(v) || 0).toFixed(1) + "%";
+    const dur = (s) => {
+        s = parseFloat(s) || 0;
+        if (s < 60) return s.toFixed(0) + "s";
+        if (s < 3600) return (s / 60).toFixed(1) + "m";
+        return (s / 3600).toFixed(1) + "h";
+    };
+
+    if ($("m-total-trades")) $("m-total-trades").textContent = d.total_trades || 0;
+    if ($("m-win-rate")) {
+        $("m-win-rate").textContent = pct(d.win_rate_pct);
+        $("m-win-rate").style.color = d.win_rate_pct >= 55 ? "#02c076" : d.win_rate_pct >= 45 ? "#f0b90b" : "#f6465d";
+    }
+    if ($("m-total-pnl")) {
+        $("m-total-pnl").textContent = pnl(d.total_pnl);
+        $("m-total-pnl").style.color = d.total_pnl >= 0 ? "#02c076" : "#f6465d";
+    }
+    if ($("m-profit-factor")) {
+        const pf = parseFloat(d.profit_factor) || 0;
+        $("m-profit-factor").textContent = pf === Infinity ? "∞" : pf.toFixed(2);
+        $("m-profit-factor").style.color = pf >= 1.5 ? "#02c076" : pf >= 1.0 ? "#f0b90b" : "#f6465d";
+    }
+    if ($("m-avg-win")) $("m-avg-win").textContent = pnl(d.avg_win);
+    if ($("m-avg-loss")) $("m-avg-loss").textContent = pnl(d.avg_loss);
+    if ($("m-best-trade")) $("m-best-trade").textContent = pnl(d.best_trade);
+    if ($("m-worst-trade")) $("m-worst-trade").textContent = pnl(d.worst_trade);
+    if ($("m-expectancy")) {
+        $("m-expectancy").textContent = pnl(d.expectancy);
+        $("m-expectancy").style.color = d.expectancy > 0 ? "#02c076" : "#f6465d";
+    }
+    if ($("m-total-fees")) $("m-total-fees").textContent = pnl(d.total_fees);
+    if ($("m-avg-duration")) $("m-avg-duration").textContent = dur(d.avg_duration_sec);
+    if ($("m-win-loss-ratio")) $("m-win-loss-ratio").textContent = `${d.winning_trades || 0} / ${d.losing_trades || 0}`;
+
+    // Validation progress bars
+    renderValidationProgress(d);
+}
+
+function renderValidationProgress(d) {
+    const container = document.getElementById("validation-progress-bars");
+    if (!container) return;
+
+    const rules = [
+        { label: "Trades", current: d.total_trades || 0, target: 100, unit: "" },
+        { label: "Win Rate", current: d.win_rate_pct || 0, target: 55, unit: "%" },
+        { label: "Profit Factor", current: Math.min(d.profit_factor || 0, 3), target: 1.3, unit: "" },
+        { label: "Expectancy", current: Math.max(d.expectancy || 0, 0), target: 0.50, unit: "$" },
+    ];
+
+    container.innerHTML = rules.map(r => {
+        const pct = Math.min((r.current / r.target) * 100, 100);
+        const met = r.current >= r.target;
+        const color = met ? "#02c076" : "#f0b90b";
+        const display = r.unit === "$" ? `$${r.current.toFixed(2)}` : r.unit === "%" ? `${r.current.toFixed(1)}%` : r.current.toFixed(0);
+        const targetDisplay = r.unit === "$" ? `$${r.target.toFixed(2)}` : r.unit === "%" ? `${r.target}%` : r.target;
+        return `
+            <div style="margin-bottom: 10px;">
+                <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px;">
+                    <span style="color: rgba(255,255,255,0.7);">${r.label}</span>
+                    <span style="color: ${color}; font-weight: 600;">${display} / ${targetDisplay} ${met ? "✓" : ""}</span>
+                </div>
+                <div style="height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden;">
+                    <div style="height: 100%; width: ${pct}%; background: ${color}; border-radius: 3px; transition: width 0.3s;"></div>
+                </div>
+            </div>
+        `;
+    }).join("");
+}
+
+function exportTradesCSV() {
+    const mode = document.getElementById("metrics-mode-filter")?.value || "";
+    const params = new URLSearchParams();
+    if (mode) params.set("trading_mode", mode);
+    window.open(`/api/trades/export?${params}`, "_blank");
+}
+
+// Auto-refresh metrics when the tab is visible
+setInterval(() => {
+    const metricsPanel = document.getElementById("tab-panel-metrics");
+    if (metricsPanel && !metricsPanel.classList.contains("hidden")) {
+        refreshMetrics();
+    }
+}, 5000);

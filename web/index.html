@@ -205,6 +205,7 @@
                         <button class="bottom-tab-btn" data-target="tab-panel-logs">Consola de Eventos</button>
                         <button class="bottom-tab-btn" data-target="tab-panel-indicators">Indicadores Técnicos</button>
                         <button class="bottom-tab-btn" data-target="tab-panel-arbitrage">Arbitraje Cross</button>
+                        <button class="bottom-tab-btn" data-target="tab-panel-metrics">Métricas</button>
                     </div>
 
                     <!-- Tab 0: Open Orders Table -->
@@ -311,12 +312,13 @@
                                         <th>Precio</th>
                                         <th>Monto</th>
                                         <th>Total</th>
+                                        <th>Modo</th>
                                         <th>Estado</th>
                                     </tr>
                                 </thead>
                                 <tbody id="trades-table-body">
                                     <tr>
-                                        <td colspan="7" class="text-center text-muted">Cargando transacciones...</td>
+                                        <td colspan="8" class="text-center text-muted">Cargando transacciones...</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -408,6 +410,88 @@
                                     </tbody>
                                 </table>
                             </div>
+                        </div>
+                    </div>
+
+                    <!-- Tab 7: Performance Metrics -->
+                    <div class="bottom-tab-panel hidden" id="tab-panel-metrics">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                            <span style="font-size: 15px; font-weight: 600; color: #eaecef;">Métricas de Performance</span>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <select id="metrics-mode-filter" style="background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #eaecef; padding: 5px 10px; border-radius: 6px; font-size: 12px;">
+                                    <option value="">Todos</option>
+                                    <option value="paper" selected>Paper</option>
+                                    <option value="real">Real</option>
+                                </select>
+                                <button onclick="exportTradesCSV()" style="background: rgba(2, 192, 118, 0.15); border: 1px solid #02c076; color: #02c076; padding: 5px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600;">Export CSV</button>
+                                <button onclick="refreshMetrics()" style="background: rgba(139, 92, 246, 0.15); border: 1px solid #8b5cf6; color: #8b5cf6; padding: 5px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600;">Refresh</button>
+                            </div>
+                        </div>
+
+                        <!-- Metrics Cards Grid -->
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;">
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Total Trades</div>
+                                <div id="m-total-trades" style="font-size: 22px; font-weight: 700; color: #eaecef;">0</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Win Rate</div>
+                                <div id="m-win-rate" style="font-size: 22px; font-weight: 700; color: #02c076;">0%</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Total P&L</div>
+                                <div id="m-total-pnl" style="font-size: 22px; font-weight: 700; color: #eaecef;">$0.00</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Profit Factor</div>
+                                <div id="m-profit-factor" style="font-size: 22px; font-weight: 700; color: #f0b90b;">0.00</div>
+                            </div>
+                        </div>
+
+                        <!-- Second row of metrics -->
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;">
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Avg Win</div>
+                                <div id="m-avg-win" style="font-size: 16px; font-weight: 600; color: #02c076;">$0.00</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Avg Loss</div>
+                                <div id="m-avg-loss" style="font-size: 16px; font-weight: 600; color: #f6465d;">$0.00</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Best Trade</div>
+                                <div id="m-best-trade" style="font-size: 16px; font-weight: 600; color: #02c076;">$0.00</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Worst Trade</div>
+                                <div id="m-worst-trade" style="font-size: 16px; font-weight: 600; color: #f6465d;">$0.00</div>
+                            </div>
+                        </div>
+
+                        <!-- Third row -->
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;">
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Expectancy</div>
+                                <div id="m-expectancy" style="font-size: 16px; font-weight: 600; color: #eaecef;">$0.00</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Total Fees</div>
+                                <div id="m-total-fees" style="font-size: 16px; font-weight: 600; color: #f0b90b;">$0.00</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Avg Duration</div>
+                                <div id="m-avg-duration" style="font-size: 16px; font-weight: 600; color: #eaecef;">0s</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Win/Loss Ratio</div>
+                                <div id="m-win-loss-ratio" style="font-size: 16px; font-weight: 600; color: #eaecef;">0 / 0</div>
+                            </div>
+                        </div>
+
+                        <!-- Validation Progress -->
+                        <div style="background: rgba(139, 92, 246, 0.08); border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 8px; padding: 14px;">
+                            <div style="font-size: 12px; font-weight: 600; color: #8b5cf6; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px;">Progreso de Validación Paper → Real</div>
+                            <div id="validation-progress-bars"></div>
                         </div>
                     </div>
                 </div>

@@ -137,6 +137,12 @@ class DatabaseManager:
             "ALTER TABLE portfolio_state ALTER COLUMN asset TYPE VARCHAR(100);",
             "ALTER TABLE portfolio_state ADD COLUMN IF NOT EXISTS worker_id VARCHAR(50) NOT NULL DEFAULT 'worker_1';",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS position_id INTEGER;",
+            # Audit trail columns
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS trading_mode VARCHAR(20) NOT NULL DEFAULT 'paper';",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS fees NUMERIC(18, 8) NOT NULL DEFAULT 0.0;",
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS trading_mode VARCHAR(20) NOT NULL DEFAULT 'paper';",
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS fees NUMERIC(18, 8) NOT NULL DEFAULT 0.0;",
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS duration_seconds NUMERIC(12, 2);",
         ]
 
         conn = None
@@ -230,11 +236,13 @@ class DatabaseManager:
         status: str = "COMPLETED",
         worker_id: str = "worker_1",
         position_id: int = None,
+        trading_mode: str = "paper",
+        fees: float = 0.0,
     ) -> int:
         """Guarda un registro de trade en la base de datos."""
         query = """
-        INSERT INTO trades (timestamp, symbol, side, price, amount, total, status, external_order_id, worker_id, position_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
+        INSERT INTO trades (timestamp, symbol, side, price, amount, total, status, external_order_id, worker_id, position_id, trading_mode, fees)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
         """
         now = datetime.now()
         total = price * amount
@@ -255,13 +263,15 @@ class DatabaseManager:
                         external_order_id,
                         worker_id,
                         position_id,
+                        trading_mode,
+                        fees,
                     ),
                 )
                 trade_id = cursor.fetchone()[0]
                 conn.commit()
                 self.log(
                     "INFO",
-                    f"Trade guardado - {side.upper()} {amount} {symbol} @ {price}",
+                    f"Trade guardado - {side.upper()} {amount} {symbol} @ {price} [{trading_mode}]",
                     worker_id,
                 )
                 return trade_id
@@ -420,6 +430,57 @@ class DatabaseManager:
         finally:
             self._return_connection(conn)
 
+    def get_total_equity_usd(self) -> float:
+        """Compute total portfolio equity across all workers in USD.
+
+        Non-USD assets are valued using their last known trade price.
+        USD assets contribute their free_balance directly.
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT worker_id, asset, free_balance::float
+                    FROM (
+                        SELECT DISTINCT ON (worker_id, asset)
+                               worker_id, asset, free_balance
+                        FROM portfolio_state
+                        ORDER BY worker_id, asset, timestamp DESC
+                    ) latest
+                """)
+                rows = cur.fetchall()
+
+                total = 0.0
+                non_usd = []
+                for worker_id, asset, balance in rows:
+                    if asset == "USD":
+                        total += balance
+                    else:
+                        non_usd.append((worker_id, asset, balance))
+
+                if non_usd:
+                    cur.execute("""
+                        SELECT DISTINCT ON (symbol) symbol, price::float
+                        FROM trades
+                        ORDER BY symbol, timestamp DESC
+                    """)
+                    last_prices = {row[0]: row[1] for row in cur.fetchall()}
+
+                    for _wid, asset, balance in non_usd:
+                        price = 0.0
+                        for sym, p in last_prices.items():
+                            if asset in sym:
+                                price = p
+                                break
+                        total += balance * price
+
+            return total
+        except Exception:
+            return 0.0
+        finally:
+            self._return_connection(conn)
+
     def save_position(
         self,
         worker_id: str,
@@ -465,14 +526,17 @@ class DatabaseManager:
         close_price: float,
         close_reason: str,
         worker_id: str = "worker_1",
+        fees: float = 0.0,
     ):
         """Cierra una posición abierta y calcula P&L."""
         query = """
         UPDATE positions
         SET status = 'CLOSED', close_price = %s, close_time = %s, close_reason = %s,
+            fees = %s,
+            duration_seconds = EXTRACT(EPOCH FROM (%s - entry_time)),
             pnl = CASE
-                WHEN side = 'BUY' THEN (%s - entry_price) * amount
-                WHEN side = 'SELL' THEN (entry_price - %s) * amount
+                WHEN side = 'BUY' THEN (%s - entry_price) * amount - %s
+                WHEN side = 'SELL' THEN (entry_price - %s) * amount - %s
                 ELSE 0
             END
         WHERE id = %s AND status = 'OPEN';
@@ -483,7 +547,7 @@ class DatabaseManager:
             conn = self._get_connection()
             with conn.cursor() as cursor:
                 cursor.execute(
-                    query, (close_price, now, close_reason, close_price, close_price, position_id)
+                    query, (close_price, now, close_reason, fees, now, close_price, fees, close_price, fees, position_id)
                 )
                 conn.commit()
                 self.log(
@@ -570,5 +634,249 @@ class DatabaseManager:
         except Exception as e:
             self.log("ERROR", f"Error al recuperar posición abierta para {worker_id}: {e}")
             return None
+        finally:
+            self._return_connection(conn)
+
+    # ==================================================================
+    # AUDIT TRAIL & P&L SUMMARY
+    # ==================================================================
+
+    def get_pnl_summary(
+        self,
+        worker_id: str = None,
+        trading_mode: str = None,
+        start_date: str = None,
+        end_date: str = None,
+    ) -> dict:
+        """
+        Returns aggregated P&L metrics for closed positions.
+        Filters: worker_id, trading_mode (paper/real), date range.
+        """
+        conditions = ["status = 'CLOSED'"]
+        params = []
+
+        if worker_id:
+            conditions.append("worker_id = %s")
+            params.append(worker_id)
+        if trading_mode:
+            conditions.append("trading_mode = %s")
+            params.append(trading_mode)
+        if start_date:
+            conditions.append("close_time >= %s")
+            params.append(start_date)
+        if end_date:
+            conditions.append("close_time <= %s")
+            params.append(end_date)
+
+        where = " AND ".join(conditions)
+        query = f"""
+        SELECT
+            COUNT(*) as total_trades,
+            COUNT(*) FILTER (WHERE pnl > 0) as winning_trades,
+            COUNT(*) FILTER (WHERE pnl <= 0) as losing_trades,
+            COALESCE(SUM(pnl), 0) as total_pnl,
+            COALESCE(AVG(pnl), 0) as avg_pnl,
+            COALESCE(MAX(pnl), 0) as best_trade,
+            COALESCE(MIN(pnl), 0) as worst_trade,
+            COALESCE(SUM(fees), 0) as total_fees,
+            COALESCE(AVG(duration_seconds), 0) as avg_duration_sec,
+            COALESCE(SUM(pnl) FILTER (WHERE pnl > 0), 0) as gross_profit,
+            COALESCE(ABS(SUM(pnl) FILTER (WHERE pnl <= 0)), 0) as gross_loss
+        FROM positions
+        WHERE {where};
+        """
+
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, params)
+                row = cursor.fetchone()
+
+            if not row or row["total_trades"] == 0:
+                return self._empty_pnl_summary()
+
+            total = int(row["total_trades"])
+            winners = int(row["winning_trades"])
+            losers = int(row["losing_trades"])
+            gross_profit = float(row["gross_profit"])
+            gross_loss = float(row["gross_loss"])
+
+            win_rate = (winners / total * 100) if total > 0 else 0
+            profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float("inf") if gross_profit > 0 else 0
+            avg_win = (gross_profit / winners) if winners > 0 else 0
+            avg_loss = (gross_loss / losers) if losers > 0 else 0
+            expectancy = (avg_win * win_rate / 100) - (avg_loss * (1 - win_rate / 100))
+
+            return {
+                "total_trades": total,
+                "winning_trades": winners,
+                "losing_trades": losers,
+                "win_rate_pct": round(win_rate, 2),
+                "total_pnl": round(float(row["total_pnl"]), 4),
+                "avg_pnl": round(float(row["avg_pnl"]), 4),
+                "best_trade": round(float(row["best_trade"]), 4),
+                "worst_trade": round(float(row["worst_trade"]), 4),
+                "gross_profit": round(gross_profit, 4),
+                "gross_loss": round(gross_loss, 4),
+                "profit_factor": round(profit_factor, 4),
+                "expectancy": round(expectancy, 4),
+                "avg_win": round(avg_win, 4),
+                "avg_loss": round(avg_loss, 4),
+                "total_fees": round(float(row["total_fees"]), 4),
+                "avg_duration_sec": round(float(row["avg_duration_sec"]), 1),
+            }
+        except Exception as e:
+            self.log("ERROR", f"Error computing P&L summary: {e}")
+            return self._empty_pnl_summary()
+        finally:
+            self._return_connection(conn)
+
+    def _empty_pnl_summary(self) -> dict:
+        return {
+            "total_trades": 0,
+            "winning_trades": 0,
+            "losing_trades": 0,
+            "win_rate_pct": 0,
+            "total_pnl": 0,
+            "avg_pnl": 0,
+            "best_trade": 0,
+            "worst_trade": 0,
+            "gross_profit": 0,
+            "gross_loss": 0,
+            "profit_factor": 0,
+            "expectancy": 0,
+            "avg_win": 0,
+            "avg_loss": 0,
+            "total_fees": 0,
+            "avg_duration_sec": 0,
+        }
+
+    def get_equity_curve(
+        self,
+        worker_id: str = None,
+        start_date: str = None,
+        end_date: str = None,
+    ) -> list[dict]:
+        """
+        Returns portfolio balance time series from portfolio_state.
+        Used for equity curve charting.
+        """
+        conditions = []
+        params = []
+
+        if worker_id:
+            conditions.append("worker_id = %s")
+            params.append(worker_id)
+        if start_date:
+            conditions.append("timestamp >= %s")
+            params.append(start_date)
+        if end_date:
+            conditions.append("timestamp <= %s")
+            params.append(end_date)
+
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        query = f"""
+        SELECT
+            timestamp,
+            SUM(free_balance + locked_balance) as total_equity,
+            worker_id
+        FROM portfolio_state
+        {where}
+        GROUP BY timestamp, worker_id
+        ORDER BY timestamp ASC;
+        """
+
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+            return [
+                {
+                    "timestamp": r["timestamp"].isoformat() if r["timestamp"] else None,
+                    "equity": round(float(r["total_equity"]), 4),
+                    "worker_id": r["worker_id"],
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            self.log("ERROR", f"Error fetching equity curve: {e}")
+            return []
+        finally:
+            self._return_connection(conn)
+
+    def get_trades_export(
+        self,
+        worker_id: str = None,
+        trading_mode: str = None,
+        start_date: str = None,
+        end_date: str = None,
+        limit: int = 10000,
+    ) -> list[dict]:
+        """
+        Returns trades + positions joined for CSV export.
+        Includes all audit fields.
+        """
+        conditions = []
+        params = []
+
+        if worker_id:
+            conditions.append("t.worker_id = %s")
+            params.append(worker_id)
+        if trading_mode:
+            conditions.append("t.trading_mode = %s")
+            params.append(trading_mode)
+        if start_date:
+            conditions.append("t.timestamp >= %s")
+            params.append(start_date)
+        if end_date:
+            conditions.append("t.timestamp <= %s")
+            params.append(end_date)
+
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        query = f"""
+        SELECT
+            t.id as trade_id,
+            t.timestamp,
+            t.symbol,
+            t.side,
+            t.price,
+            t.amount,
+            t.total,
+            t.fees,
+            t.status,
+            t.trading_mode,
+            t.worker_id,
+            t.position_id,
+            t.external_order_id,
+            p.entry_price,
+            p.close_price,
+            p.pnl,
+            p.close_reason,
+            p.duration_seconds
+        FROM trades t
+        LEFT JOIN positions p ON t.position_id = p.id
+        {where}
+        ORDER BY t.timestamp DESC
+        LIMIT {limit};
+        """
+
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+            return [
+                {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in r.items()}
+                for r in rows
+            ]
+        except Exception as e:
+            self.log("ERROR", f"Error exporting trades: {e}")
+            return []
         finally:
             self._return_connection(conn)

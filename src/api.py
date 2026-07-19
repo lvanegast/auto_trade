@@ -821,12 +821,8 @@ async def _send_initial_state(websocket: WebSocket, worker, worker_id: str):
         print(f"[WS] Error enviando estado inicial: {e}")
 
 
-# Servir archivos estáticos del frontend en la raíz
-app.mount("/", StaticFiles(directory="web", html=True), name="web")
-
-
 # ==========================================================================
-# Security Guard Endpoints
+# Security Guard Endpoints (MUST be before StaticFiles mount)
 # ==========================================================================
 
 
@@ -866,10 +862,12 @@ async def emergency_stop():
 
 @app.post("/api/release-stop")
 async def release_stop():
-    """Release the kill switch (requires manual confirmation)."""
+    """Release the kill switch AND reset drawdown tracker."""
     security_guard.release_kill_switch()
-    db.log("INFO", "Kill switch liberado manualmente.", "ALL")
-    return {"status": "RELEASED", "message": "Kill switch liberado. Trading disponible."}
+    current_equity = db.get_total_equity_usd()
+    security_guard._peak_equity = current_equity
+    db.log("INFO", f"Kill switch liberado. Peak equity reset a ${current_equity:.2f}.", "ALL")
+    return {"status": "RELEASED", "message": f"Kill switch liberado. Peak reset a ${current_equity:.2f}."}
 
 
 @app.post("/api/unpause-worker/{worker_id}")
@@ -884,3 +882,77 @@ async def unpause_worker(worker_id: str):
 async def get_risk_metrics():
     """Returns current risk metrics for the dashboard."""
     return security_guard.get_metrics()
+
+
+# ==========================================================================
+# Audit Trail & P&L Endpoints
+# ==========================================================================
+
+
+@app.get("/api/pnl/summary")
+async def get_pnl_summary(
+    worker_id: str = None,
+    trading_mode: str = None,
+    start_date: str = None,
+    end_date: str = None,
+):
+    """Aggregated P&L metrics (win rate, Sharpe, profit factor, etc.)."""
+    return db.get_pnl_summary(
+        worker_id=worker_id,
+        trading_mode=trading_mode,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+@app.get("/api/equity-curve")
+async def get_equity_curve(
+    worker_id: str = None,
+    start_date: str = None,
+    end_date: str = None,
+):
+    """Portfolio equity time series for charting."""
+    return db.get_equity_curve(
+        worker_id=worker_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+@app.get("/api/trades/export")
+async def export_trades_csv(
+    worker_id: str = None,
+    trading_mode: str = None,
+    start_date: str = None,
+    end_date: str = None,
+):
+    """Export trades as CSV for external audit."""
+    from fastapi.responses import StreamingResponse
+    import csv
+    import io
+
+    trades = db.get_trades_export(
+        worker_id=worker_id,
+        trading_mode=trading_mode,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    if not trades:
+        return {"message": "No trades found for the given filters.", "count": 0}
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=trades[0].keys())
+    writer.writeheader()
+    writer.writerows(trades)
+    output.seek(0)
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=trades_export.csv"},
+    )
+
+
+# Servir archivos estáticos del frontend en la raíz (MUST BE LAST)
+app.mount("/", StaticFiles(directory="web", html=True), name="web")
