@@ -160,7 +160,13 @@ class LimitlessFeeder(BaseFeeder):
             )
 
         # Emit price for strategy (uses first child's price as reference)
-        await self._emit_price(parent_slug, primary_price)
+        event = PriceUpdateEvent(
+            symbol=event_id,
+            price=float(primary_price),
+            ask=float(primary_price),
+            bid=float(primary_price),
+        )
+        await self.queue.put(event)
 
     async def _handle_single_market(self, market_fetcher, market, slug):
         """Handle a single (non-group) market."""
