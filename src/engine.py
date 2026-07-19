@@ -393,20 +393,33 @@ class TradingWorker:
                                 }),
                             )
                         if signal:
-                            await self.queue.put(signal)
-                    elif event.event_type == "SIGNAL":
-                        await self._execute_order(event)
-                        if ws_server.has_clients(self.worker_id):
-                            # Broadcast de señal/trade a clientes WebSocket
-                            await ws_server.broadcast(
-                                self.worker_id,
-                                make_event("trade_update", {
-                                    "symbol": event.symbol,
-                                    "side": event.side,
-                                    "price": event.price,
-                                    "reason": event.reason,
-                                }),
-                            )
+                            # Execute this signal immediately
+                            await self._execute_order(signal)
+                            if ws_server.has_clients(self.worker_id):
+                                await ws_server.broadcast(
+                                    self.worker_id,
+                                    make_event("trade_update", {
+                                        "symbol": signal.symbol,
+                                        "side": signal.side,
+                                        "price": signal.price,
+                                        "reason": signal.reason,
+                                    }),
+                                )
+                            # Batch: execute all pending 1×N signals in same tick
+                            pending = getattr(self.strategy, "_pending_signals", [])
+                            while pending:
+                                next_signal = pending.pop(0)
+                                await self._execute_order(next_signal)
+                                if ws_server.has_clients(self.worker_id):
+                                    await ws_server.broadcast(
+                                        self.worker_id,
+                                        make_event("trade_update", {
+                                            "symbol": next_signal.symbol,
+                                            "side": next_signal.side,
+                                            "price": next_signal.price,
+                                            "reason": next_signal.reason,
+                                        }),
+                                    )
                 except Exception as e:
                     self.db.log("ERROR", f"Error en event_loop: {e}", self.worker_id)
                 finally:
