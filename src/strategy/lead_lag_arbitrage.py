@@ -206,7 +206,7 @@ class LeadLagArbitrageStrategy(BaseStrategy):
             symbol=self.symbol,
             side=side,
             price=current_price,
-            reason=f"Lead-Lag: Binance {lead_price} vs Local {current_price} (Δ: {deviation:+.4%})",
+            reason=f"Lead-Lag: Binance {lead_price} vs Local {current_price} (delta: {deviation:+.4%})",
             amount=self.position_size_pct,
             position_id=self._position_id,
         )
