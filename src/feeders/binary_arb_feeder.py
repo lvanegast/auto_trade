@@ -99,6 +99,13 @@ async def _scan_all_markets(http_client, feeder):
         best_no_ask = float(no_asks[0]["price"])
         best_no_size = float(no_asks[0].get("size", 0))
 
+        if best_yes_ask < 0.10 or best_no_ask < 0.10:
+            continue
+
+        min_size_usd = float(os.getenv("BINARY_ARB_MIN_SIZE_USD", "5"))
+        if best_yes_size * best_yes_ask < min_size_usd and best_no_size * best_no_ask < min_size_usd:
+            continue
+
         pair_cost = best_yes_ask + best_no_ask
         gross_spread = 1.0 - pair_cost
         fee_cost = feeder.fee_rate * 2

@@ -242,7 +242,7 @@ class LeadLagArbitrageStrategy(BaseStrategy):
             if drawdown >= self.trailing_stop_pct:
                 return self._trigger_exit(
                     current_price,
-                    f"Trailing Stop: pico {self._peak_profit:+.2%} → actual {profit_pct:+.2%} (drawdown: {drawdown:.2%}) en {elapsed:.1f}s"
+                    f"Trailing Stop: pico {self._peak_profit:+.2%} -> actual {profit_pct:+.2%} (drawdown: {drawdown:.2%}) en {elapsed:.1f}s"
                 )
 
         # Salida 3a: USD stop loss (hard cap)

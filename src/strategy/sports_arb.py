@@ -212,17 +212,6 @@ class SportsArbitrageStrategy(BaseStrategy):
             outcome_price = sig_data["price"]
             token_label = sig_data["token"]
 
-            # Save position in DB for each outcome
-            position_id = None
-            if self.db:
-                position_id = self.db.save_position(
-                    self.worker_id,
-                    f"{event_id}_{sig_data['slug']}",
-                    "BUY",
-                    outcome_price,
-                )
-                self._arb_groups[event_id]["position_ids"].append(position_id)
-
             reason = (
                 f"1x{len(outcomes)} {arb_type} Arb [{i+1}/{len(outcomes)}]: "
                 f"{title} | {sig_data['title']} | "
@@ -237,7 +226,7 @@ class SportsArbitrageStrategy(BaseStrategy):
                 price=outcome_price,
                 reason=reason,
                 amount=outcome_amount,
-                position_id=position_id,
+                position_id=None,
             ))
 
         if self.db:
@@ -303,35 +292,12 @@ class SportsArbitrageStrategy(BaseStrategy):
         expected_profit = group["expected_profit"]
         title = group["title"]
 
-        # Close all DB positions
-        for pos_id in group.get("position_ids", []):
-            if self.db and pos_id:
-                self.db.close_position(
-                    pos_id,
-                    0.0,
-                    f"1xN {arb_type} Arb closed: {reason}",
-                    worker_id=self.worker_id,
-                )
-
-        # Record PnL in security guard (guaranteed profit for true arb)
-        from src.security import security_guard
-        security_guard.record_pnl(self.worker_id, expected_profit)
-
-        if self.db:
-            self.db.log(
-                "INFO",
-                f"[Sports 1xN {arb_type} CLOSE] {title} | "
-                f"Profit: ${expected_profit:.4f} | {reason}",
-                self.worker_id,
-            )
-
         # Generate N SELL signals to liquidate positions
         signals = []
         per_outcome_amount = self.position_size_usd / len(outcomes) if outcomes else self.position_size_usd
 
         for i, outcome in enumerate(outcomes):
             sell_price = outcome["yes_price"] if arb_type == "YES" else outcome["no_price"]
-            position_id = group.get("position_ids", [None])[i] if i < len(group.get("position_ids", [])) else None
 
             signals.append(SignalEvent(
                 symbol=f"{event_id}_{outcome['slug']}",
@@ -339,7 +305,7 @@ class SportsArbitrageStrategy(BaseStrategy):
                 price=sell_price,
                 reason=f"1xN {arb_type} Arb exit: {reason}",
                 amount=per_outcome_amount,
-                position_id=position_id,
+                position_id=None,
             ))
 
         if signals:

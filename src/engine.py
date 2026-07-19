@@ -843,6 +843,20 @@ class TradingWorker:
             )
             self._update_db_portfolio(self.quote_asset, new_quote)
             self._update_db_portfolio(self.base_asset, new_base)
+
+            pos_symbol = getattr(signal, "symbol", self.symbol)
+            if not getattr(signal, "position_id", None):
+                position_id = self.db.save_position(
+                    self.worker_id, pos_symbol, "BUY", price, amount_to_buy,
+                )
+                if position_id and hasattr(self.strategy, "_arb_groups"):
+                    for gid, grp in self.strategy._arb_groups.items():
+                        if pos_symbol.startswith(gid):
+                            grp.setdefault("position_ids", []).append(position_id)
+                            break
+                if position_id and hasattr(self.strategy, "_position_id") and not self.strategy._position_id:
+                    self.strategy._position_id = position_id
+
             self.db.log(
                 "INFO",
                 f"Compra simulada completada. Nuevo saldo: {new_quote:.2f} {self.quote_asset}, {new_base:.6f} {self.base_asset}",
@@ -880,6 +894,13 @@ class TradingWorker:
             )
             self._update_db_portfolio(self.quote_asset, new_quote)
             self._update_db_portfolio(self.base_asset, new_base)
+
+            pos_symbol = getattr(signal, "symbol", self.symbol)
+            open_pos = self.db.get_open_positions(worker_id=self.worker_id)
+            matched = [p for p in open_pos if p["symbol"] == pos_symbol]
+            if matched:
+                self.db.close_position(matched[0]["id"], price, signal.reason, worker_id=self.worker_id)
+
             self.db.log(
                 "INFO",
                 f"Venta simulada completada. Nuevo saldo: {new_quote:.2f} {self.quote_asset}, {new_base:.6f} {self.base_asset}",

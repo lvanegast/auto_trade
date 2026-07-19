@@ -76,11 +76,11 @@ class SecurityGuard:
         if len(self._trade_timestamps) >= self.max_trades_per_minute:
             return False, f"Límite de trades/minuto alcanzado ({self.max_trades_per_minute})"
 
-        # 4. Max concurrent positions
+        # 4. Max concurrent positions (per worker)
         if self.db:
-            open_positions = self.db.get_open_positions()
+            open_positions = self.db.get_open_positions(worker_id=worker_id)
             if len(open_positions) >= self.max_concurrent_positions:
-                return False, f"Máximo de posiciones simultáneas alcanzado ({self.max_concurrent_positions})"
+                return False, f"Máximo de posiciones simultáneas alcanzado para {worker_id}: {len(open_positions)}/{self.max_concurrent_positions}"
 
         return True, "OK"
 
@@ -205,6 +205,10 @@ class SecurityGuard:
             "max_trades_per_minute": self.max_trades_per_minute,
             "consecutive_losses": dict(self._consecutive_losses),
             "concurrent_positions": len(self.db.get_open_positions()) if self.db else 0,
+            "concurrent_positions_per_worker": {
+                wid: len(self.db.get_open_positions(worker_id=wid))
+                for wid in ["worker_1", "worker_2", "worker_3", "worker_4"]
+            } if self.db else {},
             "max_concurrent_positions": self.max_concurrent_positions,
         }
 

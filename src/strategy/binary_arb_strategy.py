@@ -125,15 +125,6 @@ class BinaryArbitrageStrategy(BaseStrategy):
         self.entry_price = pair_cost
         self.entry_time = asyncio.get_event_loop().time()
 
-        if self.db:
-            self._position_id = self.db.save_position(
-                self.worker_id,
-                f"binary_{slug}",
-                "BUY",
-                pair_cost,
-                expected_profit,
-            )
-
         reason = (
             f"Binary Arb: YES@{yes_ask:.4f} + NO@{no_ask:.4f} = "
             f"{pair_cost:.4f} | Net: {net_spread:+.4f} | "
@@ -149,7 +140,7 @@ class BinaryArbitrageStrategy(BaseStrategy):
                 side="BUY",
                 price=yes_ask,
                 reason=f"[{shares}] BUY YES @ {yes_ask:.4f} ({title})",
-                amount=float(shares) * yes_ask,
+                amount=float(shares),
                 position_id=self._position_id,
             ),
             SignalEvent(
@@ -157,7 +148,7 @@ class BinaryArbitrageStrategy(BaseStrategy):
                 side="BUY",
                 price=no_ask,
                 reason=f"[{shares}] BUY NO @ {no_ask:.4f} ({title})",
-                amount=float(shares) * no_ask,
+                amount=float(shares),
                 position_id=self._position_id,
             ),
         ]
@@ -203,26 +194,29 @@ class BinaryArbitrageStrategy(BaseStrategy):
         shares = arb["shares"]
         entry_pair = arb["pair_cost"]
         expected_profit = arb.get("expected_profit", 0)
+        slug = arb["slug"]
 
         self._arb_position = None
         self.last_position = None
         self._breakeven_activated = False
         self._peak_profit = 0.0
 
-        if self.db and self._position_id:
-            self.db.close_position(
-                self._position_id,
-                entry_pair,
-                f"Binary Arb {reason}",
-            )
+        payout = shares * 1.0
+        cost = shares * entry_pair
+        actual_profit = payout - cost
 
-        slug = arb["slug"]
+        if self.db:
+            self.db.log(
+                "INFO",
+                f"Binary Arb cerrado: {reason} | Payout: ${payout:.2f} | Cost: ${cost:.2f} | Profit: ${actual_profit:.2f}",
+                self.worker_id,
+            )
 
         return SignalEvent(
             symbol=f"binary_{slug}_YES",
             side="SELL",
-            price=0.0,
-            reason=f"Binary Arb close: {reason} | Expected profit: ${expected_profit:.4f}",
+            price=1.0,
+            reason=f"Binary Arb close: {reason} | Payout: ${payout:.2f} | Profit: ${actual_profit:.2f}",
             amount=float(shares),
-            position_id=self._position_id,
+            position_id=None,
         )
