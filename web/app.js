@@ -182,6 +182,9 @@ let baseAsset = "BTC";
 let isForexOrEvent = false;
 let lastActiveSymbol = "";
 let recentTradesList = [];
+let currentBids = [];
+let currentAsks = [];
+let isPredictionMarket = false;
 
 function getDisplayBase(asset) {
     if (/^\d+$/.test(asset) && asset.length > 12) {
@@ -294,6 +297,51 @@ const baseAssetLabels = document.querySelectorAll(".base-asset-lbl");
 
 
 // --- INICIALIZACIÓN DE LA GRÁFICA ---
+const orderBookDepthPlugin = {
+    id: 'orderBookDepth',
+    beforeDatasetsDraw(chart) {
+        if (isPredictionMarket) return;
+        if (!currentBids.length && !currentAsks.length) return;
+        const { ctx, chartArea: ca, scales: { y: ys } } = chart;
+        const maxBarW = (ca.right - ca.left) * 0.28;
+        let maxVol = 0.0001, cumBid = 0;
+        const bidsD = [];
+        [...currentBids].sort((a, b) => b[0] - a[0]).slice(0, 15).forEach(b => {
+            cumBid += b[1]; bidsD.push({ p: b[0], v: cumBid });
+            if (cumBid > maxVol) maxVol = cumBid;
+        });
+        let cumAsk = 0;
+        const asksD = [];
+        [...currentAsks].sort((a, b) => a[0] - b[0]).slice(0, 15).forEach(a => {
+            cumAsk += a[1]; asksD.push({ p: a[0], v: cumAsk });
+            if (cumAsk > maxVol) maxVol = cumAsk;
+        });
+        ctx.save();
+        const bh = Math.max(2, Math.min(8, (ca.bottom - ca.top) / 50));
+        // Bids (green)
+        bidsD.forEach(b => {
+            const y = ys.getPixelForValue(b.p);
+            if (y < ca.top || y > ca.bottom) return;
+            const w = (b.v / maxVol) * maxBarW;
+            ctx.fillStyle = 'rgba(2,192,118,0.10)';
+            ctx.fillRect(ca.right - w, y - bh / 2, w, bh);
+            ctx.fillStyle = 'rgba(2,192,118,0.30)';
+            ctx.fillRect(ca.right - w, y - bh / 2, w, 1);
+        });
+        // Asks (red)
+        asksD.forEach(a => {
+            const y = ys.getPixelForValue(a.p);
+            if (y < ca.top || y > ca.bottom) return;
+            const w = (a.v / maxVol) * maxBarW;
+            ctx.fillStyle = 'rgba(246,70,93,0.10)';
+            ctx.fillRect(ca.right - w, y - bh / 2, w, bh);
+            ctx.fillStyle = 'rgba(246,70,93,0.30)';
+            ctx.fillRect(ca.right - w, y - bh / 2, w, 1);
+        });
+        ctx.restore();
+    }
+};
+
 let currentFeederTypeForChart = null;
 
 function initChart(feederType = "alpaca") {
@@ -380,8 +428,21 @@ function initChart(feederType = "alpaca") {
                     ticks: { color: '#848e9c', font: { family: 'JetBrains Mono', size: 10 } }
                 }
             }
-        }
+        },
+        plugins: [orderBookDepthPlugin]
     });
+}
+
+function synchronizeChartScales(targetPrice) {
+    if (isNaN(targetPrice) || targetPrice <= 0) return;
+    if (isPredictionMarket) {
+        if (priceChart && priceChart.options.scales.y) { priceChart.options.scales.y.min = 0.0; priceChart.options.scales.y.max = 1.0; }
+        return;
+    }
+    let rs = 1.0;
+    if (targetPrice > 10000) rs = 50.0; else if (targetPrice > 1000) rs = 10.0; else if (targetPrice > 50) rs = 1.0; else if (targetPrice > 1) rs = 0.10; else rs = 0.01;
+    const scp = Math.round(targetPrice / rs) * rs, ro = isForexOrEvent ? 0.003 : 0.008;
+    if (priceChart && priceChart.options.scales.y) { priceChart.options.scales.y.min = scp * (1 - ro); priceChart.options.scales.y.max = scp * (1 + ro); }
 }
 
 function updateChart(price) {
@@ -410,6 +471,7 @@ function updateChart(price) {
         }
         
         if (priceChart) {
+            synchronizeChartScales(price);
             priceChart.update();
         }
     }
@@ -732,7 +794,7 @@ async function fetchStatus() {
         headerVolume.textContent = `428.14 ${getDisplayBase(baseAsset)}`;
         
         // Trazado dinámico de visualización: Gráfica para Crypto/Forex, Dial Radial para Predicciones
-        const isPredictionMarket = data.feeder_type === "kalshi" || data.feeder_type === "polymarket";
+        isPredictionMarket = data.feeder_type === "kalshi" || data.feeder_type === "polymarket";
         if (isPredictionMarket) {
             if (radialGaugeContainer) radialGaugeContainer.style.display = "flex";
             if (priceChartCanvas) priceChartCanvas.style.display = "none";
@@ -1290,7 +1352,11 @@ async function runOrderBookSimulation() {
             
             obBids.appendChild(row);
         });
-        
+
+        currentBids = bidsData;
+        currentAsks = asksData;
+        if (priceChart) { priceChart.update('none'); }
+
     }, 1500);
 }
 

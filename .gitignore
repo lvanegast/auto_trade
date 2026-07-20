@@ -21,5 +21,8 @@ config.json
 .vscode/
 .idea/
 
+# Claude
+CLAUDE.md
+
 # OS
 .DS_Store
