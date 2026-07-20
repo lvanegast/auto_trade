@@ -72,7 +72,10 @@ class SportsArbitrageStrategy(BaseStrategy):
             os.getenv("SPORTS_STOP_LOSS_PCT", str(stop_loss_pct))
         )
         self.stop_loss_usd = float(
-            os.getenv("SPORTS_STOP_LOSS_USD", str(stop_loss_usd if stop_loss_usd is not None else 15.0))
+            os.getenv(
+                "SPORTS_STOP_LOSS_USD",
+                str(stop_loss_usd if stop_loss_usd is not None else 15.0),
+            )
         )
         self.cooldown_seconds = float(
             os.getenv("SPORTS_COOLDOWN_SECONDS", str(cooldown_seconds))
@@ -118,10 +121,10 @@ class SportsArbitrageStrategy(BaseStrategy):
             self.edge = 0.0
             return None
 
-        total_yes = edge_data["total_yes"]
+        edge_data["total_yes"]
         self.edge = edge_data["edge"]
         outcomes = edge_data.get("outcomes", [])
-        outcomes_count = edge_data["outcomes_count"]
+        edge_data["outcomes_count"]
         title = edge_data.get("title", event_id)
         arb_type = edge_data.get("arb_type", "YES" if self.edge > 0 else "NO")
 
@@ -149,25 +152,29 @@ class SportsArbitrageStrategy(BaseStrategy):
             for outcome in outcomes:
                 yes_price = outcome["yes_price"]
                 total_cost += yes_price
-                per_outcome_signals.append({
-                    "slug": outcome["slug"],
-                    "title": outcome["title"],
-                    "side": "BUY",
-                    "token": "YES",
-                    "price": yes_price,
-                })
+                per_outcome_signals.append(
+                    {
+                        "slug": outcome["slug"],
+                        "title": outcome["title"],
+                        "side": "BUY",
+                        "token": "YES",
+                        "price": yes_price,
+                    }
+                )
         else:
             # sum(YES) > 1.0 → buy all NO
             for outcome in outcomes:
                 no_price = outcome["no_price"]
                 total_cost += no_price
-                per_outcome_signals.append({
-                    "slug": outcome["slug"],
-                    "title": outcome["title"],
-                    "side": "BUY",
-                    "token": "NO",
-                    "price": no_price,
-                })
+                per_outcome_signals.append(
+                    {
+                        "slug": outcome["slug"],
+                        "title": outcome["title"],
+                        "side": "BUY",
+                        "token": "NO",
+                        "price": no_price,
+                    }
+                )
 
         # Expected guaranteed profit
         expected_profit = 1.0 - total_cost if arb_type == "YES" else total_cost - 1.0
@@ -213,21 +220,23 @@ class SportsArbitrageStrategy(BaseStrategy):
             token_label = sig_data["token"]
 
             reason = (
-                f"1x{len(outcomes)} {arb_type} Arb [{i+1}/{len(outcomes)}]: "
+                f"1x{len(outcomes)} {arb_type} Arb [{i + 1}/{len(outcomes)}]: "
                 f"{title} | {sig_data['title']} | "
                 f"{token_label} @{outcome_price:.4f} | "
                 f"Total cost: ${total_cost:.4f} | "
                 f"Guaranteed profit: ${expected_profit:.4f}"
             )
 
-            signals.append(SignalEvent(
-                symbol=f"{event_id}_{sig_data['slug']}",
-                side="BUY",
-                price=outcome_price,
-                reason=reason,
-                amount=outcome_amount,
-                position_id=None,
-            ))
+            signals.append(
+                SignalEvent(
+                    symbol=f"{event_id}_{sig_data['slug']}",
+                    side="BUY",
+                    price=outcome_price,
+                    reason=reason,
+                    amount=outcome_amount,
+                    position_id=None,
+                )
+            )
 
         if self.db:
             self.db.log(
@@ -244,7 +253,9 @@ class SportsArbitrageStrategy(BaseStrategy):
             self._pending_signals = signals[1:]
         return signals[0]
 
-    def _evaluate_group_exit(self, event_id: str, current_price: float, now: float) -> SignalEvent:
+    def _evaluate_group_exit(
+        self, event_id: str, current_price: float, now: float
+    ) -> SignalEvent:
         """Exit all outcomes in an arb group."""
         group = self._arb_groups.get(event_id)
         if not group:
@@ -264,17 +275,23 @@ class SportsArbitrageStrategy(BaseStrategy):
 
             # If we bought YES and edge went negative → market overpriced now, lock profit
             if arb_type == "YES" and current_edge < -0.05:
-                return self._close_group(event_id, f"Edge reversed ({current_edge:+.2%}), locking profit")
+                return self._close_group(
+                    event_id, f"Edge reversed ({current_edge:+.2%}), locking profit"
+                )
 
             # If we bought NO and edge went positive → market underpriced now, lock profit
             if arb_type == "NO" and current_edge > 0.05:
-                return self._close_group(event_id, f"Edge reversed ({current_edge:+.2%}), locking profit")
+                return self._close_group(
+                    event_id, f"Edge reversed ({current_edge:+.2%}), locking profit"
+                )
 
         # USD stop loss (should rarely trigger on true arb, but safety net)
         if self.stop_loss_usd > 0 and elapsed > 30:
             pnl = group["expected_profit"] - (group["total_cost"] * 0.05)
             if pnl < -self.stop_loss_usd:
-                return self._close_group(event_id, f"USD Stop Loss (est. loss > ${self.stop_loss_usd:.2f})")
+                return self._close_group(
+                    event_id, f"USD Stop Loss (est. loss > ${self.stop_loss_usd:.2f})"
+                )
 
         return None
 
@@ -294,13 +311,17 @@ class SportsArbitrageStrategy(BaseStrategy):
 
         arb_type = group["arb_type"]
         outcomes = group["outcomes"]
-        total_cost = group["total_cost"]
-        expected_profit = group["expected_profit"]
-        title = group["title"]
+        group["total_cost"]
+        group["expected_profit"]
+        group["title"]
 
         # Simulate resolution: first outcome pays $1.00, rest pay $0
         signals = []
-        per_outcome_amount = self.position_size_usd / len(outcomes) if outcomes else self.position_size_usd
+        per_outcome_amount = (
+            self.position_size_usd / len(outcomes)
+            if outcomes
+            else self.position_size_usd
+        )
 
         for i, outcome in enumerate(outcomes):
             if i == 0:
@@ -308,14 +329,16 @@ class SportsArbitrageStrategy(BaseStrategy):
             else:
                 sell_price = 0.0
 
-            signals.append(SignalEvent(
-                symbol=f"{event_id}_{outcome['slug']}",
-                side="SELL",
-                price=sell_price,
-                reason=f"1xN {arb_type} Arb exit: {reason}",
-                amount=per_outcome_amount,
-                position_id=None,
-            ))
+            signals.append(
+                SignalEvent(
+                    symbol=f"{event_id}_{outcome['slug']}",
+                    side="SELL",
+                    price=sell_price,
+                    reason=f"1xN {arb_type} Arb exit: {reason}",
+                    amount=per_outcome_amount,
+                    position_id=None,
+                )
+            )
 
         if signals:
             if len(signals) > 1:

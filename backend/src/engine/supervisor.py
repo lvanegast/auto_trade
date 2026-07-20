@@ -156,7 +156,12 @@ class TradingWorker:
 
     def _parse_symbol(self) -> tuple:
         symbol = self.symbol
-        if symbol.isdigit() or self.feeder_type in ("polymarket", "limitless", "limitless_sports", "binary_arb"):
+        if symbol.isdigit() or self.feeder_type in (
+            "polymarket",
+            "limitless",
+            "limitless_sports",
+            "binary_arb",
+        ):
             return symbol, "USD"
 
         if "EURUSD" in symbol:
@@ -200,7 +205,11 @@ class TradingWorker:
             return
         if self.feeder_type == "oanda" and self.oanda_account_id and self.oanda_token:
             return
-        if self.feeder_type == "kalshi" and self.kalshi_api_key_id and self.kalshi_private_key_path:
+        if (
+            self.feeder_type == "kalshi"
+            and self.kalshi_api_key_id
+            and self.kalshi_private_key_path
+        ):
             return
         if self.feeder_type in ("limitless", "limitless_sports"):
             return
@@ -228,6 +237,7 @@ class TradingWorker:
                 self.strategy.entry_lead_price = float(pos["entry_lead_price"])
             self.strategy._position_id = pos["id"]
             from datetime import timezone
+
             entry_time = pos["entry_time"]
             if entry_time.tzinfo is None:
                 entry_time = entry_time.replace(tzinfo=timezone.utc)
@@ -261,7 +271,11 @@ class TradingWorker:
         try:
             if self.alpaca_client and self.feeder_type == "alpaca":
                 await self._sync_alpaca_portfolio()
-            elif self.feeder_type == "oanda" and self.oanda_account_id and self.oanda_token:
+            elif (
+                self.feeder_type == "oanda"
+                and self.oanda_account_id
+                and self.oanda_token
+            ):
                 await self._sync_oanda_portfolio()
             elif (
                 self.feeder_type == "kalshi"
@@ -286,13 +300,16 @@ class TradingWorker:
         # Notificar a clientes WebSocket del cambio de estado
         await ws_server.broadcast(
             self.worker_id,
-            make_event("worker_status", {
-                "worker_id": self.worker_id,
-                "is_running": True,
-                "symbol": self.symbol,
-                "feeder_type": self.feeder_type,
-                "name": self.name,
-            }),
+            make_event(
+                "worker_status",
+                {
+                    "worker_id": self.worker_id,
+                    "is_running": True,
+                    "symbol": self.symbol,
+                    "feeder_type": self.feeder_type,
+                    "name": self.name,
+                },
+            ),
         )
 
     async def stop(self):
@@ -305,13 +322,16 @@ class TradingWorker:
         # Notificar a clientes WebSocket del cambio de estado
         await ws_server.broadcast(
             self.worker_id,
-            make_event("worker_status", {
-                "worker_id": self.worker_id,
-                "is_running": False,
-                "symbol": self.symbol,
-                "feeder_type": self.feeder_type,
-                "name": self.name,
-            }),
+            make_event(
+                "worker_status",
+                {
+                    "worker_id": self.worker_id,
+                    "is_running": False,
+                    "symbol": self.symbol,
+                    "feeder_type": self.feeder_type,
+                    "name": self.name,
+                },
+            ),
         )
 
         await self.feeder.stop()
@@ -379,28 +399,33 @@ class TradingWorker:
                         if ws_server.has_clients(self.worker_id):
                             await ws_server.broadcast(
                                 self.worker_id,
-                                make_event("price_update", {
-                                    "symbol": event.symbol,
-                                    "price": event.price,
-                                    "bid": event.bid,
-                                    "ask": event.ask,
-                                    "teorical_probability": getattr(
-                                        self.strategy, "teorical_probability", 0.0
-                                    ),
-                                    "edge": getattr(self.strategy, "edge", 0.0),
-                                    "last_position": getattr(
-                                        self.strategy, "last_position", None
-                                    ),
-                                    "entry_price": getattr(
-                                        self.strategy, "entry_price", 0.0
-                                    ),
-                                    "position_id": getattr(
-                                        self.strategy, "_position_id", None
-                                    ),
-                                    "arbitrage_opportunity": getattr(
-                                        self.strategy, "last_arbitrage_opportunity", None
-                                    ),
-                                }),
+                                make_event(
+                                    "price_update",
+                                    {
+                                        "symbol": event.symbol,
+                                        "price": event.price,
+                                        "bid": event.bid,
+                                        "ask": event.ask,
+                                        "teorical_probability": getattr(
+                                            self.strategy, "teorical_probability", 0.0
+                                        ),
+                                        "edge": getattr(self.strategy, "edge", 0.0),
+                                        "last_position": getattr(
+                                            self.strategy, "last_position", None
+                                        ),
+                                        "entry_price": getattr(
+                                            self.strategy, "entry_price", 0.0
+                                        ),
+                                        "position_id": getattr(
+                                            self.strategy, "_position_id", None
+                                        ),
+                                        "arbitrage_opportunity": getattr(
+                                            self.strategy,
+                                            "last_arbitrage_opportunity",
+                                            None,
+                                        ),
+                                    },
+                                ),
                             )
                         if signal:
                             # Execute this signal immediately
@@ -408,12 +433,15 @@ class TradingWorker:
                             if ws_server.has_clients(self.worker_id):
                                 await ws_server.broadcast(
                                     self.worker_id,
-                                    make_event("trade_update", {
-                                        "symbol": signal.symbol,
-                                        "side": signal.side,
-                                        "price": signal.price,
-                                        "reason": signal.reason,
-                                    }),
+                                    make_event(
+                                        "trade_update",
+                                        {
+                                            "symbol": signal.symbol,
+                                            "side": signal.side,
+                                            "price": signal.price,
+                                            "reason": signal.reason,
+                                        },
+                                    ),
                                 )
                             # Batch: execute all pending 1×N signals in same tick
                             pending = getattr(self.strategy, "_pending_signals", [])
@@ -423,12 +451,15 @@ class TradingWorker:
                                 if ws_server.has_clients(self.worker_id):
                                     await ws_server.broadcast(
                                         self.worker_id,
-                                        make_event("trade_update", {
-                                            "symbol": next_signal.symbol,
-                                            "side": next_signal.side,
-                                            "price": next_signal.price,
-                                            "reason": next_signal.reason,
-                                        }),
+                                        make_event(
+                                            "trade_update",
+                                            {
+                                                "symbol": next_signal.symbol,
+                                                "side": next_signal.side,
+                                                "price": next_signal.price,
+                                                "reason": next_signal.reason,
+                                            },
+                                        ),
                                     )
                 except Exception as e:
                     self.db.log("ERROR", f"Error en event_loop: {e}", self.worker_id)
@@ -848,14 +879,22 @@ class TradingWorker:
             pos_symbol = getattr(signal, "symbol", self.symbol)
             if not getattr(signal, "position_id", None):
                 position_id = self.db.save_position(
-                    self.worker_id, pos_symbol, "BUY", price, amount_to_buy,
+                    self.worker_id,
+                    pos_symbol,
+                    "BUY",
+                    price,
+                    amount_to_buy,
                 )
                 if position_id and hasattr(self.strategy, "_arb_groups"):
                     for gid, grp in self.strategy._arb_groups.items():
                         if pos_symbol.startswith(gid):
                             grp.setdefault("position_ids", []).append(position_id)
                             break
-                if position_id and hasattr(self.strategy, "_position_id") and not self.strategy._position_id:
+                if (
+                    position_id
+                    and hasattr(self.strategy, "_position_id")
+                    and not self.strategy._position_id
+                ):
                     self.strategy._position_id = position_id
 
             self.db.log(
@@ -900,7 +939,9 @@ class TradingWorker:
             open_pos = self.db.get_open_positions(worker_id=self.worker_id)
             matched = [p for p in open_pos if p["symbol"] == pos_symbol]
             if matched:
-                self.db.close_position(matched[0]["id"], price, signal.reason, worker_id=self.worker_id)
+                self.db.close_position(
+                    matched[0]["id"], price, signal.reason, worker_id=self.worker_id
+                )
 
             self.db.log(
                 "INFO",
@@ -1097,7 +1138,7 @@ class TradingWorker:
 
                 if bar_interval <= 60:
                     tf = TimeFrame.Minute
-                    minutes_back = 2000 # Incrementar para evitar el vacío por retraso del feed gratuito de Alpaca (gap de ~5 horas)
+                    minutes_back = 2000  # Incrementar para evitar el vacío por retraso del feed gratuito de Alpaca (gap de ~5 horas)
                 elif bar_interval <= 300:
                     tf = TimeFrame.Minute
                     minutes_back = 5000
@@ -1124,7 +1165,9 @@ class TradingWorker:
                         start=start_time,
                         end=datetime.datetime.now(timezone.utc),
                     )
-                    bars = await asyncio.to_thread(client.get_crypto_bars, request_params)
+                    bars = await asyncio.to_thread(
+                        client.get_crypto_bars, request_params
+                    )
                 else:
                     from alpaca.data.historical import StockHistoricalDataClient
                     from alpaca.data.requests import StockBarsRequest
@@ -1136,7 +1179,9 @@ class TradingWorker:
                         start=start_time,
                         end=datetime.datetime.now(timezone.utc),
                     )
-                    bars = await asyncio.to_thread(client.get_stock_bars, request_params)
+                    bars = await asyncio.to_thread(
+                        client.get_stock_bars, request_params
+                    )
 
                 if bars and self.feeder.symbol in bars.data:
                     symbol_bars = bars.data[self.feeder.symbol]
@@ -1144,18 +1189,20 @@ class TradingWorker:
                     for b in symbol_bars:
                         dt = b.timestamp.astimezone()
                         dt_naive = dt.replace(tzinfo=None)
-                        rows.append({
-                            "timestamp": dt_naive,
-                            "open": float(b.open),
-                            "high": float(b.high),
-                            "low": float(b.low),
-                            "close": float(b.close),
-                            "price": float(b.close)
-                        })
+                        rows.append(
+                            {
+                                "timestamp": dt_naive,
+                                "open": float(b.open),
+                                "high": float(b.high),
+                                "low": float(b.low),
+                                "close": float(b.close),
+                                "price": float(b.close),
+                            }
+                        )
                     hist_df = pd.DataFrame(rows)
-                    self.strategy.prices_df = hist_df.sort_values("timestamp").reset_index(
-                        drop=True
-                    )
+                    self.strategy.prices_df = hist_df.sort_values(
+                        "timestamp"
+                    ).reset_index(drop=True)
                     self.db.log(
                         "INFO",
                         f"Pre-carga completada. {len(self.strategy.prices_df)} velas cargadas.",
@@ -1181,7 +1228,9 @@ class TradingWorker:
 
         except Exception as e:
             self.db.log(
-                "ERROR", f"Error al pre-cargar datos históricos: {e}. Generando fallback sintético...", self.worker_id
+                "ERROR",
+                f"Error al pre-cargar datos históricos: {e}. Generando fallback sintético...",
+                self.worker_id,
             )
             try:
                 await self._generate_synthetic_history()
@@ -1199,8 +1248,17 @@ class TradingWorker:
             import random
 
             # Determinar precio inicial realista
-            start_price = 0.50 if self.feeder_type in ["kalshi", "polymarket", "limitless", "limitless_sports"] else 63000.0 if "BTC" in self.symbol else 3400.0 if "ETH" in self.symbol else 100.0
-            
+            start_price = (
+                0.50
+                if self.feeder_type
+                in ["kalshi", "polymarket", "limitless", "limitless_sports"]
+                else 63000.0
+                if "BTC" in self.symbol
+                else 3400.0
+                if "ETH" in self.symbol
+                else 100.0
+            )
+
             # Generar 120 velas de 1 minuto hacia atrás
             now = datetime.datetime.now()
             rows = []
@@ -1208,28 +1266,35 @@ class TradingWorker:
             for i in range(120, 0, -1):
                 dt = now - datetime.timedelta(minutes=i)
                 # Camino aleatorio (Random Walk)
-                if self.feeder_type in ["kalshi", "polymarket", "limitless", "limitless_sports"]:
+                if self.feeder_type in [
+                    "kalshi",
+                    "polymarket",
+                    "limitless",
+                    "limitless_sports",
+                ]:
                     change = random.uniform(-0.015, 0.015)
                     current_price = max(0.05, min(0.95, current_price + change))
                 else:
                     change = random.uniform(-0.003, 0.003)
                     current_price = max(1.0, current_price * (1 + change))
-                
+
                 # Crear valores OHLC realistas
                 open_p = current_price
                 close_p = current_price * (1 + random.uniform(-0.001, 0.001))
                 high_p = max(open_p, close_p) * (1 + random.uniform(0, 0.002))
                 low_p = min(open_p, close_p) * (1 - random.uniform(0, 0.002))
-                
-                rows.append({
-                    "timestamp": dt,
-                    "open": open_p,
-                    "high": high_p,
-                    "low": low_p,
-                    "close": close_p,
-                    "price": close_p
-                })
-            
+
+                rows.append(
+                    {
+                        "timestamp": dt,
+                        "open": open_p,
+                        "high": high_p,
+                        "low": low_p,
+                        "close": close_p,
+                        "price": close_p,
+                    }
+                )
+
             self.strategy.prices_df = pd.DataFrame(rows)
             self.db.log(
                 "INFO",

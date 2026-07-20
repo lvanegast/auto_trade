@@ -17,7 +17,7 @@ services:
       retries: 5
 
   backend:
-    build: .
+    build: ./backend
     container_name: trading_bot_backend
     ports:
       - "8080:8080"
@@ -26,8 +26,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./src:/app/src
-      - ./web:/app/web
+      - ./backend/src:/app/src
       - .env:/app/.env
     depends_on:
       db_trading:

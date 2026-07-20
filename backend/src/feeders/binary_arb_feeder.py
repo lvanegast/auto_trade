@@ -76,12 +76,14 @@ class LimitlessOracleFeeder(BaseFeeder):
 
     async def _run_binance_ws(self):
         import json
+
         ws_symbol = self._base_asset.lower() + "usdt"
         url = f"wss://stream.binance.com:9443/stream?streams={ws_symbol}@bookTicker"
 
         while self.running:
             try:
                 import aiohttp
+
                 async with aiohttp.ClientSession() as session:
                     async with session.ws_connect(url) as ws:
                         print(f"[Oracle Feeder] Binance WS conectado para {ws_symbol}")
@@ -93,7 +95,11 @@ class LimitlessOracleFeeder(BaseFeeder):
                             if ticker:
                                 bid = float(ticker.get("b", 0))
                                 ask = float(ticker.get("B", 0))
-                                price = round((bid + ask) / 2, 4) if bid > 0 and ask > 0 else bid or ask
+                                price = (
+                                    round((bid + ask) / 2, 4)
+                                    if bid > 0 and ask > 0
+                                    else bid or ask
+                                )
                                 if price > 0:
                                     self._binance_price = price
                                     self._price_history.append((time.time(), price))
@@ -142,9 +148,10 @@ class LimitlessOracleFeeder(BaseFeeder):
 
 async def _scan_markets(http_client, feeder):
     from limitless_sdk.markets import MarketFetcher
+
     mf = MarketFetcher(http_client)
     resp = await mf.get_active_markets()
-    markets = resp.data if hasattr(resp, 'data') else []
+    markets = resp.data if hasattr(resp, "data") else []
 
     if feeder._binance_price <= 0:
         return
@@ -163,10 +170,10 @@ async def _scan_markets(http_client, feeder):
         if signals_emitted >= feeder._max_signals_per_scan:
             break
 
-        slug = m.slug if hasattr(m, 'slug') else ''
-        title = m.title if hasattr(m, 'title') else ''
+        slug = m.slug if hasattr(m, "slug") else ""
+        title = m.title if hasattr(m, "title") else ""
 
-        if 'up-or-down' not in slug.lower():
+        if "up-or-down" not in slug.lower():
             continue
 
         slug_lower = slug.lower()
@@ -183,7 +190,7 @@ async def _scan_markets(http_client, feeder):
             if now - feeder._seen_markets[slug] < feeder._cooldown:
                 continue
 
-        prices = m.prices if hasattr(m, 'prices') else []
+        prices = m.prices if hasattr(m, "prices") else []
         if not prices or len(prices) < 2:
             continue
 
@@ -191,7 +198,7 @@ async def _scan_markets(http_client, feeder):
         no_price = float(prices[1])
 
         expires_at = 0
-        if hasattr(m, 'expiration_timestamp') and m.expiration_timestamp:
+        if hasattr(m, "expiration_timestamp") and m.expiration_timestamp:
             expires_at = m.expiration_timestamp / 1000
 
         ttl = expires_at - now if expires_at > 0 else 9999
@@ -232,7 +239,7 @@ async def _scan_markets(http_client, feeder):
                 f"{feeder._base_asset} momentum: {pct_change:+.3f}% ({direction}) | "
                 f"{chosen_side}@{chosen_price:.4f} | "
                 f"Fair: {fair_yes:.4f}/{fair_no:.4f} | "
-                f"Edge: {edge:+.4f} ({edge*100:.1f}%) | "
+                f"Edge: {edge:+.4f} ({edge * 100:.1f}%) | "
                 f"Conf: {confidence:.2f} | "
                 f"TTL: {ttl:.0f}s | "
                 f"Price: ${feeder._binance_price:,.2f}"

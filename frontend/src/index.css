@@ -1,0 +1,1482 @@
+/* --- BRANDING & DESIGN TOKENS --- */
+:root {
+    --bg-main: #0b0e11;
+    --bg-panel: #161a1e;
+    --bg-input: #20262d;
+    --border-color: #242c35;
+    
+    --primary: #00e6ff;
+    --primary-hover: #00b8d9;
+    --primary-bg: rgba(0, 230, 255, 0.1);
+    
+    --success: #02c076;
+    --success-hover: #00b06c;
+    --success-bg: rgba(2, 192, 118, 0.12);
+    
+    --danger: #f84960;
+    --danger-hover: #e03f54;
+    --danger-bg: rgba(248, 73, 96, 0.12);
+    
+    --text-primary: #eaecef;
+    --text-secondary: #848e9c;
+    --text-muted: #474f57;
+    
+    --font-sans: 'Inter', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+}
+
+/* --- RESET & GLOBAL RULES --- */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    height: 100vh;
+    overflow: hidden;
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+}
+
+button {
+    font-family: var(--font-sans);
+    cursor: pointer;
+    border: none;
+    outline: none;
+    transition: all 0.15s ease-in-out;
+}
+
+input {
+    font-family: var(--font-sans);
+    border: none;
+    outline: none;
+}
+
+/* --- SCROLLBAR STYLE --- */
+::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+}
+
+/* --- BASE UTILITIES --- */
+.hidden {
+    display: none !important;
+}
+.text-right {
+    text-align: right;
+}
+.text-center {
+    text-align: center;
+}
+.text-success {
+    color: var(--success) !important;
+}
+.text-danger {
+    color: var(--danger) !important;
+}
+.text-primary {
+    color: var(--primary) !important;
+}
+.text-secondary {
+    color: #a855f7 !important; /* Purple for EMA 21 */
+}
+.text-cyan {
+    color: #06b6d4 !important; /* Cyan for RSI */
+}
+.font-mono {
+    font-family: var(--font-mono);
+}
+
+/* --- TERMINAL ROOT CONTAINER --- */
+.terminal-app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: 100vw;
+}
+
+/* --- TOP HEADER (TICKER BAR) --- */
+.ticker-header {
+    height: 56px;
+    background-color: var(--bg-panel);
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 16px;
+    flex-shrink: 0;
+    z-index: 10;
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.logo {
+    font-weight: 700;
+    font-size: 1.2rem;
+    color: var(--text-primary);
+    letter-spacing: -0.5px;
+}
+
+.logo span {
+    color: var(--primary);
+}
+
+.logo-accent {
+    color: var(--primary);
+    margin-right: 2px;
+}
+
+.divider {
+    width: 1px;
+    height: 24px;
+    background-color: var(--border-color);
+}
+
+/* Symbol Tabs (Active Workers) */
+.symbol-tabs {
+    display: flex;
+    gap: 4px;
+}
+
+.tab-btn {
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 6px 12px;
+    border-radius: 4px;
+    border: 1px solid transparent;
+}
+
+.tab-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-main);
+}
+
+.tab-btn.active {
+    color: var(--primary);
+    background: var(--primary-bg);
+    border-color: rgba(0, 230, 255, 0.2);
+}
+
+/* Ticker values */
+.header-middle {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+}
+
+.ticker-item {
+    display: flex;
+    flex-direction: column;
+}
+
+.ticker-label {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+}
+
+.ticker-val {
+    font-size: 0.85rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+}
+
+.highlight-blue {
+    color: var(--primary);
+}
+
+/* Header Right info */
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.connection-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255, 255, 255, 0.02);
+    padding: 4px 10px;
+    border-radius: 20px;
+    border: 1px solid var(--border-color);
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.status-dot.online {
+    background-color: var(--success);
+    box-shadow: 0 0 8px var(--success);
+}
+
+.status-dot.offline {
+    background-color: var(--text-secondary);
+}
+
+.status-lbl {
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.mode-badge {
+    background: var(--primary-bg);
+    border: 1px solid rgba(0, 230, 255, 0.3);
+    color: var(--primary);
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+/* --- MAIN WORKSPACE GRID --- */
+.main-workspace {
+    display: grid;
+    grid-template-columns: 280px 1fr 320px;
+    flex-grow: 1;
+    overflow: hidden;
+}
+
+/* --- COMMON PANEL STYLING --- */
+.workspace-panel {
+    background-color: var(--bg-panel);
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+.order-book-panel {
+    border-right: 1px solid var(--border-color);
+}
+
+.terminal-panel {
+    border-left: 1px solid var(--border-color);
+}
+
+/* Panel Header & Tabs */
+.panel-tabs {
+    display: flex;
+    height: 38px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-main);
+}
+
+.panel-tab-btn {
+    flex: 1;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 600;
+    border-bottom: 2px solid transparent;
+}
+
+.panel-tab-btn:hover {
+    color: var(--text-primary);
+}
+
+.panel-tab-btn.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+    background: var(--bg-panel);
+}
+
+.panel-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 8px 12px;
+    overflow: hidden;
+}
+
+/* --- ORDER BOOK DESIGN --- */
+.ob-grid-header {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr 1fr;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.02);
+    margin-bottom: 4px;
+}
+
+.ob-section {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.asks-section {
+    justify-content: flex-end; /* Asks stack downwards to the spread */
+}
+
+.ob-row {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr 1fr;
+    font-size: 0.78rem;
+    font-family: var(--font-mono);
+    height: 20px;
+    align-items: center;
+    position: relative;
+    cursor: pointer;
+}
+
+.ob-row:hover {
+    background-color: rgba(255,255,255,0.03);
+}
+
+.ob-depth-bar {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 1;
+    opacity: 0.15;
+    pointer-events: none;
+}
+
+.ob-row.bid .ob-depth-bar {
+    background-color: var(--success);
+}
+
+.ob-row.ask .ob-depth-bar {
+    background-color: var(--danger);
+}
+
+.ob-row span {
+    position: relative;
+    z-index: 2;
+}
+
+.ob-row.bid .ob-price {
+    color: var(--success);
+}
+
+.ob-row.ask .ob-price {
+    color: var(--danger);
+}
+
+.ob-mid-price {
+    height: 36px;
+    border-top: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border-color);
+    margin: 6px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 4px;
+    background: rgba(255, 255, 255, 0.01);
+}
+
+.mid-price-val {
+    font-size: 1.1rem;
+    font-weight: 700;
+    font-family: var(--font-mono);
+}
+
+.mid-price-dir {
+    font-size: 0.95rem;
+}
+
+.trades-list {
+    flex: 1;
+    overflow-y: auto;
+}
+
+.trade-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    font-size: 0.78rem;
+    font-family: var(--font-mono);
+    height: 20px;
+    align-items: center;
+}
+
+/* --- CENTER WORKSPACE --- */
+.center-workspace {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    height: 100%;
+    border-right: 1px solid var(--border-color);
+    background-color: var(--bg-main);
+    padding: 8px;
+    gap: 8px;
+}
+
+.workspace-card {
+    background-color: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+}
+
+/* Upper: Chart */
+.chart-card {
+    flex: 1.4;
+    display: flex;
+    flex-direction: column;
+    padding: 12px;
+    overflow: hidden;
+}
+
+.chart-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    height: 28px;
+    margin-bottom: 8px;
+}
+
+.chart-title-area {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.chart-pair-name {
+    font-weight: 700;
+    font-size: 1.15rem;
+}
+
+.chart-resolution {
+    font-size: 0.75rem;
+    color: var(--primary);
+    background: var(--primary-bg);
+    padding: 2px 6px;
+    border-radius: 2px;
+    font-weight: 600;
+}
+
+.timeframe-buttons {
+    display: flex;
+    gap: 1px;
+    background: #242c35;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.tf-btn {
+    background: transparent;
+    border: none;
+    color: #848e9c;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 3px 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border-radius: 0;
+}
+
+.tf-btn:hover {
+    color: #eaecef;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.tf-btn.active {
+    color: #fff;
+    background: var(--primary);
+    box-shadow: 0 0 6px rgba(0, 230, 255, 0.3);
+}
+
+.chart-source-badge {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    padding: 1px 4px;
+    border-radius: 2px;
+}
+
+.indicator-quick-view {
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    display: flex;
+    gap: 16px;
+}
+
+.chart-wrapper {
+    flex: 1;
+    position: relative;
+    min-height: 0;
+}
+
+/* Middle: Strategy Stats Bar */
+.strategy-stats-bar {
+    height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    flex-shrink: 0;
+}
+
+.stat-item {
+    display: flex;
+    flex-direction: column;
+}
+
+.stat-lbl {
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+}
+
+.stat-val {
+    font-size: 0.9rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+}
+
+.stat-val.text-blue {
+    color: var(--primary);
+}
+
+.pos-badge {
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-align: center;
+    width: fit-content;
+}
+
+.pos-badge.neutral {
+    background: rgba(255,255,255,0.05);
+    color: var(--text-secondary);
+}
+
+.pos-badge.buy {
+    background: var(--success-bg);
+    color: var(--success);
+    border: 1px solid rgba(2, 192, 118, 0.2);
+}
+
+.pos-badge.sell {
+    background: var(--danger-bg);
+    color: var(--danger);
+    border: 1px solid rgba(248, 73, 96, 0.2);
+}
+
+/* Lower: Bottom Tabs Card */
+.bottom-tabs-card {
+    flex: 0.8;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.bottom-tabs-header {
+    display: flex;
+    height: 36px;
+    border-bottom: 1px solid var(--border-color);
+    background: rgba(0, 0, 0, 0.15);
+}
+
+.bottom-tab-btn {
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 0 16px;
+    border-bottom: 2px solid transparent;
+}
+
+.bottom-tab-btn:hover {
+    color: var(--text-primary);
+}
+
+.bottom-tab-btn.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+    background: var(--bg-panel);
+}
+
+.bottom-tab-panel {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Trades Table styling */
+.table-scroller {
+    flex: 1;
+    overflow-y: auto;
+}
+
+.trading-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    text-align: left;
+}
+
+.trading-table th {
+    background-color: rgba(0, 0, 0, 0.08);
+    color: var(--text-secondary);
+    font-weight: 600;
+    padding: 8px 12px;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.trading-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+    font-family: var(--font-sans);
+}
+
+.trading-table tbody tr:hover {
+    background-color: rgba(255, 255, 255, 0.01);
+}
+
+.trading-table td.font-mono {
+    font-family: var(--font-mono);
+}
+
+.badge-buy {
+    color: var(--success);
+    font-weight: 600;
+}
+
+.badge-sell {
+    color: var(--danger);
+    font-weight: 600;
+}
+
+/* Event Logs Panel styling */
+.terminal-console {
+    flex: 1;
+    overflow-y: auto;
+    background-color: rgba(0, 0, 0, 0.2);
+    font-family: var(--font-mono);
+    padding: 8px 12px;
+    font-size: 0.75rem;
+}
+
+.terminal-line {
+    margin-bottom: 4px;
+    line-height: 1.4;
+    word-break: break-all;
+}
+
+.terminal-line.info {
+    color: #e2e8f0;
+}
+
+.terminal-line.warning {
+    color: #fbbf24;
+}
+
+.terminal-line.error {
+    color: #ef4444;
+}
+
+.terminal-time {
+    color: var(--text-secondary);
+    margin-right: 8px;
+}
+
+/* Technical Indicator Tab styling */
+.indicators-details-grid {
+    padding: 16px;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1.5fr;
+    gap: 16px;
+    height: 100%;
+    overflow-y: auto;
+}
+
+.ind-detail-card {
+    background-color: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+}
+
+.ind-name {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    font-weight: 600;
+}
+
+.ind-value {
+    font-size: 1.8rem;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    margin: 8px 0;
+    color: var(--text-primary);
+}
+
+.ind-desc {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    margin-top: auto;
+}
+
+.ind-value-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin: 8px 0;
+}
+
+.ind-badge {
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.05);
+    color: var(--text-secondary);
+}
+
+.ind-badge.overbought {
+    background-color: var(--danger-bg);
+    color: var(--danger);
+}
+
+.ind-badge.oversold {
+    background-color: var(--success-bg);
+    color: var(--success);
+}
+
+/* RSI Slider style */
+.rsi-slider-container {
+    margin-top: 10px;
+}
+
+.rsi-track {
+    height: 12px;
+    background: linear-gradient(to right, #00b06c 0%, #334155 30%, #334155 70%, #e03f54 100%);
+    border-radius: 6px;
+    position: relative;
+    overflow: visible;
+}
+
+.rsi-pointer {
+    width: 6px;
+    height: 18px;
+    background: var(--text-primary);
+    border: 1px solid var(--bg-main);
+    border-radius: 3px;
+    position: absolute;
+    top: -3px;
+    transform: translateX(-50%);
+    transition: left 0.3s cubic-bezier(0.1, 0.8, 0.2, 1);
+}
+
+.rsi-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}
+
+/* --- RIGHT PANEL: TRADING TERMINAL --- */
+.terminal-panel .panel-header {
+    height: 38px;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    background: rgba(0, 0, 0, 0.15);
+}
+
+.panel-header-title {
+    font-size: 0.85rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text-primary);
+}
+
+/* Mode Switch: Manual / Auto */
+.trade-mode-toggle {
+    display: flex;
+    margin: 12px 16px;
+    background-color: var(--bg-main);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 2px;
+}
+
+.mode-toggle-btn {
+    flex: 1;
+    height: 28px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 600;
+    border-radius: 4px;
+}
+
+.mode-toggle-btn.active {
+    background-color: var(--bg-panel);
+    color: var(--text-primary);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+.trading-panel-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 0 16px 16px 16px;
+    overflow-y: auto;
+}
+
+/* Buy/Sell Side Button Tabs */
+.buy-sell-tabs {
+    display: flex;
+    margin-bottom: 12px;
+    background: var(--bg-main);
+    border-radius: 6px;
+    padding: 2px;
+}
+
+.side-tab-btn {
+    flex: 1;
+    height: 32px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-secondary);
+}
+
+.side-tab-btn.buy.active {
+    background-color: var(--success);
+    color: white;
+}
+
+.side-tab-btn.sell.active {
+    background-color: var(--danger);
+    color: white;
+}
+
+/* Limit / Market selector */
+.order-type-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.type-tab-btn {
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+.type-tab-btn:hover {
+    color: var(--text-primary);
+}
+
+.type-tab-btn.active {
+    background: var(--border-color);
+    color: var(--text-primary);
+}
+
+/* Form structure */
+.order-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.available-balance-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.78rem;
+}
+
+.bal-label {
+    color: var(--text-secondary);
+}
+
+.bal-val {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+}
+
+.input-group {
+    height: 38px;
+    background-color: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    transition: border-color 0.15s ease-in-out;
+}
+
+.input-group:focus-within {
+    border-color: var(--primary);
+}
+
+.input-prefix {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    width: 60px;
+}
+
+.form-input {
+    flex: 1;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-align: right;
+    font-family: var(--font-mono);
+    width: 100%;
+}
+
+.form-input::placeholder {
+    color: var(--text-muted);
+}
+
+.input-suffix {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin-left: 8px;
+    width: 32px;
+    text-align: right;
+}
+
+.input-group.disabled {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+/* Percentage shortcuts */
+.percentage-shortcuts {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 4px 0;
+}
+
+.pct-btn {
+    flex: 1;
+    height: 22px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+}
+
+.pct-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+}
+
+.pct-btn.active {
+    background-color: var(--primary-bg);
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.input-group.total-group {
+    background-color: transparent;
+    border-style: dashed;
+}
+
+/* Action Execution buttons */
+.btn {
+    height: 40px;
+    border-radius: 6px;
+    font-weight: 700;
+    font-size: 0.9rem;
+    color: white;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.btn-action-buy {
+    background-color: var(--success);
+}
+.btn-action-buy:hover {
+    background-color: var(--success-hover);
+}
+
+.btn-action-sell {
+    background-color: var(--danger);
+}
+.btn-action-sell:hover {
+    background-color: var(--danger-hover);
+}
+
+.btn.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    pointer-events: none;
+    box-shadow: none;
+}
+
+/* --- AUTO BOT CARD --- */
+.bot-info-card {
+    background: rgba(255,255,255,0.01);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 16px;
+}
+
+.bot-status-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.bot-card-title {
+    font-weight: 700;
+    font-size: 0.9rem;
+}
+
+.bot-badge {
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+
+.bot-badge.online {
+    background-color: var(--success-bg);
+    color: var(--success);
+}
+
+.bot-badge.offline {
+    background-color: rgba(255, 255, 255, 0.05);
+    color: var(--text-secondary);
+}
+
+.bot-description {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+
+.bot-controls-action {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.btn-start-bot {
+    flex: 1;
+    background-color: var(--success);
+}
+.btn-start-bot:hover:not(.disabled) {
+    background-color: var(--success-hover);
+}
+
+.btn-stop-bot {
+    flex: 1;
+    background-color: var(--danger);
+}
+.btn-stop-bot:hover:not(.disabled) {
+    background-color: var(--danger-hover);
+}
+
+.strategy-parameters {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    border-top: 1px solid var(--border-color);
+    padding-top: 16px;
+}
+
+.section-subtitle {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+
+.param-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+}
+
+.param-row span {
+    color: var(--text-secondary);
+}
+
+.param-row strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+/* Fix browser select dropdown colors in dark theme */
+select {
+    background-color: #1e2329 !important;
+    color: #ffffff !important;
+}
+
+select option, select optgroup {
+    background-color: #1e2329 !important;
+    color: #ffffff !important;
+}
+
+/* Sidebar Asset Cards */
+.asset-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #1e2329;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 10px 12px;
+    cursor: pointer;
+    transition: all 0.2s ease-in-out;
+    margin-bottom: 8px;
+}
+
+.asset-card:hover {
+    background: #2b3139;
+    border-color: #474f59;
+}
+
+.asset-card.active {
+    background: #02c07612;
+    border-color: #02c076;
+    box-shadow: 0 0 8px #02c07622;
+}
+
+.asset-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-width: 110px;
+    text-align: left;
+}
+
+.asset-title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.asset-desc {
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.asset-chart-val {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.asset-sparkline {
+    width: 50px;
+    height: 20px;
+}
+
+.asset-sparkline path {
+    fill: none;
+    stroke-width: 1.5;
+}
+
+.asset-sparkline.up path {
+    stroke: #02c076;
+}
+
+.asset-sparkline.down path {
+    stroke: #f6465d;
+}
+
+.asset-price-col {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+    min-width: 70px;
+}
+
+.asset-card-price {
+    font-size: 0.78rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+}
+
+.asset-card-change {
+    font-size: 0.68rem;
+    font-weight: 600;
+}
+
+.asset-card-change.up {
+    color: #02c076;
+}
+
+.asset-card-change.down {
+    color: #f6465d;
+}
+
+/* ==================== POSITIONS PANEL (XTB-STYLE) ==================== */
+.position-sub-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border-color);
+    background: rgba(0,0,0,0.06);
+    flex-shrink: 0;
+}
+
+.pos-sub-tab {
+    flex: 1;
+    padding: 10px 0;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+    font-family: var(--font-sans);
+}
+
+.pos-sub-tab:hover {
+    color: var(--text-primary);
+    background: rgba(255,255,255,0.02);
+}
+
+.pos-sub-tab.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+}
+
+.pos-tab-content {
+    flex: 1;
+    overflow-y: auto;
+}
+
+.position-cards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 12px;
+    padding: 12px;
+}
+
+.pos-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    transition: border-color 0.15s;
+}
+
+.pos-card:hover {
+    border-color: rgba(255,255,255,0.1);
+}
+
+.pos-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.pos-card-symbol {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+}
+
+.pos-card-side {
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.pos-card-side.buy {
+    background: rgba(2,192,118,0.12);
+    color: var(--success);
+    border: 1px solid rgba(2,192,118,0.2);
+}
+
+.pos-card-side.sell {
+    background: rgba(248,73,96,0.12);
+    color: var(--danger);
+    border: 1px solid rgba(248,73,96,0.2);
+}
+
+.pos-card-body {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 16px;
+}
+
+.pos-card-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.pos-card-label {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-family: var(--font-sans);
+}
+
+.pos-card-value {
+    font-size: 0.82rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+}
+
+.pos-card-pnl {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: rgba(0,0,0,0.15);
+    border-radius: 6px;
+}
+
+.pos-pnl-label {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-family: var(--font-sans);
+}
+
+.pos-pnl-value {
+    font-size: 0.9rem;
+    font-weight: 700;
+    font-family: var(--font-mono);
+}
+
+.pos-pnl-pct {
+    font-size: 0.75rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+}
+
+.pos-card-footer {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 4px;
+    border-top: 1px solid var(--border-color);
+}
+
+.btn-close-position {
+    background: rgba(248,73,96,0.1);
+    color: var(--danger);
+    border: 1px solid rgba(248,73,96,0.25);
+    padding: 6px 16px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: var(--font-sans);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.btn-close-position:hover {
+    background: rgba(248,73,96,0.2);
+    border-color: var(--danger);
+}
+
+.btn-close-position:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.pos-card-time {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+}
+
+.pos-card-id {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+}
+
+.pos-empty-msg {
+    grid-column: 1 / -1;
+    text-align: center;
+    color: var(--text-secondary);
+    padding: 32px 16px;
+    font-size: 0.85rem;
+}
+
+.pos-card.closed {
+    opacity: 0.7;
+    border-style: dashed;
+}
+
+.pos-card.closed .pos-card-footer {
+    display: none;
+}
+
+/* --- CROSS-PLATFORM ARBITRAGE --- */
+@keyframes pulse-glow {
+    0%, 100% { box-shadow: 0 0 5px rgba(2, 192, 118, 0.2); }
+    50% { box-shadow: 0 0 20px rgba(2, 192, 118, 0.4), 0 0 40px rgba(0, 200, 255, 0.1); }
+}
+
+@keyframes flash {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+

@@ -142,12 +142,12 @@ class OracleMomentumStrategy(BaseStrategy):
 
         side = self._current_signal["side"]
         entry_price = self._current_signal["market_price"]
-        slug = self._current_signal["slug"]
-        title = self._current_signal["title"]
+        self._current_signal["slug"]
+        self._current_signal["title"]
         shares = self._current_signal["shares"]
 
         current_price = arb_data["yes_price"] if side == "YES" else arb_data["no_price"]
-        unrealized_pnl = shares * (current_price - entry_price)
+        shares * (current_price - entry_price)
 
         if current_price >= 0.95:
             return self._close(
@@ -165,7 +165,7 @@ class OracleMomentumStrategy(BaseStrategy):
             loss_pct = (entry_price - current_price) / entry_price
             if loss_pct >= self.stop_loss_pct:
                 return self._close(
-                    f"Stop Loss ({loss_pct*100:.1f}%)",
+                    f"Stop Loss ({loss_pct * 100:.1f}%)",
                     sell_price=current_price,
                 )
 
@@ -188,7 +188,7 @@ class OracleMomentumStrategy(BaseStrategy):
         slug = sig["slug"]
         shares = sig["shares"]
         entry_price = sig["market_price"]
-        expected_profit = sig.get("expected_profit", 0)
+        sig.get("expected_profit", 0)
 
         self._current_signal = None
         self._position_id = None
