@@ -863,6 +863,38 @@ function aggregateCandles(candles, tfMinutes) {
     return aggregated;
 }
 
+function prepareSeriesData(candles) {
+    if (!candles || !candles.length) return [];
+    const valid = [];
+    for (const c of candles) {
+        if (!c || c.time === undefined || c.time === null) continue;
+        const t = typeof c.time === 'number' ? c.time : Math.floor(new Date(c.time).getTime() / 1000);
+        const o = Number(c.open);
+        const h = Number(c.high);
+        const l = Number(c.low);
+        const cl = Number(c.close);
+        if (t > 0 && !isNaN(t) && !isNaN(o) && !isNaN(h) && !isNaN(l) && !isNaN(cl)) {
+            valid.push({ time: t, open: o, high: h, low: l, close: cl });
+        }
+    }
+    if (valid.length === 0) return [];
+    valid.sort((a, b) => a.time - b.time);
+    const unique = [];
+    let lastTime = null;
+    for (const item of valid) {
+        if (item.time !== lastTime) {
+            unique.push(item);
+            lastTime = item.time;
+        } else {
+            const prev = unique[unique.length - 1];
+            prev.high = Math.max(prev.high, item.high);
+            prev.low = Math.min(prev.low, item.low);
+            prev.close = item.close;
+        }
+    }
+    return unique;
+}
+
 function buildChart(containerId, feederType) {
     /** Crea la instancia de Lightweight Charts con tema oscuro. */
     if (priceChart) {
@@ -965,8 +997,9 @@ function initChart(feederType) {
         } else if (tickBuffer.length > 0) {
             candleBuffer = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
         }
-        if (candleBuffer.length > 0) {
-            try { candleSeries.setData(candleBuffer.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close }))); } catch (_) {}
+        const cleaned = prepareSeriesData(candleBuffer);
+        if (cleaned.length > 0) {
+            try { candleSeries.setData(cleaned); } catch (e) { console.warn("[initChart] setData failed:", e.message); }
         }
     }
 
@@ -1002,11 +1035,9 @@ function applyTimeframe() {
     } else {
         return;
     }
-    const valid = candleBuffer.filter(c => c.time > 0 && isFinite(c.open) && isFinite(c.high) && isFinite(c.low) && isFinite(c.close));
-    if (valid.length > 0) {
-        try {
-            candleSeries.setData(valid.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })));
-        } catch (_) {}
+    const cleaned = prepareSeriesData(candleBuffer);
+    if (cleaned.length > 0) {
+        try { candleSeries.setData(cleaned); } catch (e) { console.warn("[applyTimeframe] setData failed:", e.message); }
     }
     if (tradeMarkers.length > 0) {
         try { candleSeries.setMarkers(tradeMarkers); } catch (_) {}
@@ -1029,9 +1060,12 @@ function _flushChart() {
     if (!candleSeries || candleBuffer.length === 0) return;
     _chartDirty = false;
     try {
-        candleSeries.setData(candleBuffer.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })));
+        const last = candleBuffer[candleBuffer.length - 1];
+        if (last && _isCandleValid(last)) {
+            candleSeries.update({ time: last.time, open: last.open, high: last.high, low: last.low, close: last.close });
+        }
     } catch (e) {
-        console.warn("[flushChart] setData failed:", e.message);
+        console.warn("[flushChart] update failed:", e.message);
     }
 }
 
@@ -1710,23 +1744,34 @@ async function fetchStatus() {
                 _currentCandleBucket = null;
                 _currentCandle = null;
                 candleBuffer = aggregateCandles(rawCandles, TF_MINUTES[currentTimeframe]);
-                const valid = candleBuffer.filter(_isCandleValid);
-                if (valid.length > 0) {
-                    try { candleSeries.setData(valid.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close }))); } catch (_) {}
-                }
-            } else if (candleSeries && tickBuffer.length > 0) {
-                _currentCandleBucket = null;
-                _currentCandle = null;
-                candleBuffer = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
-                const valid = candleBuffer.filter(_isCandleValid);
-                if (valid.length > 0) {
-                    try { candleSeries.setData(valid.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close }))); } catch (_) {}
+                const cleaned = prepareSeriesData(candleBuffer);
+                if (cleaned.length > 0) {
+                    try { candleSeries.setData(cleaned); } catch (e) { console.warn("[setData] failed:", e.message); }
                 }
             }
-        } else {
-            if (!isPredictionMarket) {
-                pushTick(lastPrice);
+        }
+        
+        // Si no hay velas en memoria para este activo, generar un baseline alrededor del precio actual
+        if (rawCandles.length === 0 && lastPrice > 0) {
+            const chartPrice = (isPredictionMarket && lastPrice > 10.0) ? (data.teorical_probability || 0.50) : lastPrice;
+            const now = Math.floor(Date.now() / 1000);
+            const baseline = [];
+            for (let i = 25; i >= 0; i--) {
+                const t = now - (i * 60);
+                const price = Math.max(0.0001, chartPrice);
+                baseline.push({ time: t, open: price, high: price, low: price, close: price });
             }
+            rawCandles = baseline;
+            const cleaned = prepareSeriesData(rawCandles);
+            if (candleSeries && cleaned.length > 0) {
+                try { candleSeries.setData(cleaned); } catch (_) {}
+            }
+        }
+
+        // Transmitir tick en tiempo real para todos los activos
+        if (lastPrice > 0) {
+            const chartPrice = (isPredictionMarket && lastPrice > 10.0) ? (data.teorical_probability || 0.50) : lastPrice;
+            pushTick(chartPrice);
         }
         
         // Alimentar gráfica de comparación si es arbitraje cross-platform
@@ -1739,12 +1784,21 @@ async function fetchStatus() {
                     const d = parseApiDate(item.timestamp);
                     const secs = Math.floor(d.getTime() / 1000);
                     return { time: Number(secs) || 0, value: Number(item.price) || 0 };
-                }).filter(t => t.time > 0 && t.value > 0);
+                }).filter(t => t.time > 0 && t.value > 0).sort((a, b) => a.time - b.time);
+
+                const uniqueComp = [];
+                let lastT = null;
+                for (const pt of compData) {
+                    if (pt.time !== lastT) {
+                        uniqueComp.push(pt);
+                        lastT = pt.time;
+                    }
+                }
                 
-                try {
-                    comparisonSeries.setData(compData);
-                } catch (e) {
-                    console.warn("[comparisonSeries] setData failed:", e.message);
+                if (data.symbol !== lastActiveSymbol) {
+                    try { comparisonSeries.setData(uniqueComp); } catch (e) { console.warn("[comparisonSeries] setData failed:", e.message); }
+                } else if (uniqueComp.length > 0) {
+                    try { comparisonSeries.update(uniqueComp[uniqueComp.length - 1]); } catch (_) {}
                 }
             } else {
                 try {
@@ -1771,7 +1825,17 @@ async function fetchStatus() {
 
         const dispQuote = Math.max(availableQuote - lockedQuote, 0);
         const dispBase = Math.max(availableBase - lockedBase, 0);
-        const totalEstimated = availableQuote + (availableBase * lastPrice);
+
+        isPredictionMarket = data.feeder_type === "kalshi" || data.feeder_type === "polymarket" || data.feeder_type === "binary_arb" || data.feeder_type === "limitless" || data.feeder_type === "limitless_sports";
+        const avgEntryPrice = data.avg_entry_price || 0.0;
+
+        // Si es mercado de predicción u opción binaria (entrada <= 1.0$) y lastPrice es el Spot de BTC (> 10$), usamos el precio efectivo del contrato
+        let effectivePrice = lastPrice;
+        if ((isPredictionMarket || avgEntryPrice <= 1.0) && lastPrice > 10.0) {
+            effectivePrice = data.teorical_probability || 0.50;
+        }
+
+        const totalEstimated = availableQuote + (availableBase * effectivePrice);
 
         balanceQuote.textContent = `$${dispQuote.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
         const baseDecs = baseAsset === "BTC" || baseAsset === "ETH" ? 6 : 2;
@@ -1779,11 +1843,10 @@ async function fetchStatus() {
         portfolioTotal.textContent = `$${totalEstimated.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
         // Calcular PnL No Realizado
-        const avgEntryPrice = data.avg_entry_price || 0.0;
         updateAvgEntryPriceLine(avgEntryPrice);
         if (availableBase > 0.000001 && avgEntryPrice > 0) {
-            const pnlUSD = (lastPrice - avgEntryPrice) * availableBase;
-            const pnlPercent = ((lastPrice - avgEntryPrice) / avgEntryPrice) * 100;
+            const pnlUSD = (effectivePrice - avgEntryPrice) * availableBase;
+            const pnlPercent = ((effectivePrice - avgEntryPrice) / avgEntryPrice) * 100;
             const sign = pnlUSD >= 0 ? "+" : "";
             
             strategyPnl.textContent = `${sign}$${pnlUSD.toFixed(2)} (${sign}${pnlPercent.toFixed(2)}%)`;

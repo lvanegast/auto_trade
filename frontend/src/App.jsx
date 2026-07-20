@@ -3,7 +3,8 @@ import HeaderTicker from './components/HeaderTicker';
 import Chart from './components/Chart';
 import OrderBook from './components/OrderBook';
 import PositionsTable from './components/PositionsTable';
-import { fetchWorkers, fetchWorkerStatus, fetchTrades, fetchOpenPositions, startBot, stopBot } from './services/api';
+import ControlPanel from './components/ControlPanel';
+import { fetchWorkers, fetchWorkerStatus, fetchTrades, fetchOpenPositions } from './services/api';
 import { WebSocketClient } from './services/websocket';
 
 export default function App() {
@@ -63,22 +64,6 @@ export default function App() {
     };
   }, [activeWorkerId]);
 
-  const handleToggleBot = async () => {
-    if (!statusData) return;
-    const isRunning = statusData.status === 'ONLINE';
-    try {
-      if (isRunning) {
-        await stopBot(activeWorkerId);
-      } else {
-        await startBot(activeWorkerId);
-      }
-      const updated = await fetchWorkerStatus(activeWorkerId);
-      setStatusData(updated);
-    } catch (err) {
-      alert(err.message);
-    }
-  };
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#0b0e11' }}>
       <HeaderTicker
@@ -97,30 +82,12 @@ export default function App() {
           <PositionsTable positions={positions} trades={trades} portfolio={statusData?.portfolio || []} />
         </main>
 
-        <aside style={{ width: '240px', background: '#161a1e', borderLeft: '1px solid #242c35', padding: '15px' }}>
-          <h4 style={{ fontSize: '12px', color: '#848e9c', textTransform: 'uppercase', marginBottom: '10px' }}>PANEL DE CONTROL</h4>
-          <button
-            onClick={handleToggleBot}
-            style={{
-              width: '100%',
-              padding: '12px',
-              borderRadius: '6px',
-              fontWeight: 700,
-              fontSize: '14px',
-              background: statusData?.status === 'ONLINE' ? '#f84960' : '#02c076',
-              color: '#fff',
-              marginBottom: '15px',
-            }}
-          >
-            {statusData?.status === 'ONLINE' ? 'Detener Bot' : 'Iniciar Bot'}
-          </button>
-
-          <div style={{ fontSize: '11px', color: '#848e9c', lineHeight: 1.8 }}>
-            <div>Worker Activo: <strong style={{ color: '#fff' }}>{activeWorkerId}</strong></div>
-            <div>Estrategia: <strong style={{ color: '#00e6ff' }}>Black-Scholes / Kelly</strong></div>
-            <div>Modo: <strong style={{ color: '#02c076' }}>{statusData?.trading_mode || 'PAPER'}</strong></div>
-          </div>
-        </aside>
+        <ControlPanel
+          statusData={statusData}
+          activeWorkerId={activeWorkerId}
+          onSelectWorker={setActiveWorkerId}
+          workers={workers}
+        />
       </div>
     </div>
   );

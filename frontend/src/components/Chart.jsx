@@ -10,45 +10,57 @@ export default function Chart({ statusData }) {
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
-    chartRef.current = createChart(chartContainerRef.current, {
-      width: chartContainerRef.current.clientWidth,
-      height: 400,
-      layout: {
-        background: { color: '#161a1e' },
-        textColor: '#848e9c',
-      },
-      grid: {
-        vertLines: { color: '#20262d' },
-        horzLines: { color: '#20262d' },
-      },
-      crosshair: {
-        mode: 0,
-      },
-      timeScale: {
-        borderColor: '#242c35',
-        timeVisible: true,
-        secondsVisible: false,
-      },
-    });
+    try {
+      const chart = createChart(chartContainerRef.current, {
+        width: chartContainerRef.current.clientWidth || 800,
+        height: 380,
+        layout: {
+          background: { color: '#161a1e' },
+          textColor: '#848e9c',
+        },
+        grid: {
+          vertLines: { color: '#20262d' },
+          horzLines: { color: '#20262d' },
+        },
+        crosshair: {
+          mode: 0,
+        },
+        timeScale: {
+          borderColor: '#242c35',
+          timeVisible: true,
+          secondsVisible: false,
+        },
+      });
 
-    candleSeriesRef.current = chartRef.current.addCandlestickSeries({
-      upColor: '#02c076',
-      downColor: '#f84960',
-      borderVisible: false,
-      wickUpColor: '#02c076',
-      wickDownColor: '#f84960',
-    });
+      chartRef.current = chart;
 
-    comparisonSeriesRef.current = chartRef.current.addLineSeries({
-      color: '#ff9900',
-      lineWidth: 2,
-      priceLineVisible: false,
-      title: 'COBERTA',
-    });
+      if (typeof chart.addCandlestickSeries === 'function') {
+        candleSeriesRef.current = chart.addCandlestickSeries({
+          upColor: '#02c076',
+          downColor: '#f84960',
+          borderVisible: false,
+          wickUpColor: '#02c076',
+          wickDownColor: '#f84960',
+        });
+      }
+
+      if (typeof chart.addLineSeries === 'function') {
+        comparisonSeriesRef.current = chart.addLineSeries({
+          color: '#ff9900',
+          lineWidth: 2,
+          priceLineVisible: false,
+          title: 'COBERTA',
+        });
+      }
+    } catch (e) {
+      console.error('[Chart Init Error]', e);
+    }
 
     const handleResize = () => {
       if (chartRef.current && chartContainerRef.current) {
-        chartRef.current.applyOptions({ width: chartContainerRef.current.clientWidth });
+        try {
+          chartRef.current.applyOptions({ width: chartContainerRef.current.clientWidth || 800 });
+        } catch (_) {}
       }
     };
 
@@ -57,38 +69,44 @@ export default function Chart({ statusData }) {
     return () => {
       window.removeEventListener('resize', handleResize);
       if (chartRef.current) {
-        chartRef.current.remove();
+        try {
+          chartRef.current.remove();
+        } catch (_) {}
       }
     };
   }, []);
 
   // Actualizar datos del gráfico
   useEffect(() => {
-    if (!statusData || !candleSeriesRef.current) return;
+    if (!statusData) return;
 
-    if (statusData.price_history && statusData.price_history.length > 0) {
+    if (candleSeriesRef.current && statusData.price_history && statusData.price_history.length > 0) {
       const formatted = statusData.price_history.map((c) => ({
         time: Math.floor(new Date(c.timestamp).getTime() / 1000),
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-      })).sort((a, b) => a.time - b.time);
+        open: parseFloat(c.open),
+        high: parseFloat(c.high),
+        low: parseFloat(c.low),
+        close: parseFloat(c.close),
+      })).filter((c) => !isNaN(c.time) && !isNaN(c.close)).sort((a, b) => a.time - b.time);
 
       try {
         candleSeriesRef.current.setData(formatted);
-      } catch (_) {}
+      } catch (err) {
+        console.error('[Candle Series Error]', err);
+      }
     }
 
-    if (statusData.comparison_history && statusData.comparison_history.length > 0) {
+    if (comparisonSeriesRef.current && statusData.comparison_history && statusData.comparison_history.length > 0) {
       const formattedComp = statusData.comparison_history.map((c) => ({
         time: Math.floor(new Date(c.timestamp).getTime() / 1000),
-        value: c.close || c.price,
-      })).sort((a, b) => a.time - b.time);
+        value: parseFloat(c.close || c.price),
+      })).filter((c) => !isNaN(c.time) && !isNaN(c.value)).sort((a, b) => a.time - b.time);
 
       try {
         comparisonSeriesRef.current.setData(formattedComp);
-      } catch (_) {}
+      } catch (err) {
+        console.error('[Comp Series Error]', err);
+      }
     }
   }, [statusData]);
 
@@ -96,7 +114,7 @@ export default function Chart({ statusData }) {
   const prob = (statusData?.teorical_probability || 0.5) * 100;
 
   return (
-    <div className="chart-panel" style={{ position: 'relative', width: '100%' }}>
+    <div className="chart-panel" style={{ position: 'relative', width: '100%', flex: 1, minHeight: '380px', background: '#161a1e' }}>
       <div className="chart-header" style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 15px', background: '#181a20', borderBottom: '1px solid #242c35' }}>
         <div>
           <strong style={{ fontSize: '16px', color: '#fff', marginRight: '10px' }}>{statusData?.symbol || 'BTC/USD'}</strong>
@@ -111,7 +129,7 @@ export default function Chart({ statusData }) {
         </div>
       </div>
 
-      <div ref={chartContainerRef} style={{ width: '100%', height: '400px' }} />
+      <div ref={chartContainerRef} style={{ width: '100%', height: '360px' }} />
 
       {/* Tarjeta flotante de dial de probabilidad para mercados de predicción */}
       {isPredictionMarket && (

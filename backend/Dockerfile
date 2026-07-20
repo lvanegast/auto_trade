@@ -6,13 +6,13 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-
-COPY pyproject.toml ./
+COPY backend/pyproject.toml ./
 
 RUN uv sync --no-dev
 
-COPY src/ ./src
-COPY main.py ./
+COPY backend/src/ ./src
+COPY backend/main.py ./
+COPY web/ ./web
 
 EXPOSE 8080
 

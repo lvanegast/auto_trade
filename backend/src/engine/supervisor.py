@@ -19,7 +19,7 @@ from src.feeders.limitless_sports_feeder import LimitlessSportsFeeder
 from src.feeders.binary_arb_feeder import LimitlessOracleFeeder
 from src.strategy.sports_arb import SportsArbitrageStrategy
 from src.strategy.binary_arb_strategy import OracleMomentumStrategy
-from src.security import security_guard
+from src.core.security import security_guard
 from src.websocket_server import ws_server, make_event
 
 

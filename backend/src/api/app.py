@@ -6,7 +6,7 @@ import os
 from src.database import DatabaseManager
 from src.engine import TradingEngine
 from src.events import SignalEvent
-from src.security import security_guard
+from src.core.security import security_guard
 from src.websocket_server import ws_server, make_event
 
 # Inicializar Base de Datos
@@ -1000,4 +1000,7 @@ async def export_trades_csv(
 
 
 # Servir archivos estáticos del frontend en la raíz (MUST BE LAST)
-app.mount("/", StaticFiles(directory="web", html=True), name="web")
+if os.path.exists("web"):
+    app.mount("/", StaticFiles(directory="web", html=True), name="web")
+elif os.path.exists("frontend/dist"):
+    app.mount("/", StaticFiles(directory="frontend/dist", html=True), name="frontend")
