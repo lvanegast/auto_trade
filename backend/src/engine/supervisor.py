@@ -1215,13 +1215,12 @@ class TradingWorker:
                         self.worker_id,
                     )
                     await self._generate_synthetic_history()
-            elif self.feeder_type in ("limitless", "limitless_sports"):
+            elif self.feeder_type in ("limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal"):
                 self.db.log(
                     "INFO",
-                    "Limitless: generando historial sintético (no hay API de velas)...",
+                    f"{self.feeder_type}: omitiendo historial sintético (esperando datos reales del feeder)...",
                     self.worker_id,
                 )
-                await self._generate_synthetic_history()
             else:
                 # Otros feeders (simulación / paper): Generar historial sintético para evitar arrancar con pantalla en blanco
                 await self._generate_synthetic_history()
@@ -1229,13 +1228,14 @@ class TradingWorker:
         except Exception as e:
             self.db.log(
                 "ERROR",
-                f"Error al pre-cargar datos históricos: {e}. Generando fallback sintético...",
+                f"Error al pre-cargar datos históricos: {e}.",
                 self.worker_id,
             )
-            try:
-                await self._generate_synthetic_history()
-            except Exception:
-                pass
+            if self.feeder_type not in ("limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal"):
+                try:
+                    await self._generate_synthetic_history()
+                except Exception:
+                    pass
 
     async def _generate_synthetic_history(self):
         try:
@@ -1248,16 +1248,16 @@ class TradingWorker:
             import random
 
             # Determinar precio inicial realista
-            start_price = (
-                0.50
-                if self.feeder_type
-                in ["kalshi", "polymarket", "limitless", "limitless_sports"]
-                else 63000.0
-                if "BTC" in self.symbol
-                else 3400.0
-                if "ETH" in self.symbol
-                else 100.0
-            )
+            if "BTC" in self.symbol:
+                start_price = 65000.0
+            elif "ETH" in self.symbol:
+                start_price = 3500.0
+            elif "SOL" in self.symbol:
+                start_price = 140.0
+            elif self.feeder_type in ["kalshi", "polymarket", "limitless", "limitless_sports"]:
+                start_price = 0.50
+            else:
+                start_price = 100.0
 
             # Generar 120 velas de 1 minuto hacia atrás
             now = datetime.datetime.now()
@@ -1266,7 +1266,10 @@ class TradingWorker:
             for i in range(120, 0, -1):
                 dt = now - datetime.timedelta(minutes=i)
                 # Camino aleatorio (Random Walk)
-                if self.feeder_type in [
+                if "BTC" in self.symbol or "ETH" in self.symbol or "SOL" in self.symbol:
+                    change = random.uniform(-0.003, 0.003)
+                    current_price = max(1.0, current_price * (1 + change))
+                elif self.feeder_type in [
                     "kalshi",
                     "polymarket",
                     "limitless",

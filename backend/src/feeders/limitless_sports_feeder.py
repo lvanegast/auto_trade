@@ -118,8 +118,14 @@ class LimitlessSportsFeeder(BaseFeeder):
         has_liquidity = False
 
         for sub in subs:
-            prices = sub.prices if hasattr(sub, "prices") else [0.5, 0.5]
-            yes_price = float(prices[0]) if prices else 0.5
+            prices = getattr(sub, "prices", None)
+            if not prices or len(prices) == 0:
+                continue
+            try:
+                yes_price = float(prices[0])
+            except (ValueError, TypeError):
+                continue
+
             slug = sub.slug if hasattr(sub, "slug") else ""
             title = sub.title if hasattr(sub, "title") else ""
 
@@ -136,13 +142,13 @@ class LimitlessSportsFeeder(BaseFeeder):
                 }
             )
 
-        if not has_liquidity:
+        if not has_liquidity or len(outcomes) < 2:
             return
 
         edge = 1.0 - total_yes
 
         event_id = f"limitless_sport_{group_slug}"
-        primary_price = outcomes[0]["yes_price"] if outcomes else 0.5
+        primary_price = outcomes[0]["yes_price"]
 
         cross_platform_tracker.update_price(
             event_id=event_id,

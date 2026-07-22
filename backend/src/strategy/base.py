@@ -20,6 +20,11 @@ class BaseStrategy(ABC):
 
     def on_price_update(self, event: PriceUpdateEvent) -> SignalEvent:
         """Agrega el precio al historial agrupando en barras y evalúa la señal en cierre de barra."""
+        if hasattr(event, "symbol") and event.symbol and self.symbol:
+            # Si el evento no pertenece al símbolo de la estrategia ni es un par compatible, ignorarlo en el DataFrame
+            if event.symbol != self.symbol and not (self.symbol == "BTC/USD" and event.symbol in ["BTCUSDT", "BTC/USD"]):
+                return None
+
         timestamp_s = event.timestamp.timestamp()
         rounded_s = (timestamp_s // self.bar_interval) * self.bar_interval
         # Mantener timezone si existe

@@ -325,20 +325,18 @@ class SportsArbitrageStrategy(BaseStrategy):
 
         for i, outcome in enumerate(outcomes):
             if i == 0:
-                sell_price = 1.0
+                sell_price = 0.99
             else:
-                sell_price = 0.0
+                sell_price = 0.01
 
-            signals.append(
-                SignalEvent(
-                    symbol=f"{event_id}_{outcome['slug']}",
-                    side="SELL",
-                    price=sell_price,
-                    reason=f"1xN {arb_type} Arb exit: {reason}",
-                    amount=per_outcome_amount,
-                    position_id=None,
-                )
-            )
+            signals.append(SignalEvent(
+                symbol=f"{event_id}_{outcome['slug']}",
+                side="SELL",
+                price=sell_price,
+                reason=f"1xN {arb_type} Arb exit: {reason}",
+                amount=per_outcome_amount,
+                position_id=None,
+            ))
 
         if signals:
             if len(signals) > 1:

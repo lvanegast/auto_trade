@@ -133,6 +133,11 @@ class DatabaseManager:
         migrations = [
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS worker_id VARCHAR(50) NOT NULL DEFAULT 'worker_1';",
             "ALTER TABLE portfolio_state ADD COLUMN IF NOT EXISTS worker_id VARCHAR(50) NOT NULL DEFAULT 'worker_1';",
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS exit_price NUMERIC(18, 8);",
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS exit_time TIMESTAMP;",
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS exit_reason VARCHAR(100);",
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS pnl NUMERIC(18, 8);",
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS pnl_pct NUMERIC(10, 4);",
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_lead_price NUMERIC(18, 8);",
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS exit_lead_price NUMERIC(18, 8);",
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS amount NUMERIC(18, 8);",

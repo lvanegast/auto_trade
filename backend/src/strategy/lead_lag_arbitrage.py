@@ -137,10 +137,6 @@ class LeadLagArbitrageStrategy(BaseStrategy):
 
     @property
     def teorical_probability(self) -> float:
-        if "BTC" in self.symbol:
-            return BinanceTracker.latest_btc_price
-        elif "ETH" in self.symbol:
-            return BinanceTracker.latest_eth_price
         if len(self.prices_df) > 0:
             return float(self.prices_df.iloc[-1]["price"])
         return 0.50

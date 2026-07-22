@@ -17,6 +17,8 @@ dependencies = [
     "cryptography>=49.0.0",
     "limitless-sdk>=1.0.12",
     "pydantic-settings>=2.0.0",
+    "ib-async>=2.1.0",
+    "nest-asyncio>=1.6.0",
 ]
 
 [dependency-groups]
