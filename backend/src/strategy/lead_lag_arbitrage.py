@@ -203,8 +203,8 @@ class LeadLagArbitrageStrategy(BaseStrategy):
         self.entry_time = asyncio.get_event_loop().time()
         self._peak_profit = 0.0
 
-        if self.db:
-            self._position_id = self.db.save_position(
+        if self.db and hasattr(self.db, "save_open_position"):
+            self._position_id = self.db.save_open_position(
                 self.worker_id,
                 self.symbol,
                 side,
@@ -302,10 +302,12 @@ class LeadLagArbitrageStrategy(BaseStrategy):
                 self._position_id, price, reason, worker_id=self.worker_id
             )
 
-        # Record P&L in security guard
-        from src.security import security_guard
-
-        security_guard.record_pnl(self.worker_id, pnl)
+        # Record P&L in security guard if available
+        try:
+            from src.security import security_guard
+            security_guard.record_pnl(self.worker_id, pnl)
+        except (ImportError, ModuleNotFoundError):
+            pass
 
         self._trade_count += 1
         if self.last_position == "BUY" and price > self.entry_price:

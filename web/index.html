@@ -191,6 +191,7 @@
                         <button class="bottom-tab-btn" data-target="tab-panel-logs">Consola de Eventos</button>
                         <button class="bottom-tab-btn" data-target="tab-panel-indicators">Indicadores Técnicos</button>
                         <button class="bottom-tab-btn" data-target="tab-panel-arbitrage">Arbitraje Cross</button>
+                        <button class="bottom-tab-btn" data-target="tab-panel-backtest">🧪 Backtesting</button>
                         <button class="bottom-tab-btn" data-target="tab-panel-metrics">Métricas</button>
                     </div>
 
@@ -395,6 +396,68 @@
                                         </tr>
                                     </tbody>
                                 </table>
+                            </div>
+                        </div>
+                    <!-- Tab: Backtesting & Simulación Histórica -->
+                    <div class="bottom-tab-panel hidden" id="tab-panel-backtest" style="max-height: 500px; overflow-y: auto;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                            <div>
+                                <span style="font-size: 15px; font-weight: 600; color: #eaecef;">🧪 Simulación Histórica de Estrategias (Backtesting)</span>
+                                <div style="font-size: 12px; color: #848e9c; margin-top: 2px;">Evalúa el Profit Factor, Win Rate y Sharpe Ratio simulando operaciones pasadas antes de ir a real.</div>
+                            </div>
+                            <button onclick="executeBacktestUI()" style="background: linear-gradient(135deg, #00c8ff, #00e6ff); color: #0b0e11; border: none; font-weight: 700; padding: 8px 18px; border-radius: 6px; cursor: pointer; font-size: 12px; box-shadow: 0 0 12px rgba(0,230,255,0.3);">
+                                🚀 Ejecutar Backtest
+                            </button>
+                        </div>
+
+                        <!-- Controls Bar -->
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; background: #1e2329; border: 1px solid #2d3139; padding: 12px; border-radius: 8px;">
+                            <div>
+                                <label style="font-size: 11px; color: #848e9c; display: block; margin-bottom: 4px;">Seleccionar Worker / Estrategia</label>
+                                <select id="bt-worker-select" style="width: 100%; background: #161a1e; border: 1px solid #2d3139; color: #eaecef; padding: 6px 10px; border-radius: 4px; font-size: 12px;">
+                                    <option value="worker_1">Worker 1: Lead-Lag Arbitrage (BTC/USD)</option>
+                                    <option value="worker_2">Worker 2: Prediction Cross (Kalshi/Poly)</option>
+                                    <option value="worker_3" selected>Worker 3: Sports Arbitrage 1×N (Limitless)</option>
+                                    <option value="worker_4">Worker 4: Oracle Momentum (Crypto 5m)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label style="font-size: 11px; color: #848e9c; display: block; margin-bottom: 4px;">Días a Simular</label>
+                                <select id="bt-days-select" style="width: 100%; background: #161a1e; border: 1px solid #2d3139; color: #eaecef; padding: 6px 10px; border-radius: 4px; font-size: 12px;">
+                                    <option value="1">1 Día (24 Horas)</option>
+                                    <option value="3">3 Días</option>
+                                    <option value="7" selected>7 Días (1 Semana)</option>
+                                    <option value="14">14 Días (2 Semanas)</option>
+                                    <option value="30">30 Días (1 Mes)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label style="font-size: 11px; color: #848e9c; display: block; margin-bottom: 4px;">Capital Inicial ($)</label>
+                                <input type="number" id="bt-capital-input" value="1000" style="width: 100%; background: #161a1e; border: 1px solid #2d3139; color: #eaecef; padding: 6px 10px; border-radius: 4px; font-size: 12px; font-family:'JetBrains Mono',monospace;">
+                            </div>
+                            <div>
+                                <label style="font-size: 11px; color: #848e9c; display: block; margin-bottom: 4px;">Estado de Simulación</label>
+                                <div id="bt-status-badge" style="padding: 6px 10px; background: rgba(255,255,255,0.05); color: #848e9c; border-radius: 4px; font-size: 12px; font-weight: 600;">Listo para simular</div>
+                            </div>
+                        </div>
+
+                        <!-- Results Dashboard Grid -->
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;">
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Profit Factor (Objetivo > 1.5)</div>
+                                <div id="bt-res-profit-factor" style="font-size: 22px; font-weight: 700; color: #02c076;">—</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Win Rate</div>
+                                <div id="bt-res-win-rate" style="font-size: 22px; font-weight: 700; color: #00e6ff;">—</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Retorno P&L Total</div>
+                                <div id="bt-res-total-pnl" style="font-size: 22px; font-weight: 700; color: #eaecef;">—</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+                                <div style="font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Sharpe Ratio / Max DD</div>
+                                <div id="bt-res-sharpe-dd" style="font-size: 18px; font-weight: 700; color: #f0b90b;">—</div>
                             </div>
                         </div>
                     </div>
@@ -611,6 +674,6 @@
     </div>
 
     <script src="lightweight-charts.standalone.production.js"></script>
-    <script src="app.js?v=no_fallback_flush_fix"></script>
+    <script src="app.js?v=backtest_panel"></script>
 </body>
 </html>

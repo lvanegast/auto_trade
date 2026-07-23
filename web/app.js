@@ -980,35 +980,48 @@ function buildChart(containerId, feederType) {
         handleScroll: { vertTouchDrag: false },
     });
 
-    // Determinar colores por plataforma
-    let upColor = "#02c076";
-    let downColor = "#f84960";
-    let borderUp = "rgba(2, 192, 118, 0.6)";
-    let borderDown = "rgba(248, 73, 96, 0.6)";
-    let wickColor = "#848e9c";
+    // Workers 2, 3 y 4 (Limitless, Limitless Sports, Binary Arb, Polymarket, Kalshi) usan Gráfico de Área (Línea con gradiente)
+    const isLineChartFeeder = feederType !== "alpaca" && feederType !== "binance";
+    window.isLineChartMode = isLineChartFeeder;
 
-    if (feederType === "binance") {
-        upColor = "#02c076"; downColor = "#f84960";
-    } else if (feederType === "polymarket") {
-        upColor = "#a03ffc"; downColor = "#cf5bdb";
-        borderUp = "rgba(160, 63, 252, 0.6)"; borderDown = "rgba(207, 91, 219, 0.6)";
-    } else if (feederType === "kalshi") {
-        upColor = "#02c076"; downColor = "#f84960";
+    if (isLineChartFeeder) {
+        candleSeries = priceChart.addAreaSeries({
+            topColor: "rgba(160, 63, 252, 0.4)",
+            bottomColor: "rgba(160, 63, 252, 0.0)",
+            lineColor: "#a03ffc",
+            lineWidth: 2,
+            crosshairMarkerVisible: true,
+            crosshairMarkerRadius: 4,
+        });
+    } else {
+        candleSeries = priceChart.addCandlestickSeries({
+            upColor: "#02c076",
+            downColor: "#f84960",
+            borderUpColor: "rgba(2, 192, 118, 0.6)",
+            borderDownColor: "rgba(248, 73, 96, 0.6)",
+            wickUpColor: "#848e9c",
+            wickDownColor: "#848e9c",
+        });
     }
-
-    candleSeries = priceChart.addCandlestickSeries({
-        upColor: upColor,
-        downColor: downColor,
-        borderUpColor: borderUp,
-        borderDownColor: borderDown,
-        wickUpColor: wickColor,
-        wickDownColor: wickColor,
-    });
 
     currentFeederTypeForChart = feederType;
     window.priceChart = priceChart;
     window.candleSeries = candleSeries;
     return priceChart;
+}
+
+function setSeriesData(cleanedData) {
+    if (!candleSeries || !cleanedData) return;
+    try {
+        if (window.isLineChartMode) {
+            const lineData = cleanedData.map(c => ({ time: c.time, value: c.close }));
+            candleSeries.setData(lineData);
+        } else {
+            candleSeries.setData(cleanedData);
+        }
+    } catch (e) {
+        console.warn("[setSeriesData] failed:", e.message);
+    }
 }
 
 function initChart(feederType) {
@@ -1022,7 +1035,7 @@ function initChart(feederType) {
 
     if (candleSeries) {
         const cleaned = prepareSeriesData(candleBuffer);
-        try { candleSeries.setData(cleaned); } catch (e) { console.warn("[initChart] setData failed:", e.message); }
+        setSeriesData(cleaned);
     }
 
     if (tradeMarkers.length > 0 && candleSeries) {
@@ -1059,7 +1072,7 @@ function applyTimeframe() {
     }
     const cleaned = prepareSeriesData(candleBuffer);
     if (cleaned.length > 0) {
-        try { candleSeries.setData(cleaned); } catch (e) { console.warn("[applyTimeframe] setData failed:", e.message); }
+        setSeriesData(cleaned);
     }
     if (tradeMarkers.length > 0) {
         try { candleSeries.setMarkers(tradeMarkers); } catch (_) {}
@@ -1084,7 +1097,11 @@ function _flushChart() {
     try {
         const last = candleBuffer[candleBuffer.length - 1];
         if (last && _isCandleValid(last)) {
-            candleSeries.update({ time: last.time, open: last.open, high: last.high, low: last.low, close: last.close });
+            if (window.isLineChartMode) {
+                candleSeries.update({ time: last.time, value: last.close });
+            } else {
+                candleSeries.update({ time: last.time, open: last.open, high: last.high, low: last.low, close: last.close });
+            }
         }
     } catch (e) {
         console.warn("[flushChart] update failed:", e.message);
@@ -1778,7 +1795,7 @@ async function fetchStatus() {
                 candleBuffer = aggregateCandles(rawCandles, TF_MINUTES[currentTimeframe]);
                 const cleaned = prepareSeriesData(candleBuffer);
                 if (cleaned.length > 0) {
-                    try { candleSeries.setData(cleaned); } catch (e) { console.warn("[setData] failed:", e.message); }
+                    setSeriesData(cleaned);
                 }
             }
         }
@@ -2514,15 +2531,23 @@ function renderArbitragePanel(data) {
     if (tbody) {
         if (opportunities && opportunities.length > 0) {
             let rows = "";
+            let idx = 0;
             for (const opp of opportunities) {
-                const dirColor = opp.direction.includes("KALSHI") ? "#00c8ff" : "#a03ffc";
-                const dirLabel = opp.direction === "BUY_YES_KALSHI_SELL_NO_POLY"
-                    ? "BUY Kalshi → HEDGE Poly"
-                    : "BUY Poly → HEDGE Kalshi";
+                idx++;
+                const is1xN = opp.direction && opp.direction.includes("1XN");
+                const dirColor = is1xN ? "#00e6ff" : (opp.direction.includes("KALSHI") ? "#00c8ff" : "#a03ffc");
+                const dirLabel = is1xN
+                    ? (opp.direction === "BUY_ALL_YES_1XN" ? "🎯 ARB 1×N: COMPRAR TODOS YES" : "🛡️ ARB 1×N: COMPRAR TODOS NO")
+                    : (opp.direction === "BUY_YES_KALSHI_SELL_NO_POLY" ? "BUY Kalshi → HEDGE Poly" : "BUY Poly → HEDGE Kalshi");
+                
+                const hasOutcomes = opp.outcomes && opp.outcomes.length > 0;
+                const toggleId = `outcomes-row-${idx}`;
+
                 rows += `
                 <tr onclick="selectArbitrageEvent('${opp.event_id}', '${opp.event_label}')" style="border-bottom:1px solid #2d3139; cursor:pointer;" onmouseover="this.style.background='rgba(255,255,255,0.04)'" onmouseout="this.style.background='transparent'">
                     <td style="padding:10px; font-size:12px; color:#eaecef; font-weight:500;">
                         <span style="color:#00e6ff; margin-right:4px;">📊</span> ${opp.event_label || opp.event_id}
+                        ${hasOutcomes ? `<button onclick="event.stopPropagation(); const el=document.getElementById('${toggleId}'); el.style.display = el.style.display === 'none' ? 'table-row' : 'none';" style="margin-left:8px; background:rgba(0,230,255,0.15); border:1px solid #00e6ff; color:#00e6ff; font-size:10px; padding:2px 6px; border-radius:4px; cursor:pointer;">🔍 Ver Outcomes (${opp.outcomes.length})</button>` : ''}
                     </td>
                     <td style="padding:10px; text-align:center; font-family:'JetBrains Mono',monospace; color:#00c8ff;">${(opp.kalshi_yes * 100).toFixed(1)}%</td>
                     <td style="padding:10px; text-align:center; font-family:'JetBrains Mono',monospace; color:#a03ffc;">${(opp.polymarket_yes * 100).toFixed(1)}%</td>
@@ -2531,6 +2556,30 @@ function renderArbitragePanel(data) {
                     <td style="padding:10px; text-align:center; font-family:'JetBrains Mono',monospace; color:#f0b90b;">${(opp.total_cost * 100).toFixed(2)}%</td>
                     <td style="padding:10px; text-align:center; font-family:'JetBrains Mono',monospace; color:#02c076; font-weight:700;">${(opp.guaranteed_profit * 100).toFixed(2)}¢</td>
                 </tr>`;
+
+                if (hasOutcomes) {
+                    let outcomesHtml = opp.outcomes.map(o => `
+                        <div style="background:#161a1e; border:1px solid #2d3139; padding:6px 10px; border-radius:6px; font-size:11px; display:flex; justify-content:space-between; align-items:center;">
+                            <span style="color:#eaecef; font-weight:600;">• ${o.title || o.slug}</span>
+                            <span>
+                                <span style="color:#848e9c; margin-right:6px;">YES:</span>
+                                <span style="color:#02c076; font-weight:700; font-family:'JetBrains Mono',monospace;">${(o.yes_price * 100).toFixed(1)}%</span>
+                            </span>
+                        </div>
+                    `).join("");
+
+                    rows += `
+                    <tr id="${toggleId}" style="display:none; background:rgba(0,0,0,0.2);">
+                        <td colspan="7" style="padding:12px 16px;">
+                            <div style="font-size:11px; font-weight:700; color:#00e6ff; margin-bottom:8px; text-transform:uppercase; letter-spacing:0.5px;">
+                                🔍 Desglose Auditoría 1×N: ${opp.event_label} (Costo total: ${(opp.total_cost * 100).toFixed(1)}% | Profit: ${(opp.guaranteed_profit * 100).toFixed(2)}¢)
+                            </div>
+                            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:8px;">
+                                ${outcomesHtml}
+                            </div>
+                        </td>
+                    </tr>`;
+                }
             }
             tbody.innerHTML = rows;
 
@@ -2542,16 +2591,74 @@ function renderArbitragePanel(data) {
                 const best = opportunities[0];
                 details.innerHTML = `
                     <strong>Mercado:</strong> ${best.event_label || best.event_id} &nbsp;|&nbsp;
-                    <strong>Kalshi YES:</strong> ${(best.kalshi_yes * 100).toFixed(1)}% &nbsp;|&nbsp;
-                    <strong>Poly YES:</strong> ${(best.polymarket_yes * 100).toFixed(1)}% &nbsp;|&nbsp;
+                    <strong>Dirección:</strong> ${best.direction} &nbsp;|&nbsp;
+                    <strong>Costo Total:</strong> ${(best.total_cost * 100).toFixed(1)}% &nbsp;|&nbsp;
                     <strong>Edge:</strong> ${(best.edge_pct * 100).toFixed(2)}% &nbsp;|&nbsp;
-                    <strong>Ganancia garantizada:</strong> ${(best.guaranteed_profit * 100).toFixed(2)}¢ por contrato
+                    <strong>Ganancia garantizada:</strong> ${(best.guaranteed_profit * 100).toFixed(2)}¢ por lote
                 `;
             }
         } else {
             tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted" style="padding:24px;">Sin oportunidades de arbitraje en este momento. El bot escanea continuamente...</td></tr>';
             const banner = document.getElementById("arb-alert-banner");
             if (banner) banner.style.display = "none";
+        }
+    }
+}
+
+// ============================================================
+//  BACKTESTING & SIMULACIÓN HISTÓRICA
+// ============================================================
+async function executeBacktestUI() {
+    const workerId = document.getElementById("bt-worker-select").value;
+    const days = parseInt(document.getElementById("bt-days-select").value, 10);
+    const capital = parseFloat(document.getElementById("bt-capital-input").value) || 1000.0;
+
+    const badge = document.getElementById("bt-status-badge");
+    const elPF = document.getElementById("bt-res-profit-factor");
+    const elWR = document.getElementById("bt-res-win-rate");
+    const elPnL = document.getElementById("bt-res-total-pnl");
+    const elSharpe = document.getElementById("bt-res-sharpe-dd");
+
+    if (badge) {
+        badge.textContent = "⏳ Ejecutando simulación...";
+        badge.style.color = "#00e6ff";
+    }
+
+    try {
+        const res = await fetch(`${API_BASE}/backtest?worker_id=${workerId}&days=${days}&initial_capital=${capital}`, {
+            method: "POST"
+        });
+        if (!res.ok) throw new Error("Error ejecutando backtest");
+        const data = await res.json();
+        const m = data.metrics || {};
+
+        if (badge) {
+            badge.textContent = "✅ Completado con éxito";
+            badge.style.color = "#02c076";
+        }
+
+        if (elPF) {
+            elPF.textContent = m.profit_factor !== undefined ? m.profit_factor.toFixed(2) : "—";
+            elPF.style.color = m.profit_factor >= 1.5 ? "#02c076" : (m.profit_factor >= 1.0 ? "#f0b90b" : "#f6465d");
+        }
+        if (elWR) {
+            elWR.textContent = m.win_rate_pct !== undefined ? `${m.win_rate_pct.toFixed(1)}% (${m.winning_trades || 0}/${m.total_trades || 0})` : "—";
+        }
+        if (elPnL) {
+            const pnlVal = m.total_pnl_usd || 0;
+            elPnL.textContent = `$${pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(2)}`;
+            elPnL.style.color = pnlVal >= 0 ? "#02c076" : "#f6465d";
+        }
+        if (elSharpe) {
+            const sharpe = m.sharpe_ratio || 0;
+            const dd = m.max_drawdown_pct || 0;
+            elSharpe.textContent = `Sharpe: ${sharpe.toFixed(2)} | Max DD: ${dd.toFixed(1)}%`;
+        }
+
+    } catch (err) {
+        if (badge) {
+            badge.textContent = "❌ Error en simulación";
+            badge.style.color = "#f6465d";
         }
     }
 }

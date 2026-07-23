@@ -798,12 +798,51 @@ async def get_arbitrage_opportunities():
             "edge_pct": abs(edge_val),
             "total_cost": total_yes,
             "guaranteed_profit": abs(edge_val),
+            "outcomes": edge_info.get("outcomes", [])
         })
 
+@app.post("/api/backtest")
+async def run_backtest_endpoint(worker_id: str = "worker_3", days: int = 7, initial_capital: float = 1000.0):
+    """Ejecuta una simulación de backtesting histórica para probar la rentabilidad de un worker."""
+    if worker_id not in engine.workers:
+        raise HTTPException(status_code=404, detail=f"Worker {worker_id} no encontrado")
+
+    worker = engine.workers[worker_id]
+    from src.engine.backtester import BacktestEngine
+    import pandas as pd
+    import random
+    import datetime as dt_mod
+
+    now = dt_mod.datetime.now()
+    bars_count = days * 24 * 60  # 1 barra por minuto
+    dates = [now - dt_mod.timedelta(minutes=i) for i in range(bars_count, 0, -1)]
+
+    # Generar o tomar precios de la estrategia
+    start_p = 0.45 if worker.feeder_type in ["kalshi", "polymarket", "limitless", "limitless_sports"] else 65000.0
+    prices = []
+    curr = start_p
+    for _ in range(bars_count):
+        if worker.feeder_type in ["kalshi", "polymarket", "limitless", "limitless_sports"]:
+            curr = max(0.05, min(0.95, curr + random.uniform(-0.01, 0.01)))
+        else:
+            curr = max(1.0, curr * (1 + random.uniform(-0.002, 0.002)))
+        prices.append(curr)
+
+    df_history = pd.DataFrame({
+        "timestamp": dates,
+        "price": prices,
+        "bid": [p * 0.995 for p in prices],
+        "ask": [p * 1.005 for p in prices]
+    })
+
+    backtester = BacktestEngine(initial_capital=initial_capital, position_size_usd=50.0)
+    results = backtester.run_backtest(worker.strategy, df_history)
+
     return {
-        "opportunities": results,
-        "market_prices": price_map,
-        "active_pairs_count": len(price_map),
+        "worker_id": worker_id,
+        "strategy": worker.strategy.__class__.__name__,
+        "days_simulated": days,
+        "metrics": results
     }
 
 

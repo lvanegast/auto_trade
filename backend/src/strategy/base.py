@@ -22,7 +22,10 @@ class BaseStrategy(ABC):
         """Agrega el precio al historial agrupando en barras y evalúa la señal en cierre de barra."""
         if hasattr(event, "symbol") and event.symbol and self.symbol:
             # Si el evento no pertenece al símbolo de la estrategia ni es un par compatible, ignorarlo en el DataFrame
-            if event.symbol != self.symbol and not (self.symbol == "BTC/USD" and event.symbol in ["BTCUSDT", "BTC/USD"]):
+            is_valid = (event.symbol == self.symbol) or \
+                       (self.symbol == "BTC/USD" and event.symbol in ["BTCUSDT", "BTC/USD"]) or \
+                       (self.symbol in ["CORE-PCE-YOY-JUNE-2026-1784042260443", "SPORTS", "BTC/USD"] or "oracle_" in event.symbol or "SPORTS" in event.symbol)
+            if not is_valid:
                 return None
 
         timestamp_s = event.timestamp.timestamp()

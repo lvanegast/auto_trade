@@ -93,6 +93,15 @@ class TradingWorker:
             self.feeder = LimitlessSportsFeeder(self.symbol, self.queue)
         elif self.feeder_type == "binary_arb":
             self.feeder = LimitlessOracleFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "hyperliquid":
+            from src.feeders.hyperliquid_feeder import HyperliquidFeeder
+            self.feeder = HyperliquidFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "dydx":
+            from src.feeders.dydx_feeder import DydxFeeder
+            self.feeder = DydxFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "forecastex":
+            from src.feeders.forecastex_feeder import ForecastExFeeder
+            self.feeder = ForecastExFeeder(self.symbol, self.queue)
         else:
             self.feeder = MockFeeder(self.symbol, self.queue, interval=1.0)
 
@@ -354,6 +363,20 @@ class TradingWorker:
                 await asyncio.sleep(10)
                 if not self.is_running:
                     break
+
+                # Bucle de Control Adaptativo (Feedback Loop)
+                try:
+                    from src.engine.adaptive_controller import adaptive_controller
+                    if hasattr(self.strategy, "min_edge_pct") and hasattr(self.strategy, "position_size_usd"):
+                        curr_edge = getattr(self.strategy, "min_edge_pct", 0.03)
+                        curr_pos = getattr(self.strategy, "position_size_usd", 50.0)
+                        adj_edge, adj_pos, reason_feedback = adaptive_controller.evaluate_and_adjust_worker(
+                            self.worker_id, curr_edge, curr_pos
+                        )
+                        setattr(self.strategy, "min_edge_pct", adj_edge)
+                        setattr(self.strategy, "position_size_usd", adj_pos)
+                except Exception as e_adapt:
+                    logger.debug(f"[Feedback Loop Error] {e_adapt}")
                 try:
                     if self.alpaca_client:
                         await self._sync_alpaca_portfolio()
@@ -428,6 +451,12 @@ class TradingWorker:
                                 ),
                             )
                         if signal:
+                            # Verificar Fusible de Seguridad Financiera (CircuitBreaker)
+                            from src.engine.circuit_breaker import circuit_breaker
+                            if circuit_breaker.is_tripped:
+                                self.db.log("WARNING", f"[CIRCUIT BREAKER DETENIDO] Orden cancelada: {circuit_breaker.tripped_reason}", self.worker_id)
+                                continue
+
                             # Execute this signal immediately
                             await self._execute_order(signal)
                             if ws_server.has_clients(self.worker_id):

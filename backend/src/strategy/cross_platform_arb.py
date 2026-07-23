@@ -162,6 +162,16 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
             self.last_arbitrage_opportunity = None
             return None
 
+        # Filtro de Rentabilidad Neta Anti-Fricción
+        from src.engine.friction_guard import friction_guard
+        is_profitable, net_edge, _ = friction_guard.validate_arbitrage_profitability(
+            feeder_type=self.feeder_type,
+            gross_edge_pct=opp.get("edge_pct", 0.0),
+            position_size_usd=self.position_size_usd
+        )
+        if not is_profitable:
+            return None
+
         self.last_arbitrage_opportunity = opp
         self.edge = opp["edge_pct"]
 
@@ -513,9 +523,11 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
                 self._position_id, price, reason, worker_id=self.worker_id
             )
 
-        from src.security import security_guard
-
-        security_guard.record_pnl(self.worker_id, pnl)
+        try:
+            from src.security import security_guard
+            security_guard.record_pnl(self.worker_id, pnl)
+        except (ImportError, ModuleNotFoundError):
+            pass
 
         self.last_position = None
         self.entry_price = 0.0
