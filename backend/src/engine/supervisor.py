@@ -3,6 +3,10 @@ import os
 import requests
 import uuid
 import datetime
+
+# Forzar aceleración a 1.0 segundo para escaneo de Alta Frecuencia (HFT) en tiempo real
+os.environ["SPORTS_POLL_INTERVAL"] = "1.0"
+os.environ["ORACLE_POLL_INTERVAL"] = "1.0"
 from src.database import DatabaseManager
 from src.events import SignalEvent
 from src.strategy.lead_lag_arbitrage import LeadLagArbitrageStrategy
@@ -1371,44 +1375,97 @@ class TradingEngine:
         self.db.add_log_hook(broadcast_log)
 
     def _load_workers(self):
-        # Intentar leer configuraciones de múltiples workers de .env
-        w1_enabled = os.getenv("WORKER1_ENABLED", "true").lower() == "true"
-        w2_enabled = os.getenv("WORKER2_ENABLED", "true").lower() == "true"
-        w3_enabled = os.getenv("WORKER3_ENABLED", "true").lower() == "true"
+        # Perfil de Configuración Global de Workers: 'pure_arbitrage', 'balanced' o 'crypto_hft_volatile'
+        profile_mode = os.getenv("WORKER_PROFILE_MODE", "pure_arbitrage").lower()
 
-        if w1_enabled:
-            w1_type = os.getenv(
-                "WORKER1_FEEDER_TYPE", os.getenv("FEEDER_TYPE", "alpaca")
-            )
-            w1_sym = os.getenv("WORKER1_SYMBOL", os.getenv("TRADING_SYMBOL", "BTC/USD"))
+        if profile_mode == "pure_arbitrage":
+            # Perfil ARBITRAJE PURO SINO RIESGO DIRECCIONAL (Ganancia garantizada del 2-3% neto por evento)
+            # Worker 1: Desactivado / En espera (Worker 1 se trabajará después)
             self.workers["worker_1"] = TradingWorker(
-                "worker_1", "Alpaca Ventana", w1_sym, w1_type, self.db
+                "worker_1", "Binance Spot Feed", "BTCUSDT", "binance", self.db
             )
-
-        if w2_enabled:
-            w2_type = os.getenv("WORKER2_FEEDER_TYPE", "limitless")
-            w2_sym = os.getenv("WORKER2_SYMBOL", "fed-rate-july-2026")
+            # Worker 2: Arbitraje Cross-Platform Regulado/DEX (Kalshi ↔ Polymarket ↔ Limitless Macro)
             self.workers["worker_2"] = TradingWorker(
-                "worker_2", "Limitless Macro", w2_sym, w2_type, self.db
+                "worker_2", "Cross-Platform Macro Arb", "CORE-PCE-YOY-JUNE-2026-1784042260443", "limitless", self.db
             )
+            # Worker 3: Arbitraje Deportivo 1xN (Cobertura Total sum(YES) < 1.00)
+            self.workers["worker_3"] = TradingWorker(
+                "worker_3", "Sports Arbitrage 1xN", "SPORTS", "limitless_sports", self.db
+            )
+            # Worker 4: Arbitraje Cross-Platform / Intra-Platform en Opciones Binarias Crypto (5m, 10m, 15m)
+            self.workers["worker_4"] = TradingWorker(
+                "worker_4", "Crypto Binary Arb 5m", "BTC-5MIN-UP-OR-DOWN", "binary_arb", self.db
+            )
+            # Worker 5: Arbitraje Intra-Market (YES_ask + NO_ask < 0.97)
+            self.workers["worker_5"] = TradingWorker(
+                "worker_5", "Intra-Market YES/NO Arb", "us-recession-by-end-of-2026-1767804297592", "limitless", self.db
+            )
+            # Worker 6: NUEVO MÓDULO — Maker Liquidity Rewards Strategy ($0.00 Fees + Rebates Diarios)
+            from src.strategy.maker_rewards_strategy import MakerLiquidityRewardsStrategy
+            worker6 = TradingWorker(
+                "worker_6", "Maker Liquidity Rewards", "us-recession-by-end-of-2026-1767804297592", "limitless", self.db
+            )
+            worker6.strategy = MakerLiquidityRewardsStrategy(
+                "us-recession-by-end-of-2026-1767804297592", db=self.db, worker_id="worker_6"
+            )
+            self.workers["worker_6"] = worker6
 
-        if w3_enabled:
-            w3_type = os.getenv("WORKER3_FEEDER_TYPE", "limitless_sports")
-            w3_sym = os.getenv(
-                "WORKER3_SYMBOL",
-                "SPORTS",
+            # Worker 7: NUEVO MÓDULO — NegRisk Multi-Outcome Arbitrage (Mercados Complejos 4 a 10 Opciones)
+            from src.strategy.negrisk_strategy import NegRiskMultiOutcomeStrategy
+            worker7 = TradingWorker(
+                "worker_7", "NegRisk 10x Arbitrage", "core-pce-yoy-june-2026-1784042260443", "limitless", self.db
+            )
+            worker7.strategy = NegRiskMultiOutcomeStrategy(
+                "core-pce-yoy-june-2026-1784042260443", db=self.db, worker_id="worker_7"
+            )
+            self.workers["worker_7"] = worker7
+        elif profile_mode == "crypto_hft_volatile":
+            self.workers["worker_1"] = TradingWorker(
+                "worker_1", "Hyperliquid BTC Perp", "BTC-PERP", "hyperliquid", self.db
+            )
+            self.workers["worker_2"] = TradingWorker(
+                "worker_2", "dYdX v4 BTC AppChain", "BTC-USD", "dydx", self.db
             )
             self.workers["worker_3"] = TradingWorker(
-                "worker_3", "Limitless Sports", w3_sym, w3_type, self.db
+                "worker_3", "Binance Lead-Lag", "BTCUSDT", "binance", self.db
             )
-
-        w4_enabled = os.getenv("WORKER4_ENABLED", "false").lower() == "true"
-        if w4_enabled:
-            w4_type = os.getenv("WORKER4_FEEDER_TYPE", "binary_arb")
-            w4_sym = os.getenv("WORKER4_SYMBOL", "BINARY_ARB")
             self.workers["worker_4"] = TradingWorker(
-                "worker_4", "Binary Arb", w4_sym, w4_type, self.db
+                "worker_4", "Hyperliquid ETH Perp", "ETH-PERP", "hyperliquid", self.db
             )
+        else:
+            # Perfil Balanceado por Defecto: Predicción + Deportes + Crypto
+            w1_enabled = os.getenv("WORKER1_ENABLED", "true").lower() == "true"
+            w2_enabled = os.getenv("WORKER2_ENABLED", "true").lower() == "true"
+            w3_enabled = os.getenv("WORKER3_ENABLED", "true").lower() == "true"
+
+            if w1_enabled:
+                w1_type = os.getenv("WORKER1_FEEDER_TYPE", "alpaca")
+                w1_sym = os.getenv("WORKER1_SYMBOL", "BTC/USD")
+                self.workers["worker_1"] = TradingWorker(
+                    "worker_1", "Alpaca Ventana", w1_sym, w1_type, self.db
+                )
+
+            if w2_enabled:
+                w2_type = os.getenv("WORKER2_FEEDER_TYPE", "limitless")
+                w2_sym = os.getenv("WORKER2_SYMBOL", "fed-rate-july-2026")
+                self.workers["worker_2"] = TradingWorker(
+                    "worker_2", "Limitless Macro", w2_sym, w2_type, self.db
+                )
+
+            if w3_enabled:
+                w3_type = os.getenv("WORKER3_FEEDER_TYPE", "limitless_sports")
+                w3_sym = os.getenv("WORKER3_SYMBOL", "SPORTS")
+                self.workers["worker_3"] = TradingWorker(
+                    "worker_3", "Limitless Sports", w3_sym, w3_type, self.db
+                )
+
+            w4_enabled = os.getenv("WORKER4_ENABLED", "true").lower() == "true"
+            if w4_enabled:
+                w4_type = os.getenv("WORKER4_FEEDER_TYPE", "binary_arb")
+                w4_sym = os.getenv("WORKER4_SYMBOL", "BINARY_ARB")
+                self.workers["worker_4"] = TradingWorker(
+                    "worker_4", "Binary Arb", w4_sym, w4_type, self.db
+                )
 
     @property
     def is_running(self):

@@ -31,7 +31,7 @@ SYMBOL_MAP = {
 class LimitlessOracleFeeder(BaseFeeder):
     def __init__(self, symbol: str, event_queue: asyncio.Queue):
         super().__init__(symbol.upper(), event_queue)
-        self.poll_interval = float(os.getenv("ORACLE_POLL_INTERVAL", "3"))
+        self.poll_interval = float(os.getenv("ORACLE_POLL_INTERVAL", "1.0"))
         self.momentum_window = int(os.getenv("ORACLE_MOMENTUM_WINDOW", "30"))
         self.min_momentum_pct = float(os.getenv("ORACLE_MIN_MOMENTUM_PCT", "0.05"))
         self.min_edge_pct = float(os.getenv("ORACLE_MIN_EDGE_PCT", "0.08"))
@@ -159,7 +159,7 @@ async def _scan_markets(http_client, feeder):
     pct_change = feeder._calc_momentum()
     abs_change = abs(pct_change)
 
-    if abs_change < feeder.min_momentum_pct:
+    if abs_change < 0.01: # Reducido a 0.01% para capturar fluctuaciones de alta frecuencia
         return
 
     momentum_direction = 1 if pct_change > 0 else -1
@@ -177,11 +177,8 @@ async def _scan_markets(http_client, feeder):
             continue
 
         slug_lower = slug.lower()
-        asset_match = False
-        for keyword in SYMBOL_MAP.get(feeder._base_asset, []):
-            if keyword in slug_lower:
-                asset_match = True
-                break
+        # Escanear TODOS los activos crypto (BTC, ETH, SOL, BNB, XRP, DOGE)
+        asset_match = any(k in slug_lower for k in ["btc", "eth", "sol", "bnb", "xrp", "doge"])
         if not asset_match:
             continue
 
@@ -202,70 +199,40 @@ async def _scan_markets(http_client, feeder):
             expires_at = m.expiration_timestamp / 1000
 
         ttl = expires_at - now if expires_at > 0 else 9999
-        if ttl < 30 or ttl > 3600:
+        if ttl < 10 or ttl > 86400: # Flexibilizar ventana a 10s hasta 24h
             continue
 
-        fair_yes = min(0.95, max(0.05, 0.50 + pct_change * 8))
-        fair_no = min(0.95, max(0.05, 0.50 - pct_change * 8))
+        # ARBITRAJE PURO CUBIERTO: Comprar YES + Comprar NO simultáneamente
+        total_dual_cost = yes_price + no_price
 
-        signal = 0
-        edge = 0.0
-        chosen_price = 0.0
-        chosen_side = ""
-
-        if momentum_direction == 1 and yes_price < 0.50:
-            edge = fair_yes - yes_price
-            if edge >= feeder.min_edge_pct:
-                signal = 1
-                chosen_price = yes_price
-                chosen_side = "YES"
-
-        elif momentum_direction == -1 and no_price < 0.50:
-            edge = fair_no - no_price
-            if edge >= feeder.min_edge_pct:
-                signal = -1
-                chosen_price = no_price
-                chosen_side = "NO"
-
-        if signal != 0:
+        if total_dual_cost < 0.97 and total_dual_cost > 0.50:
+            net_arbitrage_edge = 1.0 - total_dual_cost
             feeder._seen_markets[slug] = now
             signals_emitted += 1
 
-            direction = "UP" if signal == 1 else "DOWN"
-            confidence = min(edge / 0.20, 1.0)
+            guaranteed_profit_usd = (1.0 - total_dual_cost) * 50.0
 
             print(
-                f"[Oracle Signal] {title} | "
-                f"{feeder._base_asset} momentum: {pct_change:+.3f}% ({direction}) | "
-                f"{chosen_side}@{chosen_price:.4f} | "
-                f"Fair: {fair_yes:.4f}/{fair_no:.4f} | "
-                f"Edge: {edge:+.4f} ({edge * 100:.1f}%) | "
-                f"Conf: {confidence:.2f} | "
-                f"TTL: {ttl:.0f}s | "
-                f"Price: ${feeder._binance_price:,.2f}"
+                f"[Binary Dual Arb] 🚨 {title} | "
+                f"YES: ${yes_price:.4f} | NO: ${no_price:.4f} | "
+                f"Costo Total: ${total_dual_cost:.4f} | "
+                f"Ganancia Neta Asegurada: +{net_arbitrage_edge:.2%} (${guaranteed_profit_usd:.2f} USD)"
             )
 
             event = PriceUpdateEvent(
-                symbol=f"oracle_{slug}",
-                price=chosen_price,
-                ask=chosen_price,
-                bid=chosen_price,
+                symbol=slug,
+                price=yes_price,
+                bid=yes_price,
+                ask=1.0 - no_price
             )
 
             event._arb_data = {
-                "type": "oracle_momentum",
-                "signal": signal,
-                "direction": direction,
-                "side": chosen_side,
-                "market_price": chosen_price,
+                "type": "binary_dual_arb",
                 "yes_price": yes_price,
                 "no_price": no_price,
-                "fair_yes": fair_yes,
-                "fair_no": fair_no,
-                "edge": edge,
-                "confidence": confidence,
-                "pct_change": pct_change,
-                "binance_price": feeder._binance_price,
+                "total_cost": total_dual_cost,
+                "edge": net_arbitrage_edge,
+                "guaranteed_profit_usd": guaranteed_profit_usd,
                 "title": title,
                 "slug": slug,
                 "expires_at": expires_at,

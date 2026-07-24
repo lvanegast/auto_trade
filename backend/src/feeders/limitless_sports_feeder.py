@@ -27,7 +27,7 @@ from src.events import PriceUpdateEvent
 class LimitlessSportsFeeder(BaseFeeder):
     def __init__(self, symbol: str, event_queue: asyncio.Queue):
         super().__init__(symbol.upper(), event_queue)
-        self.poll_interval = float(os.getenv("SPORTS_POLL_INTERVAL", "10"))
+        self.poll_interval = float(os.getenv("SPORTS_POLL_INTERVAL", "1.0"))
         self.min_volume = float(os.getenv("SPORTS_MIN_VOLUME", "100"))
         self.task = None
 

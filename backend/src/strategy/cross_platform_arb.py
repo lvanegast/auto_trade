@@ -115,6 +115,30 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         current_price = event.price
         self.teorical_probability = current_price
 
+        # Check Intra-Market Single Contract Arbitrage (YES_ask + NO_ask < 0.97)
+        real_bid = getattr(event, "bid", 0.0)
+        real_ask = getattr(event, "ask", 0.0)
+        if real_ask > 0 and real_bid > 0:
+            # En un contrato binario, el precio implícito de NO es (1 - bid)
+            no_ask = 1.0 - real_bid
+            total_intra_cost = real_ask + no_ask
+            if total_intra_cost < 0.97:
+                intra_edge = 1.0 - total_intra_cost
+                reason = (
+                    f"Intra-Market Arb: YES_ask={real_ask:.4f} + NO_ask={no_ask:.4f} = {total_intra_cost:.4f} | "
+                    f"Edge: {intra_edge:.2%} | Profit Asegurado: ${(1.0 - total_intra_cost) * 50.0:.2f}"
+                )
+                if self.db:
+                    self.db.log("INFO", f"[Intra-Arb] 🚨 OPORTUNIDAD CAPTURADA! {reason}", self.worker_id)
+                return SignalEvent(
+                    symbol=self.symbol,
+                    side="BUY",
+                    price=real_ask,
+                    reason=reason,
+                    amount=0.5,
+                    position_id=getattr(self, "_position_id", None)
+                )
+
         # Check if we have cross-platform data
         if self.event_id:
             both = self._tracker.get_both_prices(self.event_id)

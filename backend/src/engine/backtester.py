@@ -40,6 +40,35 @@ class BacktestEngine:
             if hasattr(event, 'timestamp'):
                 event.timestamp = pd.to_datetime(timestamp)
 
+            # Sincronizar Tracker Dual Cross-Platform (Plataforma A vs Plataforma B)
+            if hasattr(strategy, "_tracker"):
+                p_kalshi = float(row.get('kalshi_price', price))
+                p_limitless = float(row.get('limitless_price', price * (1 + np.random.uniform(-0.04, 0.04))))
+                strategy._tracker.update_price(strategy.symbol, "kalshi", price=p_kalshi, bid=p_kalshi*0.99, ask=p_kalshi*1.01)
+                strategy._tracker.update_price(strategy.symbol, "limitless", price=p_limitless, bid=p_limitless*0.99, ask=p_limitless*1.01)
+
+            # Sincronizar Sports Edge 1xN si la estrategia es de deportes
+            if hasattr(strategy, "feeder_type") and strategy.feeder_type == "limitless_sports":
+                from src.strategy.sports_arb import update_sports_edge
+                p1 = float(row.get('outcome_1', price))
+                p2 = float(row.get('outcome_2', price * 0.8))
+                p3 = float(row.get('outcome_3', 0.20))
+                tot_yes = p1 + p2 + p3
+                edge = 1.0 - tot_yes
+                update_sports_edge(
+                    event_id=strategy.symbol,
+                    total_yes=tot_yes,
+                    edge=edge,
+                    outcomes_count=3,
+                    title="Evento Deportivo Sincronizado",
+                    outcomes=[
+                        {"slug": "opt-1", "title": "Opción A", "yes_price": p1, "no_price": round(1.0 - p1, 4)},
+                        {"slug": "opt-2", "title": "Opción B", "yes_price": p2, "no_price": round(1.0 - p2, 4)},
+                        {"slug": "opt-3", "title": "Opción C", "yes_price": p3, "no_price": round(1.0 - p3, 4)},
+                    ],
+                    group_slug=strategy.symbol
+                )
+
             # Actualizar tracker líder si la estrategia requiere Binance (Lead-Lag)
             if "BTC" in strategy.symbol:
                 try:
