@@ -19,8 +19,10 @@ class OracleMomentumStrategy(BaseStrategy):
         self,
         symbol: str,
         position_size_usd: float = 50.0,
-        stop_loss_pct: float = 0.40,
+        stop_loss_pct: float = 0.15,
+        take_profit_pct: float = 0.20,
         max_hold_seconds: float = 900,
+        cooldown_seconds: float = 30.0,
         db=None,
         worker_id: str = "worker_4",
     ):
@@ -31,8 +33,14 @@ class OracleMomentumStrategy(BaseStrategy):
         self.stop_loss_pct = float(
             os.getenv("ORACLE_STOP_LOSS_PCT", str(stop_loss_pct))
         )
+        self.take_profit_pct = float(
+            os.getenv("ORACLE_TAKE_PROFIT_PCT", str(take_profit_pct))
+        )
         self.max_hold_seconds = float(
             os.getenv("ORACLE_MAX_HOLD", str(max_hold_seconds))
+        )
+        self.cooldown_seconds = float(
+            os.getenv("ORACLE_COOLDOWN_SECONDS", str(cooldown_seconds))
         )
         self.min_edge = float(os.getenv("ORACLE_MIN_EDGE_PCT", "0.08"))
         self.min_confidence = float(os.getenv("ORACLE_MIN_CONFIDENCE", "0.30"))
@@ -44,6 +52,7 @@ class OracleMomentumStrategy(BaseStrategy):
         self._entry_price = 0.0
         self._position_id = None
         self._pending_signals = []
+        self._last_exit_time = 0.0
 
     def on_price_update(self, event: PriceUpdateEvent):
         super().on_price_update(event)
@@ -54,6 +63,10 @@ class OracleMomentumStrategy(BaseStrategy):
 
         if self._current_signal is not None:
             return self._check_exit(event, arb_data)
+
+        now = time.time()
+        if (now - self._last_exit_time) < self.cooldown_seconds:
+            return None
 
         signal = arb_data["signal"]
         edge = arb_data["edge"]
@@ -76,6 +89,13 @@ class OracleMomentumStrategy(BaseStrategy):
         if edge < self.min_edge:
             return None
         if confidence < self.min_confidence:
+            return None
+
+        from src.engine.friction_guard import friction_guard
+        is_profitable, net_edge, _reason, _details = friction_guard.validate_arbitrage_profitability(
+            "limitless", "limitless", edge, self.position_size_usd
+        )
+        if not is_profitable:
             return None
 
         if self.db:
@@ -142,12 +162,12 @@ class OracleMomentumStrategy(BaseStrategy):
 
         side = self._current_signal["side"]
         entry_price = self._current_signal["market_price"]
-        self._current_signal["slug"]
-        self._current_signal["title"]
+        slug = self._current_signal["slug"]
+        title = self._current_signal["title"]
         shares = self._current_signal["shares"]
 
         current_price = arb_data["yes_price"] if side == "YES" else arb_data["no_price"]
-        shares * (current_price - entry_price)
+        pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0.0
 
         if current_price >= 0.95:
             return self._close(
@@ -158,6 +178,12 @@ class OracleMomentumStrategy(BaseStrategy):
         if elapsed >= self.max_hold_seconds:
             return self._close(
                 f"Time Stop ({elapsed:.0f}s)",
+                sell_price=current_price,
+            )
+
+        if pnl_pct >= self.take_profit_pct:
+            return self._close(
+                f"Take Profit ({pnl_pct:+.2%})",
                 sell_price=current_price,
             )
 
@@ -188,10 +214,10 @@ class OracleMomentumStrategy(BaseStrategy):
         slug = sig["slug"]
         shares = sig["shares"]
         entry_price = sig["market_price"]
-        sig.get("expected_profit", 0)
 
         self._current_signal = None
         self._position_id = None
+        self._last_exit_time = asyncio.get_event_loop().time()
 
         if sell_price <= 0:
             sell_price = 0.0

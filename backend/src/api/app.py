@@ -1158,6 +1158,20 @@ async def release_stop():
     }
 
 
+@app.post("/api/circuit-breaker/reset")
+async def reset_circuit_breaker():
+    """Reset the circuit breaker after daily loss halt."""
+    from src.engine.circuit_breaker import circuit_breaker
+    circuit_breaker.reset_circuit()
+    current_equity = db.get_total_equity_usd()
+    circuit_breaker.starting_capital_day = current_equity
+    db.log("INFO", f"Circuit breaker reset. Capital inicial: ${current_equity:.2f}", "ALL")
+    return {
+        "status": "RESET",
+        "message": f"Circuit breaker reset. Capital inicial: ${current_equity:.2f}",
+    }
+
+
 @app.post("/api/unpause-worker/{worker_id}")
 async def unpause_worker(worker_id: str):
     """Manually unpause a worker that was auto-paused for consecutive losses."""

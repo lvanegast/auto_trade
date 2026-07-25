@@ -18,6 +18,7 @@ and read here on each PriceUpdateEvent.
 
 import asyncio
 import os
+import time as _time
 from src.strategy.base import BaseStrategy
 from src.events import PriceUpdateEvent, SignalEvent
 
@@ -104,7 +105,7 @@ class SportsArbitrageStrategy(BaseStrategy):
             return self._pending_signals.pop(0)
 
         event_id = event.symbol
-        now = asyncio.get_event_loop().time()
+        now = _time.time()
 
         # 2. Check exit for active arb groups
         if event_id in self._arb_groups:
@@ -134,10 +135,8 @@ class SportsArbitrageStrategy(BaseStrategy):
 
         # Filtro de Rentabilidad Neta Anti-Fricción
         from src.engine.friction_guard import friction_guard
-        is_profitable, net_edge, reason_guard = friction_guard.validate_arbitrage_profitability(
-            feeder_type=self.feeder_type,
-            gross_edge_pct=abs(self.edge),
-            position_size_usd=self.position_size_usd
+        is_profitable, net_edge, reason_guard, friction_details = friction_guard.validate_arbitrage_profitability(
+            self.feeder_type, self.feeder_type, abs(self.edge), self.position_size_usd
         )
         if not is_profitable:
             return None
@@ -317,7 +316,7 @@ class SportsArbitrageStrategy(BaseStrategy):
         if not group:
             return None
 
-        self._last_exit_time[event_id] = asyncio.get_event_loop().time()
+        self._last_exit_time[event_id] = _time.time()
 
         arb_type = group["arb_type"]
         outcomes = group["outcomes"]
