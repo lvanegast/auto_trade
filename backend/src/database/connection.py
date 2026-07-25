@@ -4,7 +4,9 @@ from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env from project root (parent of backend/)
+_load_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+load_dotenv(os.path.join(_load_dir, ".env"), override=True)
 
 
 class DatabaseManager:
@@ -148,6 +150,8 @@ class DatabaseManager:
             "ALTER TABLE portfolio_state ALTER COLUMN asset TYPE VARCHAR(100);",
             "ALTER TABLE positions ALTER COLUMN symbol TYPE VARCHAR(100);",
             "ALTER TABLE trades ALTER COLUMN symbol TYPE VARCHAR(100);",
+            "ALTER TABLE positions ALTER COLUMN entry_lead_price DROP NOT NULL;",
+            "ALTER TABLE positions ALTER COLUMN amount DROP NOT NULL;",
         ]
 
         conn = None
@@ -432,3 +436,57 @@ class DatabaseManager:
     def get_open_position_by_worker(self, worker_id: str):
         positions = self.get_open_positions(worker_id=worker_id)
         return positions[0] if positions else None
+
+    def save_position(
+        self,
+        worker_id: str,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        amount: float = None,
+        entry_lead_price: float = None,
+        stop_loss_price: float = None,
+        take_profit_price: float = None,
+    ) -> int:
+        return self.save_open_position(
+            worker_id=worker_id,
+            symbol=symbol,
+            side=side,
+            entry_price=entry_price,
+            entry_lead_price=entry_lead_price,
+            amount=amount,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
+        )
+
+    def get_all_positions(self, limit: int = 50, worker_id: str = None):
+        if worker_id:
+            query = "SELECT * FROM positions WHERE worker_id = %s ORDER BY entry_time DESC LIMIT %s;"
+            params = (worker_id, limit)
+        else:
+            query = "SELECT * FROM positions ORDER BY entry_time DESC LIMIT %s;"
+            params = (limit,)
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, params)
+                return cursor.fetchall()
+        finally:
+            self._return_connection(conn)
+
+    def get_position_history(self, limit: int = 50, worker_id: str = None):
+        if worker_id:
+            query = "SELECT * FROM positions WHERE status = 'CLOSED' AND worker_id = %s ORDER BY exit_time DESC LIMIT %s;"
+            params = (worker_id, limit)
+        else:
+            query = "SELECT * FROM positions WHERE status = 'CLOSED' ORDER BY exit_time DESC LIMIT %s;"
+            params = (limit,)
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, params)
+                return cursor.fetchall()
+        finally:
+            self._return_connection(conn)

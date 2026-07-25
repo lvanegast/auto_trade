@@ -24,7 +24,7 @@ class _BinanceFeederWebSocket(AsyncWebSocketManager):
             return
 
         bid = float(ticker.get("b", 0.0))
-        ask = float(ticker.get("B", 0.0))
+        ask = float(ticker.get("a", 0.0))
         price = round((bid + ask) / 2.0, 4) if bid > 0 and ask > 0 else bid or ask
 
         event = PriceUpdateEvent(symbol=self.symbol, price=price, ask=ask, bid=bid)

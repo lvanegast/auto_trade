@@ -4,6 +4,11 @@ import requests
 import uuid
 import datetime
 
+# Load .env from project root before anything else
+from dotenv import load_dotenv as _ld
+_load_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_ld(os.path.join(_load_dir, ".env"), override=True)
+
 # Forzar aceleración a 1.0 segundo para escaneo de Alta Frecuencia (HFT) en tiempo real
 os.environ["SPORTS_POLL_INTERVAL"] = "1.0"
 os.environ["ORACLE_POLL_INTERVAL"] = "1.0"
@@ -23,6 +28,7 @@ from src.feeders.limitless_sports_feeder import LimitlessSportsFeeder
 from src.feeders.binary_arb_feeder import LimitlessOracleFeeder
 from src.strategy.sports_arb import SportsArbitrageStrategy
 from src.strategy.binary_arb_strategy import OracleMomentumStrategy
+from src.strategy.market_making_strategy import MarketMakingStrategy
 from src.core.security import security_guard
 from src.websocket_server import ws_server, make_event
 
@@ -74,6 +80,18 @@ class TradingWorker:
                 db=self.db,
                 worker_id=self.worker_id,
             )
+        elif self.feeder_type == "maker_making":
+            self.strategy = MarketMakingStrategy(
+                self.symbol,
+                position_size_usd=float(os.getenv("MM_POSITION_SIZE_USD", "25.0")),
+                half_spread_pct=float(os.getenv("MM_HALF_SPREAD_PCT", "0.02")),
+                min_spread_pct=float(os.getenv("MM_MIN_SPREAD_PCT", "0.01")),
+                max_inventory=int(os.getenv("MM_MAX_INVENTORY", "5")),
+                cooldown_seconds=float(os.getenv("MM_COOLDOWN_SECONDS", "10.0")),
+                min_edge_pct=float(os.getenv("MM_MIN_EDGE_PCT", "0.005")),
+                db=self.db,
+                worker_id=self.worker_id,
+            )
         else:
             self.strategy = LeadLagArbitrageStrategy(
                 self.symbol, db=self.db, worker_id=self.worker_id
@@ -97,6 +115,8 @@ class TradingWorker:
             self.feeder = LimitlessSportsFeeder(self.symbol, self.queue)
         elif self.feeder_type == "binary_arb":
             self.feeder = LimitlessOracleFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "maker_making":
+            self.feeder = LimitlessFeeder(self.symbol, self.queue)
         elif self.feeder_type == "hyperliquid":
             from src.feeders.hyperliquid_feeder import HyperliquidFeeder
             self.feeder = HyperliquidFeeder(self.symbol, self.queue)
@@ -174,6 +194,7 @@ class TradingWorker:
             "limitless",
             "limitless_sports",
             "binary_arb",
+            "maker_making",
         ):
             return symbol, "USD"
 
@@ -430,6 +451,7 @@ class TradingWorker:
                                     "price_update",
                                     {
                                         "symbol": event.symbol,
+                                        "worker_id": self.worker_id,
                                         "price": event.price,
                                         "bid": event.bid,
                                         "ask": event.ask,
@@ -689,11 +711,11 @@ class TradingWorker:
                         side=signal.side,
                         price=price,
                         amount=float(abs(units)),
+                        total=float(abs(units)) * price,
                         external_order_id=str(trade_id),
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
-                        trading_mode=self.trading_mode,
                     )
                     await self._sync_oanda_portfolio()
                 else:
@@ -786,11 +808,11 @@ class TradingWorker:
                             side=signal.side,
                             price=price,
                             amount=float(contracts_count),
+                            total=float(contracts_count) * price,
                             external_order_id=str(order_id),
                             status="COMPLETED",
                             worker_id=self.worker_id,
                             position_id=getattr(signal, "position_id", None),
-                            trading_mode=self.trading_mode,
                         )
                         await self._sync_kalshi_portfolio()
                     else:
@@ -824,10 +846,10 @@ class TradingWorker:
                         side="BUY",
                         price=price,
                         amount=contracts_count,
+                        total=spend_amount,
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
-                        trading_mode=self.trading_mode,
                     )
                     self._update_db_portfolio(self.quote_asset, new_quote)
                     self._update_db_portfolio(self.base_asset, new_base)
@@ -859,10 +881,10 @@ class TradingWorker:
                         side="SELL",
                         price=price,
                         amount=amount_to_sell,
+                        total=revenue,
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
-                        trading_mode=self.trading_mode,
                     )
                     self._update_db_portfolio(self.quote_asset, new_quote)
                     self._update_db_portfolio(self.base_asset, new_base)
@@ -901,10 +923,10 @@ class TradingWorker:
                 side="BUY",
                 price=price,
                 amount=amount_to_buy,
+                total=spend_amount,
                 status="COMPLETED",
                 worker_id=self.worker_id,
                 position_id=getattr(signal, "position_id", None),
-                trading_mode=self.trading_mode,
             )
             self._update_db_portfolio(self.quote_asset, new_quote)
             self._update_db_portfolio(self.base_asset, new_base)
@@ -960,10 +982,10 @@ class TradingWorker:
                 side="SELL",
                 price=price,
                 amount=amount_to_sell,
+                total=revenue,
                 status="COMPLETED",
                 worker_id=self.worker_id,
                 position_id=getattr(signal, "position_id", None),
-                trading_mode=self.trading_mode,
             )
             self._update_db_portfolio(self.quote_asset, new_quote)
             self._update_db_portfolio(self.base_asset, new_base)
@@ -1248,7 +1270,7 @@ class TradingWorker:
                         self.worker_id,
                     )
                     await self._generate_synthetic_history()
-            elif self.feeder_type in ("limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal"):
+            elif self.feeder_type in ("limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal", "maker_making"):
                 self.db.log(
                     "INFO",
                     f"{self.feeder_type}: omitiendo historial sintético (esperando datos reales del feeder)...",
@@ -1264,7 +1286,7 @@ class TradingWorker:
                 f"Error al pre-cargar datos históricos: {e}.",
                 self.worker_id,
             )
-            if self.feeder_type not in ("limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal"):
+            if self.feeder_type not in ("limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal", "maker_making"):
                 try:
                     await self._generate_synthetic_history()
                 except Exception:
@@ -1392,10 +1414,26 @@ class TradingEngine:
             self.workers["worker_3"] = TradingWorker(
                 "worker_3", "Sports Arbitrage 1xN", "SPORTS", "limitless_sports", self.db
             )
-            # Worker 4: Arbitraje Cross-Platform / Intra-Platform en Opciones Binarias Crypto (5m, 10m, 15m)
-            self.workers["worker_4"] = TradingWorker(
-                "worker_4", "Crypto Binary Arb 5m", "BTC-5MIN-UP-OR-DOWN", "binary_arb", self.db
-            )
+            # Worker 4: Market Making or Binary Arb (toggle with WORKER4_STRATEGY)
+            w4_strategy = os.getenv("WORKER4_STRATEGY", "binary_arb")
+            try:
+                if w4_strategy == "maker_making":
+                    w4_worker = TradingWorker(
+                        "worker_4", "Market Making", "core-pce-yoy-june-2026-1784042260443", "maker_making", self.db
+                    )
+                    self.workers["worker_4"] = w4_worker
+                    with open("w4_debug.txt", "w") as _f: _f.write(f"CREATED: name={w4_worker.name} feeder={w4_worker.feeder_type} strategy={type(w4_worker.strategy).__name__}\n")
+                else:
+                    self.workers["worker_4"] = TradingWorker(
+                        "worker_4", "Crypto Binary Arb 5m", "BTC-5MIN-UP-OR-DOWN", "binary_arb", self.db
+                    )
+                    with open("w4_debug.txt", "w") as _f: _f.write(f"ELSE BRANCH: strategy={w4_strategy}\n")
+            except Exception as e:
+                import traceback
+                with open("w4_debug.txt", "w") as _f: _f.write(f"ERROR: {e}\n{traceback.format_exc()}\n")
+                self.workers["worker_4"] = TradingWorker(
+                    "worker_4", "Crypto Binary Arb 5m", "BTC-5MIN-UP-OR-DOWN", "binary_arb", self.db
+                )
             # Worker 5: Arbitraje Intra-Market (YES_ask + NO_ask < 0.97)
             self.workers["worker_5"] = TradingWorker(
                 "worker_5", "Intra-Market YES/NO Arb", "us-recession-by-end-of-2026-1767804297592", "limitless", self.db
@@ -1461,10 +1499,17 @@ class TradingEngine:
 
             w4_enabled = os.getenv("WORKER4_ENABLED", "true").lower() == "true"
             if w4_enabled:
-                w4_type = os.getenv("WORKER4_FEEDER_TYPE", "binary_arb")
-                w4_sym = os.getenv("WORKER4_SYMBOL", "BINARY_ARB")
+                w4_strategy = os.getenv("WORKER4_STRATEGY", "binary_arb")
+                if w4_strategy == "maker_making":
+                    w4_type = "maker_making"
+                    w4_sym = os.getenv("WORKER4_SYMBOL", "SPORTS")
+                    w4_name = "Market Making"
+                else:
+                    w4_type = os.getenv("WORKER4_FEEDER_TYPE", "binary_arb")
+                    w4_sym = os.getenv("WORKER4_SYMBOL", "BINARY_ARB")
+                    w4_name = "Binary Arb"
                 self.workers["worker_4"] = TradingWorker(
-                    "worker_4", "Binary Arb", w4_sym, w4_type, self.db
+                    "worker_4", w4_name, w4_sym, w4_type, self.db
                 )
 
     @property

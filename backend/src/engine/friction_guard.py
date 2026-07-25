@@ -61,7 +61,7 @@ class ExecutionFrictionGuard:
         }
 
         # Margen neto mínimo requerido después de restar toda la fricción
-        self.min_net_margin_pct = float(os.getenv("MIN_NET_MARGIN_PCT", "0.01"))  # 1.0% neto mínimo
+        self.min_net_margin_pct = float(os.getenv("MIN_NET_MARGIN_PCT", "0.005"))  # 0.5% neto mínimo
 
     def calculate_friction(self, feeder_type: str, position_size_usd: float) -> Dict[str, float]:
         """Calcula el costo total de fricción en dólares USD para un tamaño de posición."""

@@ -92,6 +92,39 @@ async def get_workers():
     return res
 
 
+@app.get("/api/debug_tasks")
+async def debug_tasks(worker_id: str = "worker_1"):
+    if worker_id not in engine.workers:
+        return {"error": "Worker not found"}
+    worker = engine.workers[worker_id]
+    
+    def task_info(task):
+        if task is None:
+            return "None"
+        info = {
+            "done": task.done(),
+            "cancelled": task.cancelled(),
+        }
+        if task.done():
+            try:
+                info["result"] = str(task.result())
+            except Exception as e:
+                info["exception"] = f"{type(e).__name__}: {e}"
+        return info
+
+    return {
+        "worker_id": worker_id,
+        "is_running": worker.is_running,
+        "engine_task": task_info(getattr(worker, "engine_task", None)),
+        "feeder_task": task_info(getattr(worker, "feeder_task", None)),
+        "sync_task": task_info(getattr(worker, "sync_task", None)),
+        "feeder_running": getattr(worker.feeder, "running", None) if hasattr(worker, "feeder") else None,
+        "feeder_ws_running": getattr(worker.feeder._ws_manager, "_running", None) if (hasattr(worker, "feeder") and getattr(worker.feeder, "_ws_manager", None)) else None,
+        "feeder_ws_task": task_info(getattr(worker.feeder._ws_manager, "_task", None)) if (hasattr(worker, "feeder") and getattr(worker.feeder, "_ws_manager", None)) else None,
+        "prices_df_len": len(worker.strategy.prices_df),
+    }
+
+
 @app.get("/api/status")
 async def get_status(worker_id: str = "worker_1"):
     """Obtiene el estado actual de un worker específico, el portafolio, indicadores y precios."""
@@ -555,7 +588,9 @@ async def get_positions(limit: int = 50, worker_id: str = None, status: str = No
         formatted = []
         for p in positions:
             entry_time = p["entry_time"]
-            close_time = p.get("close_time")
+            close_price = p.get("exit_price") if p.get("exit_price") is not None else p.get("close_price")
+            close_time = p.get("exit_time") if p.get("exit_time") is not None else p.get("close_time")
+            close_reason = p.get("exit_reason") if p.get("exit_reason") is not None else p.get("close_reason")
             formatted.append(
                 {
                     "id": p["id"],
@@ -563,15 +598,19 @@ async def get_positions(limit: int = 50, worker_id: str = None, status: str = No
                     "symbol": p["symbol"],
                     "side": p["side"],
                     "entry_price": float(p["entry_price"]),
-                    "entry_lead_price": float(p["entry_lead_price"]),
-                    "amount": float(p["amount"]),
+                    "entry_lead_price": float(p["entry_lead_price"])
+                    if p.get("entry_lead_price") is not None
+                    else None,
+                    "amount": float(p["amount"])
+                    if p.get("amount") is not None
+                    else None,
                     "entry_time": _format_utc_iso(entry_time),
                     "status": p["status"],
-                    "close_price": float(p["close_price"])
-                    if p.get("close_price")
+                    "close_price": float(close_price)
+                    if close_price is not None
                     else None,
                     "close_time": _format_utc_iso(close_time),
-                    "close_reason": p.get("close_reason"),
+                    "close_reason": close_reason,
                     "pnl": float(p["pnl"]) if p.get("pnl") is not None else None,
                 }
             )

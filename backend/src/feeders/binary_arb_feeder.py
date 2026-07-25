@@ -94,7 +94,7 @@ class LimitlessOracleFeeder(BaseFeeder):
                             ticker = data.get("data", {})
                             if ticker:
                                 bid = float(ticker.get("b", 0))
-                                ask = float(ticker.get("B", 0))
+                                ask = float(ticker.get("a", 0))
                                 price = (
                                     round((bid + ask) / 2, 4)
                                     if bid > 0 and ask > 0

@@ -183,6 +183,10 @@ function handleWsEvent(event) {
             break;
 
         case "price_update":
+            // Verificar aislamiento: procesar solo si el evento corresponde al worker o símbolo activo en pantalla
+            if (data.worker_id && data.worker_id !== activeWorkerId) {
+                break;
+            }
             // Actualizar en tiempo real
             lastPrice = data.price;
             updateTickerDisplay({
@@ -192,8 +196,7 @@ function handleWsEvent(event) {
                 edge: data.edge,
                 last_position: data.last_position,
             });
-            const isHighValSymbol = data.symbol && (data.symbol.includes("BTC") || data.symbol.includes("ETH"));
-            if (data.price && data.price > 0 && (!isHighValSymbol || data.price > 100)) {
+            if (data.price && data.price > 0) {
                 pushTick(data.price);
             }
             updatePositionDisplay(data);
@@ -1114,6 +1117,7 @@ function pushTick(price) {
     const isHighVal = lastActiveSymbol && (lastActiveSymbol.includes("BTC") || lastActiveSymbol.includes("ETH"));
     if (isHighVal && price <= 100) return;
     const now = Math.floor(Date.now() / 1000);
+    console.log(`[pushTick] price=${price} now=${now} lastActiveSymbol=${lastActiveSymbol}`);
     tickBuffer.push({ time: now, price: price });
 
     const maxTicks = 30000;
@@ -1136,6 +1140,7 @@ function pushTick(price) {
             const rawBucketSec = Math.floor(rawBucket / 1000);
             
             const rawLast = rawCandles[rawCandles.length - 1];
+            console.log(`[pushTick] rawLast.time=${rawLast ? rawLast.time : 'none'} rawBucketSec=${rawBucketSec}`);
             if (!rawLast || rawLast.time !== rawBucketSec) {
                 rawCandles.push({ time: rawBucketSec, open: price, high: price, low: price, close: price });
             } else {
@@ -1651,20 +1656,31 @@ function switchWorker(workerId) {
     inputTotal.value = "";
     clearActivePct();
 
-    // Resetear buffers de chart para forzar recarga de datos
+    // Resetear completamente buffers y series del gráfico para evitar contaminación entre activos
     lastActiveSymbol = "";
     lastPrice = 0.0;
     tickBuffer = [];
     rawCandles = [];
     candleBuffer = [];
+    tradeMarkers = [];
+    _currentCandleBucket = null;
+    _currentCandle = null;
+
     if (candleSeries) {
-        try { candleSeries.setData([]); } catch (_) {}
+        try { 
+            candleSeries.setData([]); 
+            candleSeries.setMarkers([]);
+        } catch (_) {}
     }
+    if (comparisonSeries) {
+        try { comparisonSeries.setData([]); } catch (_) {}
+    }
+    clearTradeLines();
 
     // Reconectar WebSocket al nuevo worker
     connectWebSocket(workerId);
 
-    // Fallback inicial mientras el WS conecta
+    // Cargar el estado aislado del nuevo worker seleccionado
     fetchStatus();
     fetchLogs();
     fetchTrades();
@@ -1761,8 +1777,9 @@ async function fetchStatus() {
             eventExpirationTime = null;
         }
 
-        // Alimentar gráfica desde el histórico del backend SOLO si cambiamos de activo (evitar setData innecesario)
+        // Alimentar gráfica desde el histórico del backend SOLO si cambiamos de activo
         if (data.price_history && data.price_history.length > 0 && data.symbol !== lastActiveSymbol) {
+            lastActiveSymbol = data.symbol;
             const isHighValueAsset = data.symbol && (data.symbol.includes("BTC") || data.symbol.includes("ETH"));
             
             tickBuffer = data.price_history.map(item => {
