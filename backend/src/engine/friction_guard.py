@@ -60,16 +60,24 @@ class ExecutionFrictionGuard:
 
         self.min_net_margin_pct = float(os.getenv("MIN_NET_MARGIN_PCT", "0.020"))
 
-    def calculate_friction(self, feeder_type: str, position_size_usd: float) -> Dict[str, float]:
+    def calculate_friction(self, feeder_type: str, position_size_usd: float, execution_role: str = "maker") -> Dict[str, float]:
         info = self.friction_table.get(feeder_type, {
             "commission_pct": 0.002,
             "gas_fee_usd": 0.0,
             "slippage_pct": 0.001,
         })
 
-        commission_cost = position_size_usd * info["commission_pct"]
+        if execution_role == "maker":
+            # Maker orders have 0% commission on prediction markets (Polymarket/Limitless) and 0 slippage
+            commission_pct = 0.00 if feeder_type in ("polymarket", "limitless", "limitless_sports", "kalshi") else info["commission_pct"] * 0.5
+            slippage_pct = 0.00  # Limit Post-Only orders fill at or better than limit price
+        else:
+            commission_pct = info["commission_pct"]
+            slippage_pct = info["slippage_pct"]
+
+        commission_cost = position_size_usd * commission_pct
         gas_cost = info["gas_fee_usd"]
-        slippage_cost = position_size_usd * info["slippage_pct"]
+        slippage_cost = position_size_usd * slippage_pct
         total_friction_usd = commission_cost + gas_cost + slippage_cost
         total_friction_pct = (total_friction_usd / position_size_usd) if position_size_usd > 0 else 0.0
 
@@ -79,13 +87,14 @@ class ExecutionFrictionGuard:
             "slippage_cost_usd": round(slippage_cost, 4),
             "total_friction_usd": round(total_friction_usd, 4),
             "total_friction_pct": round(total_friction_pct, 4),
+            "execution_role": execution_role,
         }
 
     def calculate_total_friction(
-        self, leg1_feeder: str, leg2_feeder: str, position_size_usd: float
+        self, leg1_feeder: str, leg2_feeder: str, position_size_usd: float, execution_role: str = "maker"
     ) -> Dict[str, Any]:
-        leg1_friction = self.calculate_friction(leg1_feeder, position_size_usd)
-        leg2_friction = self.calculate_friction(leg2_feeder, position_size_usd)
+        leg1_friction = self.calculate_friction(leg1_feeder, position_size_usd, execution_role)
+        leg2_friction = self.calculate_friction(leg2_feeder, position_size_usd, execution_role)
 
         total_friction_usd = (
             leg1_friction["total_friction_usd"] + leg2_friction["total_friction_usd"]
@@ -113,9 +122,10 @@ class ExecutionFrictionGuard:
         leg2_feeder: str,
         gross_edge_pct: float,
         position_size_usd: float = 50.0,
+        execution_role: str = "maker",
     ) -> Tuple[bool, float, str, Dict[str, Any]]:
         friction_details = self.calculate_total_friction(
-            leg1_feeder, leg2_feeder, position_size_usd
+            leg1_feeder, leg2_feeder, position_size_usd, execution_role
         )
 
         net_edge_pct = gross_edge_pct - friction_details["total_friction_pct"]
@@ -125,7 +135,7 @@ class ExecutionFrictionGuard:
                 True,
                 net_edge_pct,
                 (
-                    f"APROBADO | Edge Bruto: {gross_edge_pct:.2%} | "
+                    f"APROBADO [{execution_role.upper()}] | Edge Bruto: {gross_edge_pct:.2%} | "
                     f"Fricción Total: -{friction_details['total_friction_pct']:.2%} | "
                     f"Net: +{net_edge_pct:.2%}"
                 ),
@@ -136,7 +146,7 @@ class ExecutionFrictionGuard:
                 False,
                 net_edge_pct,
                 (
-                    f"RECHAZADO | Edge Bruto: {gross_edge_pct:.2%} | "
+                    f"RECHAZADO [{execution_role.upper()}] | Edge Bruto: {gross_edge_pct:.2%} | "
                     f"Fricción Total: -{friction_details['total_friction_pct']:.2%} | "
                     f"Net: {net_edge_pct:.2%} < {self.min_net_margin_pct:.2%}"
                 ),
