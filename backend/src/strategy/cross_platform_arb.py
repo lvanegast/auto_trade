@@ -199,6 +199,11 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
             no_ask = 1.0 - real_bid
             total_intra_cost = real_ask + no_ask
             if total_intra_cost < 0.97:
+                now = asyncio.get_event_loop().time()
+                if now - self.last_exit_time < self.cooldown_seconds:
+                    return None
+                if self.last_position is not None:
+                    return None
                 intra_edge = 1.0 - total_intra_cost
                 if self.db:
                     self.db.log(
