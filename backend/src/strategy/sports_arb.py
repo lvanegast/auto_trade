@@ -90,6 +90,8 @@ class SportsArbitrageStrategy(BaseStrategy):
         self._last_exit_time = {}
         # Pending signals queue for N sequential fills
         self._pending_signals = []
+        # Track pending event_ids to prevent duplicate entries while fills are in progress
+        self._pending_event_ids = set()
         # Current arb state for UI
         self.teorical_probability = 0.50
         self.edge = 0.0
@@ -111,6 +113,10 @@ class SportsArbitrageStrategy(BaseStrategy):
         if event_id in self._arb_groups:
             return self._evaluate_group_exit(event_id, event.price, now)
 
+        # 2b. Skip if we already have a pending entry for this event (prevent duplicates)
+        if event_id in self._pending_event_ids:
+            return None
+
         # 3. Cooldown check
         if event_id in self._last_exit_time:
             if now - self._last_exit_time[event_id] < self.cooldown_seconds:
@@ -122,10 +128,8 @@ class SportsArbitrageStrategy(BaseStrategy):
             self.edge = 0.0
             return None
 
-        edge_data["total_yes"]
         self.edge = edge_data["edge"]
         outcomes = edge_data.get("outcomes", [])
-        edge_data["outcomes_count"]
         title = edge_data.get("title", event_id)
         arb_type = edge_data.get("arb_type", "YES" if self.edge > 0 else "NO")
 
@@ -139,18 +143,25 @@ class SportsArbitrageStrategy(BaseStrategy):
             self.feeder_type, self.feeder_type, abs(self.edge), self.position_size_usd
         )
         if not is_profitable:
+            if self.db:
+                self.db.log("INFO", f"[Sports ARB] Friction reject: {reason_guard}", self.worker_id)
             return None
         if len(outcomes) < 2:
             return None
-        max_outcomes = int(os.getenv("MAX_ARB_OUTCOMES", "4"))
+        max_outcomes = int(os.getenv("MAX_ARB_OUTCOMES", "10"))
         if len(outcomes) > max_outcomes:
             return None
         if arb_type not in ("YES", "NO"):
             return None
 
-        # 6. Already in a group for this event?
+        # 6. Already in a group for this event? (memory + DB check)
         if event_id in self._arb_groups:
             return None
+        if self.db:
+            open_positions = self.db.get_open_positions(worker_id=self.worker_id)
+            for pos in open_positions:
+                if pos["symbol"].startswith(event_id + "_"):
+                    return None
 
         # 7. Calculate 1×N arbitrage
         total_cost = 0.0
@@ -194,20 +205,6 @@ class SportsArbitrageStrategy(BaseStrategy):
         per_outcome_amount = self.position_size_usd / len(outcomes)
         total_spend = per_outcome_amount * len(outcomes)
 
-        if self.db:
-            balances = {
-                item["asset"]: float(item["free_balance"])
-                for item in self.db.get_portfolio(self.worker_id)
-            }
-            available = balances.get("USD", 0.0)
-            if available < total_spend:
-                self.db.log(
-                    "WARNING",
-                    f"[Sports 1xN] Saldo insuficiente: ${available:.2f} < ${total_spend:.2f} para {len(outcomes)} outcomes",
-                    self.worker_id,
-                )
-                return None
-
         # 8. Record arb group
         self._arb_groups[event_id] = {
             "entry_time": now,
@@ -219,6 +216,7 @@ class SportsArbitrageStrategy(BaseStrategy):
             "position_ids": [],
             "total_spend": total_spend,
         }
+        self._pending_event_ids.add(event_id)
         self.total_opportunities += 1
 
         # 9. Generate N sequential BUY signals
@@ -316,6 +314,7 @@ class SportsArbitrageStrategy(BaseStrategy):
         if not group:
             return None
 
+        self._pending_event_ids.discard(event_id)
         self._last_exit_time[event_id] = _time.time()
 
         arb_type = group["arb_type"]

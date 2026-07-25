@@ -160,7 +160,7 @@ class LimitlessSportsFeeder(BaseFeeder):
 
         # Emitir actualización de precio regular para el worker (usando self.symbol para aislamiento estricto)
         event = PriceUpdateEvent(
-            symbol=self.symbol,
+            symbol=event_id,
             price=primary_price,
             ask=primary_price,
             bid=primary_price,

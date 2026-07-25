@@ -58,7 +58,7 @@ class ExecutionFrictionGuard:
             },
         }
 
-        self.min_net_margin_pct = float(os.getenv("MIN_NET_MARGIN_PCT", "0.02"))
+        self.min_net_margin_pct = float(os.getenv("MIN_NET_MARGIN_PCT", "0.020"))
 
     def calculate_friction(self, feeder_type: str, position_size_usd: float) -> Dict[str, float]:
         info = self.friction_table.get(feeder_type, {

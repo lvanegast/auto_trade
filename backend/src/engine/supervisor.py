@@ -87,7 +87,7 @@ class TradingWorker:
                 half_spread_pct=float(os.getenv("MM_HALF_SPREAD_PCT", "0.02")),
                 min_spread_pct=float(os.getenv("MM_MIN_SPREAD_PCT", "0.01")),
                 max_inventory=int(os.getenv("MM_MAX_INVENTORY", "5")),
-                cooldown_seconds=float(os.getenv("MM_COOLDOWN_SECONDS", "10.0")),
+                cooldown_seconds=float(os.getenv("MM_COOLDOWN_SECONDS", "30.0")),
                 min_edge_pct=float(os.getenv("MM_MIN_EDGE_PCT", "0.005")),
                 db=self.db,
                 worker_id=self.worker_id,
@@ -921,13 +921,33 @@ class TradingWorker:
                 spend_amount = quote_balance * 0.5
                 amount_to_buy = spend_amount / price
 
-            if quote_balance < spend_amount:
-                self.db.log(
-                    "WARNING",
-                    f"Saldo insuficiente. Requerido: {spend_amount:.2f} {self.quote_asset}, Disponible: {quote_balance:.2f} {self.quote_asset}.",
-                    self.worker_id,
-                )
-                return
+            if self.execution_type == "simulation":
+                # Simulation: allow virtual fills even with $0 balance
+                # Seed initial capital if portfolio is empty
+                if quote_balance < spend_amount and quote_balance <= 0.0:
+                    initial_capital = float(os.getenv("INITIAL_VIRTUAL_CAPITAL", "1000.0"))
+                    self.db.log(
+                        "INFO",
+                        f"Simulation: seeding ${initial_capital:.2f} virtual capital for {self.worker_id}",
+                        self.worker_id,
+                    )
+                    self._update_db_portfolio(self.quote_asset, initial_capital)
+                    quote_balance = initial_capital
+                elif quote_balance < spend_amount:
+                    self.db.log(
+                        "WARNING",
+                        f"Saldo insuficiente. Requerido: {spend_amount:.2f} {self.quote_asset}, Disponible: {quote_balance:.2f} {self.quote_asset}.",
+                        self.worker_id,
+                    )
+                    return
+            else:
+                if quote_balance < spend_amount:
+                    self.db.log(
+                        "WARNING",
+                        f"Saldo insuficiente. Requerido: {spend_amount:.2f} {self.quote_asset}, Disponible: {quote_balance:.2f} {self.quote_asset}.",
+                        self.worker_id,
+                    )
+                    return
 
             new_quote = quote_balance - spend_amount
             new_base = base_balance + amount_to_buy
@@ -1457,60 +1477,44 @@ class TradingEngine:
         profile_mode = os.getenv("WORKER_PROFILE_MODE", "pure_arbitrage").lower()
 
         if profile_mode == "pure_arbitrage":
-            # Perfil ARBITRAJE PURO SINO RIESGO DIRECCIONAL (Ganancia garantizada del 2-3% neto por evento)
-            # Worker 1: Desactivado / En espera (Worker 1 se trabajará después)
+            # Perfil ARBITRAJE PURO INTRADÍA (Ganancia garantizada >2% neto por evento en mercados del mismo día)
+            # Worker 1: Binance Spot Feed (Oráculo HFT de Referencia)
             self.workers["worker_1"] = TradingWorker(
                 "worker_1", "Binance Spot Feed", "BTCUSDT", "binance", self.db
             )
-            # Worker 2: Arbitraje Cross-Platform Regulado/DEX (Kalshi ↔ Polymarket ↔ Limitless Macro)
+            # Worker 2: Crypto Binary Arb 5m (Opciones Rápidas BTC Up/Down 5m)
             self.workers["worker_2"] = TradingWorker(
-                "worker_2", "Cross-Platform Macro Arb", "CORE-PCE-YOY-JUNE-2026-1784042260443", "limitless", self.db
+                "worker_2", "Crypto Binary Arb 5m", "BTC-5MIN-UP-OR-DOWN", "binary_arb", self.db
             )
-            # Worker 3: Arbitraje Deportivo 1xN (Cobertura Total sum(YES) < 1.00)
+            # Worker 3: Arbitraje Deportivo 1xN (Partidos de la Jornada de Hoy)
             self.workers["worker_3"] = TradingWorker(
-                "worker_3", "Sports Arbitrage 1xN", "SPORTS", "limitless_sports", self.db
+                "worker_3", "Sports Arbitrage Same-Day", "SPORTS", "limitless_sports", self.db
             )
-            # Worker 4: Market Making or Binary Arb (toggle with WORKER4_STRATEGY)
-            w4_strategy = os.getenv("WORKER4_STRATEGY", "binary_arb")
-            try:
-                if w4_strategy == "maker_making":
-                    w4_worker = TradingWorker(
-                        "worker_4", "Market Making", "core-pce-yoy-june-2026-1784042260443", "maker_making", self.db
-                    )
-                    self.workers["worker_4"] = w4_worker
-                    with open("w4_debug.txt", "w") as _f: _f.write(f"CREATED: name={w4_worker.name} feeder={w4_worker.feeder_type} strategy={type(w4_worker.strategy).__name__}\n")
-                else:
-                    self.workers["worker_4"] = TradingWorker(
-                        "worker_4", "Crypto Binary Arb 5m", "BTC-5MIN-UP-OR-DOWN", "binary_arb", self.db
-                    )
-                    with open("w4_debug.txt", "w") as _f: _f.write(f"ELSE BRANCH: strategy={w4_strategy}\n")
-            except Exception as e:
-                import traceback
-                with open("w4_debug.txt", "w") as _f: _f.write(f"ERROR: {e}\n{traceback.format_exc()}\n")
-                self.workers["worker_4"] = TradingWorker(
-                    "worker_4", "Crypto Binary Arb 5m", "BTC-5MIN-UP-OR-DOWN", "binary_arb", self.db
-                )
-            # Worker 5: Arbitraje Intra-Market (YES_ask + NO_ask < 0.97)
+            # Worker 4: Crypto Binary Arb 15m (Opciones BTC/ETH Up/Down 15m)
+            self.workers["worker_4"] = TradingWorker(
+                "worker_4", "Crypto Binary Arb 15m", "ETH-15MIN-UP-OR-DOWN", "binary_arb", self.db
+            )
+            # Worker 5: Arbitraje Intra-Market (YES_ask + NO_ask < 0.98) en eventos de hoy
             self.workers["worker_5"] = TradingWorker(
-                "worker_5", "Intra-Market YES/NO Arb", "us-recession-by-end-of-2026-1767804297592", "limitless", self.db
+                "worker_5", "Intra-Market Same-Day Arb", "SPORTS", "limitless_sports", self.db
             )
-            # Worker 6: NUEVO MÓDULO — Maker Liquidity Rewards Strategy ($0.00 Fees + Rebates Diarios)
+            # Worker 6: Maker Liquidity Rewards Intraday
             from src.strategy.maker_rewards_strategy import MakerLiquidityRewardsStrategy
             worker6 = TradingWorker(
-                "worker_6", "Maker Liquidity Rewards", "us-recession-by-end-of-2026-1767804297592", "limitless", self.db
+                "worker_6", "Maker Liquidity Rewards", "SPORTS", "limitless_sports", self.db
             )
             worker6.strategy = MakerLiquidityRewardsStrategy(
-                "us-recession-by-end-of-2026-1767804297592", db=self.db, worker_id="worker_6"
+                "SPORTS", db=self.db, worker_id="worker_6"
             )
             self.workers["worker_6"] = worker6
 
-            # Worker 7: NUEVO MÓDULO — NegRisk Multi-Outcome Arbitrage (Mercados Complejos 4 a 10 Opciones)
+            # Worker 7: NegRisk Multi-Outcome Arbitrage (Mercados Deportivos de Hoy 4 a 10 Opciones)
             from src.strategy.negrisk_strategy import NegRiskMultiOutcomeStrategy
             worker7 = TradingWorker(
-                "worker_7", "NegRisk 10x Arbitrage", "core-pce-yoy-june-2026-1784042260443", "limitless", self.db
+                "worker_7", "NegRisk Same-Day 10x Arb", "SPORTS", "limitless_sports", self.db
             )
             worker7.strategy = NegRiskMultiOutcomeStrategy(
-                "core-pce-yoy-june-2026-1784042260443", db=self.db, worker_id="worker_7"
+                "SPORTS", db=self.db, worker_id="worker_7"
             )
             self.workers["worker_7"] = worker7
         elif profile_mode == "crypto_hft_volatile":
