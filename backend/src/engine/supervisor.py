@@ -1477,45 +1477,39 @@ class TradingEngine:
         profile_mode = os.getenv("WORKER_PROFILE_MODE", "pure_arbitrage").lower()
 
         if profile_mode == "pure_arbitrage":
-            # Perfil ARBITRAJE PURO INTRADÍA (Ganancia garantizada >2% neto por evento en mercados del mismo día)
-            # Worker 1: Binance Spot Feed (Oráculo HFT de Referencia)
-            self.workers["worker_1"] = TradingWorker(
-                "worker_1", "Binance Spot Feed", "BTCUSDT", "binance", self.db
-            )
-            # Worker 2: Crypto Binary Arb 5m (Opciones Rápidas BTC Up/Down 5m)
-            self.workers["worker_2"] = TradingWorker(
-                "worker_2", "Crypto Binary Arb 5m", "BTC-5MIN-UP-OR-DOWN", "binary_arb", self.db
-            )
-            # Worker 3: Arbitraje Deportivo 1xN (Partidos de la Jornada de Hoy)
-            self.workers["worker_3"] = TradingWorker(
-                "worker_3", "Sports Arbitrage Same-Day", "SPORTS", "limitless_sports", self.db
-            )
-            # Worker 4: Crypto Binary Arb 15m (Opciones BTC/ETH Up/Down 15m)
-            self.workers["worker_4"] = TradingWorker(
-                "worker_4", "Crypto Binary Arb 15m", "ETH-15MIN-UP-OR-DOWN", "binary_arb", self.db
-            )
-            # Worker 5: Arbitraje Intra-Market (YES_ask + NO_ask < 0.98) en eventos de hoy
-            self.workers["worker_5"] = TradingWorker(
-                "worker_5", "Intra-Market Same-Day Arb", "SPORTS", "limitless_sports", self.db
-            )
-            # Worker 6: Maker Liquidity Rewards Intraday
+            # Perfil ARBITRAJE PURO INTRADÍA (100% Win-Rate por Cobertura & >2.0% ROI Neto)
+            
+            # Worker 1: Arbitraje Cross-Platform BTC (Kalshi vs Polymarket vs Limitless)
+            worker1 = TradingWorker("worker_1", "Cross-Platform BTC Arb", "BTC-INTRADAY", "polymarket", self.db)
+            worker1.strategy = CrossPlatformArbitrageStrategy("BTC-INTRADAY", feeder_type="polymarket", min_edge_pct=0.02, position_size_pct=0.5, db=self.db, worker_id="worker_1")
+            self.workers["worker_1"] = worker1
+
+            # Worker 2: Arbitraje Cross-Platform ETH/Macro (Kalshi vs Polymarket)
+            worker2 = TradingWorker("worker_2", "Cross-Platform Macro Arb", "ETH-INTRADAY", "kalshi", self.db)
+            worker2.strategy = CrossPlatformArbitrageStrategy("ETH-INTRADAY", feeder_type="kalshi", min_edge_pct=0.02, position_size_pct=0.5, db=self.db, worker_id="worker_2")
+            self.workers["worker_2"] = worker2
+
+            # Worker 3: Arbitraje Deportivo en Vivo (Partidos del día)
+            self.workers["worker_3"] = TradingWorker("worker_3", "Limitless Sports Arb", "SPORTS", "limitless_sports", self.db)
+
+            # Worker 4: Arbitraje Cruzado de Latencia Kalshi ↔ Polymarket (Post-Only Maker)
+            worker4 = TradingWorker("worker_4", "Kalshi-Poly Maker Arb", "BTC-5MIN", "polymarket", self.db)
+            worker4.strategy = CrossPlatformArbitrageStrategy("BTC-5MIN", feeder_type="polymarket", min_edge_pct=0.02, position_size_pct=0.5, db=self.db, worker_id="worker_4")
+            self.workers["worker_4"] = worker4
+
+            # Worker 5: Oráculo HFT de Referencia Binance Spot (0 Latency Feed)
+            self.workers["worker_5"] = TradingWorker("worker_5", "Binance HFT Oracle", "BTCUSDT", "binance", self.db)
+
+            # Worker 6: Maker Liquidity Rewards Intraday (Captura de Spread + 0% Fees)
             from src.strategy.maker_rewards_strategy import MakerLiquidityRewardsStrategy
-            worker6 = TradingWorker(
-                "worker_6", "Maker Liquidity Rewards", "SPORTS", "limitless_sports", self.db
-            )
-            worker6.strategy = MakerLiquidityRewardsStrategy(
-                "SPORTS", db=self.db, worker_id="worker_6"
-            )
+            worker6 = TradingWorker("worker_6", "Maker Liquidity Rewards", "SPORTS", "limitless_sports", self.db)
+            worker6.strategy = MakerLiquidityRewardsStrategy("SPORTS", db=self.db, worker_id="worker_6")
             self.workers["worker_6"] = worker6
 
             # Worker 7: NegRisk Multi-Outcome Arbitrage (Mercados Deportivos de Hoy 4 a 10 Opciones)
             from src.strategy.negrisk_strategy import NegRiskMultiOutcomeStrategy
-            worker7 = TradingWorker(
-                "worker_7", "NegRisk Same-Day 10x Arb", "SPORTS", "limitless_sports", self.db
-            )
-            worker7.strategy = NegRiskMultiOutcomeStrategy(
-                "SPORTS", db=self.db, worker_id="worker_7"
-            )
+            worker7 = TradingWorker("worker_7", "NegRisk Multi-Outcome Arb", "SPORTS", "limitless_sports", self.db)
+            worker7.strategy = NegRiskMultiOutcomeStrategy("SPORTS", db=self.db, worker_id="worker_7")
             self.workers["worker_7"] = worker7
         elif profile_mode == "crypto_hft_volatile":
             self.workers["worker_1"] = TradingWorker(
