@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timezone
 from src.feeders.base import BaseFeeder
 from src.feeders.connection_manager import AsyncWebSocketManager
 from src.events import PriceUpdateEvent
@@ -12,22 +13,62 @@ class _BinanceFeederWebSocket(AsyncWebSocketManager):
 
     def __init__(self, symbol: str, queue: asyncio.Queue, **kwargs):
         self.binance_symbol = symbol.replace("/", "").lower()
-        url = f"wss://stream.binance.com:9443/stream?streams={self.binance_symbol}@bookTicker"
+        # bookTicker conserva bid/ask para la estrategia; aggTrade aporta el
+        # último precio negociado para que la gráfica sí avance con el mercado.
+        url = (
+            f"wss://stream.binance.com:9443/stream?streams="
+            f"{self.binance_symbol}@bookTicker/{self.binance_symbol}@aggTrade"
+        )
         super().__init__(url=url, name=f"BinanceFeeder-{symbol}", **kwargs)
         self.queue = queue
         self.symbol = symbol
+        self._bid = 0.0
+        self._ask = 0.0
 
     async def on_message(self, data: dict):
-        data.get("stream", "")
+        stream = data.get("stream", "")
         ticker = data.get("data", {})
         if not ticker:
             return
 
-        bid = float(ticker.get("b", 0.0))
-        ask = float(ticker.get("a", 0.0))
-        price = round((bid + ask) / 2.0, 4) if bid > 0 and ask > 0 else bid or ask
+        if stream.endswith("@bookTicker"):
+            self._bid = float(ticker.get("b", 0.0))
+            self._ask = float(ticker.get("a", 0.0))
+            price = (
+                round((self._bid + self._ask) / 2.0, 4)
+                if self._bid > 0 and self._ask > 0
+                else self._bid or self._ask
+            )
+            chart_price = None
+            event_time_ms = ticker.get("E")
+        elif stream.endswith("@aggTrade"):
+            chart_price = float(ticker.get("p", 0.0))
+            if chart_price <= 0:
+                return
+            price = (
+                round((self._bid + self._ask) / 2.0, 4)
+                if self._bid > 0 and self._ask > 0
+                else chart_price
+            )
+            event_time_ms = ticker.get("T") or ticker.get("E")
+        else:
+            return
 
-        event = PriceUpdateEvent(symbol=self.symbol, price=price, ask=ask, bid=bid)
+        # Binance incluye la hora del evento en milisegundos. Conservarla
+        # evita que una cola o una reconexión desplace velas en el frontend.
+        timestamp = (
+            datetime.fromtimestamp(float(event_time_ms) / 1000, tz=timezone.utc)
+            if event_time_ms
+            else None
+        )
+        event = PriceUpdateEvent(
+            symbol=self.symbol,
+            price=price,
+            ask=self._ask or price,
+            bid=self._bid or price,
+            timestamp=timestamp,
+            chart_price=chart_price,
+        )
         await self.queue.put(event)
 
 

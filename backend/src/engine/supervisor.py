@@ -452,7 +452,12 @@ class TradingWorker:
                                     {
                                         "symbol": event.symbol,
                                         "worker_id": self.worker_id,
+                                        # Hora del tick de mercado en UTC. El
+                                        # frontend debe usarla para la vela,
+                                        # nunca su propio Date.now().
+                                        "timestamp": event.timestamp.isoformat(),
                                         "price": event.price,
+                                        "chart_price": event.chart_price,
                                         "bid": event.bid,
                                         "ask": event.ask,
                                         "teorical_probability": getattr(
@@ -1270,6 +1275,48 @@ class TradingWorker:
                         self.worker_id,
                     )
                     await self._generate_synthetic_history()
+            elif self.feeder_type == "binance":
+                # El gráfico no debe mezclar ticks reales con un random-walk
+                # local. Cargar velas reales antes de abrir el stream mantiene
+                # la escala y la continuidad correctas desde el primer punto.
+                self.db.log(
+                    "INFO",
+                    f"Pre-cargando historial real de {self.symbol} desde Binance...",
+                    self.worker_id,
+                )
+                symbol = self.symbol.replace("/", "").upper()
+                response = await asyncio.to_thread(
+                    requests.get,
+                    "https://api.binance.com/api/v3/klines",
+                    params={"symbol": symbol, "interval": "1m", "limit": 120},
+                    timeout=10,
+                )
+                response.raise_for_status()
+                candles = response.json()
+                if not candles:
+                    raise ValueError("Binance no devolvió velas")
+
+                import pandas as pd
+
+                rows = [
+                    {
+                        "timestamp": datetime.datetime.utcfromtimestamp(
+                            int(candle[0]) / 1000
+                        ),
+                        "open": float(candle[1]),
+                        "high": float(candle[2]),
+                        "low": float(candle[3]),
+                        "close": float(candle[4]),
+                        "price": float(candle[4]),
+                    }
+                    for candle in candles
+                ]
+                self.strategy.prices_df = pd.DataFrame(rows)
+                self.db.log(
+                    "INFO",
+                    f"Pre-carga Binance completada. {len(rows)} velas reales cargadas.",
+                    self.worker_id,
+                )
             elif self.feeder_type in ("limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal", "maker_making"):
                 self.db.log(
                     "INFO",
@@ -1286,7 +1333,7 @@ class TradingWorker:
                 f"Error al pre-cargar datos históricos: {e}.",
                 self.worker_id,
             )
-            if self.feeder_type not in ("limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal", "maker_making"):
+            if self.feeder_type not in ("binance", "limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal", "maker_making"):
                 try:
                     await self._generate_synthetic_history()
                 except Exception:

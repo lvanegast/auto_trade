@@ -8,7 +8,7 @@ eventos price_update, trade_update, depth_update, y log en tiempo real.
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import WebSocket
@@ -94,6 +94,6 @@ def make_event(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
     """Crea un evento estandarizado con timestamp."""
     return {
         "type": event_type,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "data": data,
     }

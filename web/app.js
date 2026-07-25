@@ -196,8 +196,13 @@ function handleWsEvent(event) {
                 edge: data.edge,
                 last_position: data.last_position,
             });
-            if (data.price && data.price > 0) {
-                pushTick(data.price);
+            const chartPrice = Number(data.chart_price) > 0
+                ? Number(data.chart_price)
+                : Number(data.price);
+            if (chartPrice > 0) {
+                // El backend conserva la hora del tick. Usarla mantiene el
+                // stream continuo respecto al historial cargado por REST.
+                pushTick(chartPrice, data.timestamp || event.timestamp);
             }
             updatePositionDisplay(data);
             // Actualizar línea de entrada si hay posición activa
@@ -1027,6 +1032,13 @@ function setSeriesData(cleanedData) {
     }
 }
 
+function fitChartToData() {
+    // Tras sustituir el historial (inicio, cambio de worker o timeframe),
+    // restablecer el rango evita que el usuario quede mirando una escala de
+    // una serie anterior o que no vea las primeras velas reales.
+    try { priceChart?.timeScale().fitContent(); } catch (_) {}
+}
+
 function initChart(feederType) {
     feederType = feederType || "alpaca";
     _currentCandleBucket = null;
@@ -1076,6 +1088,7 @@ function applyTimeframe() {
     const cleaned = prepareSeriesData(candleBuffer);
     if (cleaned.length > 0) {
         setSeriesData(cleaned);
+        fitChartToData();
     }
     if (tradeMarkers.length > 0) {
         try { candleSeries.setMarkers(tradeMarkers); } catch (_) {}
@@ -1111,13 +1124,23 @@ function _flushChart() {
     }
 }
 
-function pushTick(price) {
+function toUnixSeconds(timestamp) {
+    if (typeof timestamp === "number" && isFinite(timestamp)) {
+        return Math.floor(timestamp > 1e11 ? timestamp / 1000 : timestamp);
+    }
+    if (timestamp) {
+        const ms = parseRawUtcDate(timestamp).getTime();
+        if (isFinite(ms)) return Math.floor(ms / 1000);
+    }
+    return Math.floor(Date.now() / 1000);
+}
+
+function pushTick(price, timestamp) {
     /** Agrega un tick al buffer y mantiene candleBuffer sincronizado. */
     if (!price || price <= 0) return;
     const isHighVal = lastActiveSymbol && (lastActiveSymbol.includes("BTC") || lastActiveSymbol.includes("ETH"));
     if (isHighVal && price <= 100) return;
-    const now = Math.floor(Date.now() / 1000);
-    console.log(`[pushTick] price=${price} now=${now} lastActiveSymbol=${lastActiveSymbol}`);
+    const now = toUnixSeconds(timestamp);
     tickBuffer.push({ time: now, price: price });
 
     const maxTicks = 30000;
@@ -1140,7 +1163,12 @@ function pushTick(price) {
             const rawBucketSec = Math.floor(rawBucket / 1000);
             
             const rawLast = rawCandles[rawCandles.length - 1];
-            console.log(`[pushTick] rawLast.time=${rawLast ? rawLast.time : 'none'} rawBucketSec=${rawBucketSec}`);
+            // Los proveedores normalmente entregan orden cronológico. Si un
+            // paquete atrasado llega tras una reconexión, no puede reescribir
+            // una vela ya publicada con una hora más nueva.
+            if (rawLast && rawBucketSec < rawLast.time) {
+                return;
+            }
             if (!rawLast || rawLast.time !== rawBucketSec) {
                 rawCandles.push({ time: rawBucketSec, open: price, high: price, low: price, close: price });
             } else {
@@ -1157,6 +1185,9 @@ function pushTick(price) {
             candleBuffer = aggregateCandles(rawCandles, tfMin);
         } else {
             const last = candleBuffer.length > 0 ? candleBuffer[candleBuffer.length - 1] : null;
+            if (last && bucketSec < last.time) {
+                return;
+            }
             if (!last || last.time !== bucketSec) {
                 candleBuffer.push({ time: bucketSec, open: price, high: price, low: price, close: price });
             } else {
@@ -1813,6 +1844,7 @@ async function fetchStatus() {
                 const cleaned = prepareSeriesData(candleBuffer);
                 if (cleaned.length > 0) {
                     setSeriesData(cleaned);
+                    fitChartToData();
                 }
             }
         }

@@ -1,19 +1,35 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class TradingEvent:
-    def __init__(self, event_type: str):
+    def __init__(self, event_type: str, timestamp: datetime | None = None):
         self.event_type = event_type
-        self.timestamp = datetime.now()
+        # El timestamp pertenece al dato de mercado, no al navegador que lo
+        # renderiza. Usar UTC evita mezclar horas locales/naive entre el
+        # historial, el motor y los clientes WebSocket.
+        self.timestamp = timestamp or datetime.now(timezone.utc)
+        if self.timestamp.tzinfo is None:
+            self.timestamp = self.timestamp.replace(tzinfo=timezone.utc)
 
 
 class PriceUpdateEvent(TradingEvent):
-    def __init__(self, symbol: str, price: float, ask: float = None, bid: float = None):
-        super().__init__("PRICE_UPDATE")
+    def __init__(
+        self,
+        symbol: str,
+        price: float,
+        ask: float = None,
+        bid: float = None,
+        timestamp: datetime | None = None,
+        chart_price: float | None = None,
+    ):
+        super().__init__("PRICE_UPDATE", timestamp=timestamp)
         self.symbol = symbol
         self.price = price
         self.ask = ask if ask is not None else price
         self.bid = bid if bid is not None else price
+        # El motor puede operar con mid-price, mientras la gráfica conserva el
+        # último precio negociado para coincidir con las velas históricas.
+        self.chart_price = chart_price
 
     def __str__(self):
         return f"[PriceUpdate] {self.symbol}: {self.price:.4f} (Bid: {self.bid}, Ask: {self.ask})"
