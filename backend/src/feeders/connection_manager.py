@@ -99,8 +99,8 @@ class AsyncWebSocketManager(ABC):
         ...
 
     async def on_connected(self):
-        """Hook llamado tras una conexión exitosa. Sobrescribir si es necesario."""
-        logger.info(f"[{self.name}] Conexión establecida a {self.url}")
+        """Hook llamado al conectarse."""
+        logger.info(f"[{self.name}] Conectado.")
 
     async def on_disconnected(self, reason: str = ""):
         """Hook llamado al desconectarse. Sobrescribir si es necesario."""

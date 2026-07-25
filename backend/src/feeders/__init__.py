@@ -16,6 +16,9 @@ from src.feeders.oanda_feeder import OandaFeeder
 from src.feeders.ig_feeder import IGFeeder
 from src.feeders.binance_feeder import BinanceFeeder
 from src.feeders.polymarket_feeder import PolymarketFeeder
+from src.feeders.hyperliquid_feeder import HyperliquidFeeder
+from src.feeders.dydx_feeder import DydxFeeder
+from src.feeders.forecastex_feeder import ForecastExFeeder
 
 __all__ = [
     "BaseFeeder",
@@ -24,4 +27,7 @@ __all__ = [
     "IGFeeder",
     "BinanceFeeder",
     "PolymarketFeeder",
+    "HyperliquidFeeder",
+    "DydxFeeder",
+    "ForecastExFeeder",
 ]

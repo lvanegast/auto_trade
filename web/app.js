@@ -183,6 +183,10 @@ function handleWsEvent(event) {
             break;
 
         case "price_update":
+            // Verificar aislamiento: procesar solo si el evento corresponde al worker o símbolo activo en pantalla
+            if (data.worker_id && data.worker_id !== activeWorkerId) {
+                break;
+            }
             // Actualizar en tiempo real
             lastPrice = data.price;
             updateTickerDisplay({
@@ -192,7 +196,14 @@ function handleWsEvent(event) {
                 edge: data.edge,
                 last_position: data.last_position,
             });
-            pushTick(data.price);
+            const chartPrice = Number(data.chart_price) > 0
+                ? Number(data.chart_price)
+                : Number(data.price);
+            if (chartPrice > 0) {
+                // El backend conserva la hora del tick. Usarla mantiene el
+                // stream continuo respecto al historial cargado por REST.
+                pushTick(chartPrice, data.timestamp || event.timestamp);
+            }
             updatePositionDisplay(data);
             // Actualizar línea de entrada si hay posición activa
             if (data.last_position && data.entry_price > 0) {
@@ -629,6 +640,8 @@ let isPredictionMarket = false;
 let eventExpirationTime = null;
 
 function getDisplayBase(asset) {
+    if (!asset) return "";
+    if (String(asset).includes("SPORTS")) return asset;
     if (/^\d+$/.test(asset) && asset.length > 12) {
         return "PM-" + asset.slice(-6);
     }
@@ -747,14 +760,33 @@ const quoteAssetLabels = document.querySelectorAll(".quote-asset-lbl");
 const baseAssetLabels = document.querySelectorAll(".base-asset-lbl");
 
 
-function parseApiDate(timestampStr) {
+function parseRawUtcDate(timestampStr) {
     if (!timestampStr) return new Date();
     if (timestampStr instanceof Date) return timestampStr;
-    let formatted = String(timestampStr);
-    if (!formatted.includes("Z") && !/[+-]\d{2}:\d{2}$/.test(formatted)) {
-        formatted = formatted.replace(" ", "T");
+    let str = String(timestampStr).trim().replace(" ", "T");
+    if (!str.endsWith("Z") && !/[+-]\d{2}:\d{2}$/.test(str)) {
+        str += "Z";
     }
-    return new Date(formatted);
+    return new Date(str);
+}
+
+function parseApiDate(timestampStr) {
+    return parseRawUtcDate(timestampStr);
+}
+
+function formatColombiaTime(dateOrStr) {
+    if (!dateOrStr) return "-";
+    const d = parseRawUtcDate(dateOrStr);
+    const colDate = new Date(d.getTime() - (5 * 3600 * 1000));
+    return colDate.toISOString().substring(11, 19);
+}
+
+function formatColombiaDateTime(dateOrStr) {
+    if (!dateOrStr) return "-";
+    const d = parseRawUtcDate(dateOrStr);
+    const colDate = new Date(d.getTime() - (5 * 3600 * 1000));
+    const iso = colDate.toISOString();
+    return iso.substring(0, 10) + " " + iso.substring(11, 19);
 }
 
 function _isCandleValid(c) {
@@ -867,8 +899,12 @@ function prepareSeriesData(candles) {
     if (!candles || !candles.length) return [];
     const valid = [];
     for (const c of candles) {
-        if (!c || c.time === undefined || c.time === null) continue;
-        const t = typeof c.time === 'number' ? c.time : Math.floor(new Date(c.time).getTime() / 1000);
+        let t = c.time;
+        if (typeof t !== 'number') {
+            t = Math.floor(parseRawUtcDate(t).getTime() / 1000);
+        } else if (t > 1e11) {
+            t = Math.floor(t / 1000);
+        }
         const o = Number(c.open);
         const h = Number(c.high);
         const l = Number(c.low);
@@ -895,10 +931,15 @@ function prepareSeriesData(candles) {
     return unique;
 }
 
+let comparisonChart = null;
+
 function buildChart(containerId, feederType) {
     /** Crea la instancia de Lightweight Charts con tema oscuro. */
     if (priceChart) {
         try { priceChart.remove(); } catch (_) { /* cleanup */ }
+    }
+    if (comparisonChart) {
+        try { comparisonChart.remove(); } catch (_) { /* cleanup */ }
     }
 
     const container = document.getElementById(containerId);
@@ -912,6 +953,14 @@ function buildChart(containerId, feederType) {
             background: { type: "solid", color: "#161a1e" },
             textColor: "#848e9c",
         },
+        localization: {
+            timeFormatter: (time) => {
+                const ts = typeof time === "number" ? time : (time && time.timestamp) ? time.timestamp : 0;
+                const d = new Date((ts - (5 * 3600)) * 1000);
+                const iso = d.toISOString();
+                return iso.substring(0, 10) + " " + iso.substring(11, 19);
+            },
+        },
         grid: {
             vertLines: { color: "rgba(36, 44, 53, 0.4)" },
             horzLines: { color: "rgba(36, 44, 53, 0.4)" },
@@ -924,64 +973,70 @@ function buildChart(containerId, feederType) {
         rightPriceScale: {
             borderColor: "rgba(36, 44, 53, 0.6)",
             autoScale: true,
+            visible: true,
         },
         timeScale: {
             borderColor: "rgba(36, 44, 53, 0.6)",
             timeVisible: true,
             secondsVisible: false,
+            tickMarkFormatter: (time) => {
+                const ts = typeof time === "number" ? time : (time && time.timestamp) ? time.timestamp : 0;
+                const d = new Date((ts - (5 * 3600)) * 1000);
+                return d.toISOString().substring(11, 16);
+            },
         },
         handleScroll: { vertTouchDrag: false },
     });
 
-    // Determinar colores por plataforma
-    let upColor = "#02c076";
-    let downColor = "#f84960";
-    let borderUp = "rgba(2, 192, 118, 0.6)";
-    let borderDown = "rgba(248, 73, 96, 0.6)";
-    let wickColor = "#848e9c";
+    // Workers 2, 3 y 4 (Limitless, Limitless Sports, Binary Arb, Polymarket, Kalshi) usan Gráfico de Área (Línea con gradiente)
+    const isLineChartFeeder = feederType !== "alpaca" && feederType !== "binance";
+    window.isLineChartMode = isLineChartFeeder;
 
-    if (feederType === "binance") {
-        upColor = "#02c076"; downColor = "#f84960";
-    } else if (feederType === "polymarket") {
-        upColor = "#a03ffc"; downColor = "#cf5bdb";
-        borderUp = "rgba(160, 63, 252, 0.6)"; borderDown = "rgba(207, 91, 219, 0.6)";
-    } else if (feederType === "kalshi") {
-        upColor = "#02c076"; downColor = "#f84960";
+    if (isLineChartFeeder) {
+        candleSeries = priceChart.addAreaSeries({
+            topColor: "rgba(160, 63, 252, 0.4)",
+            bottomColor: "rgba(160, 63, 252, 0.0)",
+            lineColor: "#a03ffc",
+            lineWidth: 2,
+            crosshairMarkerVisible: true,
+            crosshairMarkerRadius: 4,
+        });
+    } else {
+        candleSeries = priceChart.addCandlestickSeries({
+            upColor: "#02c076",
+            downColor: "#f84960",
+            borderUpColor: "rgba(2, 192, 118, 0.6)",
+            borderDownColor: "rgba(248, 73, 96, 0.6)",
+            wickUpColor: "#848e9c",
+            wickDownColor: "#848e9c",
+        });
     }
-
-    candleSeries = priceChart.addCandlestickSeries({
-        upColor: upColor,
-        downColor: downColor,
-        borderUpColor: borderUp,
-        borderDownColor: borderDown,
-        wickUpColor: wickColor,
-        wickDownColor: wickColor,
-    });
-
-    // Serie de volumen/depth como histograma en overlay (se actualiza con depth)
-    volumeSeries = priceChart.addHistogramSeries({
-        color: "rgba(2, 192, 118, 0.25)",
-        priceFormat: { type: "volume" },
-        priceScaleId: "overlay",
-    });
-    volumeSeries.priceScale().applyOptions({
-        scaleMargins: { top: 0.85, bottom: 0 },
-    });
-
-    // Serie de comparación para arbitraje cross-platform
-    comparisonSeries = priceChart.addLineSeries({
-        color: "#ff9900", // Naranja brillante y premium para el otro mercado
-        lineWidth: 2,
-        priceLineVisible: false,
-        title: feederType === "kalshi" ? "POLYMARKET" : "KALSHI",
-        axisLabelVisible: true,
-    });
 
     currentFeederTypeForChart = feederType;
     window.priceChart = priceChart;
     window.candleSeries = candleSeries;
-    window.comparisonSeries = comparisonSeries;
     return priceChart;
+}
+
+function setSeriesData(cleanedData) {
+    if (!candleSeries || !cleanedData) return;
+    try {
+        if (window.isLineChartMode) {
+            const lineData = cleanedData.map(c => ({ time: c.time, value: c.close }));
+            candleSeries.setData(lineData);
+        } else {
+            candleSeries.setData(cleanedData);
+        }
+    } catch (e) {
+        console.warn("[setSeriesData] failed:", e.message);
+    }
+}
+
+function fitChartToData() {
+    // Tras sustituir el historial (inicio, cambio de worker o timeframe),
+    // restablecer el rango evita que el usuario quede mirando una escala de
+    // una serie anterior o que no vea las primeras velas reales.
+    try { priceChart?.timeScale().fitContent(); } catch (_) {}
 }
 
 function initChart(feederType) {
@@ -989,18 +1044,13 @@ function initChart(feederType) {
     _currentCandleBucket = null;
     _currentCandle = null;
     candleBuffer = [];
+    rawCandles = [];
+    tickBuffer = [];
     buildChart("priceChart", feederType);
 
     if (candleSeries) {
-        if (rawCandles.length > 0) {
-            candleBuffer = aggregateCandles(rawCandles, TF_MINUTES[currentTimeframe]);
-        } else if (tickBuffer.length > 0) {
-            candleBuffer = aggregateTicks(tickBuffer, TF_MINUTES[currentTimeframe]);
-        }
         const cleaned = prepareSeriesData(candleBuffer);
-        if (cleaned.length > 0) {
-            try { candleSeries.setData(cleaned); } catch (e) { console.warn("[initChart] setData failed:", e.message); }
-        }
+        setSeriesData(cleaned);
     }
 
     if (tradeMarkers.length > 0 && candleSeries) {
@@ -1037,7 +1087,8 @@ function applyTimeframe() {
     }
     const cleaned = prepareSeriesData(candleBuffer);
     if (cleaned.length > 0) {
-        try { candleSeries.setData(cleaned); } catch (e) { console.warn("[applyTimeframe] setData failed:", e.message); }
+        setSeriesData(cleaned);
+        fitChartToData();
     }
     if (tradeMarkers.length > 0) {
         try { candleSeries.setMarkers(tradeMarkers); } catch (_) {}
@@ -1062,17 +1113,34 @@ function _flushChart() {
     try {
         const last = candleBuffer[candleBuffer.length - 1];
         if (last && _isCandleValid(last)) {
-            candleSeries.update({ time: last.time, open: last.open, high: last.high, low: last.low, close: last.close });
+            if (window.isLineChartMode) {
+                candleSeries.update({ time: last.time, value: last.close });
+            } else {
+                candleSeries.update({ time: last.time, open: last.open, high: last.high, low: last.low, close: last.close });
+            }
         }
     } catch (e) {
         console.warn("[flushChart] update failed:", e.message);
     }
 }
 
-function pushTick(price) {
+function toUnixSeconds(timestamp) {
+    if (typeof timestamp === "number" && isFinite(timestamp)) {
+        return Math.floor(timestamp > 1e11 ? timestamp / 1000 : timestamp);
+    }
+    if (timestamp) {
+        const ms = parseRawUtcDate(timestamp).getTime();
+        if (isFinite(ms)) return Math.floor(ms / 1000);
+    }
+    return Math.floor(Date.now() / 1000);
+}
+
+function pushTick(price, timestamp) {
     /** Agrega un tick al buffer y mantiene candleBuffer sincronizado. */
     if (!price || price <= 0) return;
-    const now = Math.floor(Date.now() / 1000);
+    const isHighVal = lastActiveSymbol && (lastActiveSymbol.includes("BTC") || lastActiveSymbol.includes("ETH"));
+    if (isHighVal && price <= 100) return;
+    const now = toUnixSeconds(timestamp);
     tickBuffer.push({ time: now, price: price });
 
     const maxTicks = 30000;
@@ -1095,6 +1163,12 @@ function pushTick(price) {
             const rawBucketSec = Math.floor(rawBucket / 1000);
             
             const rawLast = rawCandles[rawCandles.length - 1];
+            // Los proveedores normalmente entregan orden cronológico. Si un
+            // paquete atrasado llega tras una reconexión, no puede reescribir
+            // una vela ya publicada con una hora más nueva.
+            if (rawLast && rawBucketSec < rawLast.time) {
+                return;
+            }
             if (!rawLast || rawLast.time !== rawBucketSec) {
                 rawCandles.push({ time: rawBucketSec, open: price, high: price, low: price, close: price });
             } else {
@@ -1111,6 +1185,9 @@ function pushTick(price) {
             candleBuffer = aggregateCandles(rawCandles, tfMin);
         } else {
             const last = candleBuffer.length > 0 ? candleBuffer[candleBuffer.length - 1] : null;
+            if (last && bucketSec < last.time) {
+                return;
+            }
             if (!last || last.time !== bucketSec) {
                 candleBuffer.push({ time: bucketSec, open: price, high: price, low: price, close: price });
             } else {
@@ -1152,7 +1229,8 @@ function updateAvgEntryPriceLine(avgEntryPrice) {
         entryPriceLine = null;
     }
 
-    if (avgEntryPrice > 0) {
+    const isHighVal = lastActiveSymbol && (lastActiveSymbol.includes("BTC") || lastActiveSymbol.includes("ETH"));
+    if (avgEntryPrice > 0 && (!isHighVal || avgEntryPrice > 100)) {
         entryPriceLine = candleSeries.createPriceLine({
             price: avgEntryPrice,
             color: "#f0b90b",
@@ -1294,7 +1372,7 @@ function renderPositionHistory(positions) {
         const pnl = p.pnl != null ? parseFloat(p.pnl) : (isBuy ? (close - entry) * amount : (entry - close) * amount);
         const pnlClass = pnl >= 0 ? "text-success" : "text-danger";
         const pnlSign = pnl >= 0 ? "+" : "";
-        const entryTime = p.entry_time ? parseApiDate(p.entry_time).toLocaleString() : "-";
+        const entryTime = p.entry_time ? formatColombiaDateTime(p.entry_time) : "-";
         return `<tr>
             <td class="font-mono">#${p.id}</td>
             <td>${getDisplayBase(p.symbol)}</td>
@@ -1330,7 +1408,7 @@ function buildPositionCard(pos, isOpen) {
     const pnlClass = pnl >= 0 ? "text-success" : "text-danger";
     const pnlSign = pnl >= 0 ? "+" : "";
     const cardClass = isOpen ? "" : " closed";
-    const entryTime = pos.entry_time ? parseApiDate(pos.entry_time).toLocaleString() : "-";
+    const entryTime = pos.entry_time ? formatColombiaDateTime(pos.entry_time) : "-";
     const decimals = entry < 1.5 ? 4 : 2;
 
     let footerHtml = "";
@@ -1609,10 +1687,31 @@ function switchWorker(workerId) {
     inputTotal.value = "";
     clearActivePct();
 
+    // Resetear completamente buffers y series del gráfico para evitar contaminación entre activos
+    lastActiveSymbol = "";
+    lastPrice = 0.0;
+    tickBuffer = [];
+    rawCandles = [];
+    candleBuffer = [];
+    tradeMarkers = [];
+    _currentCandleBucket = null;
+    _currentCandle = null;
+
+    if (candleSeries) {
+        try { 
+            candleSeries.setData([]); 
+            candleSeries.setMarkers([]);
+        } catch (_) {}
+    }
+    if (comparisonSeries) {
+        try { comparisonSeries.setData([]); } catch (_) {}
+    }
+    clearTradeLines();
+
     // Reconectar WebSocket al nuevo worker
     connectWebSocket(workerId);
 
-    // Fallback inicial mientras el WS conecta
+    // Cargar el estado aislado del nuevo worker seleccionado
     fetchStatus();
     fetchLogs();
     fetchTrades();
@@ -1669,76 +1768,74 @@ async function fetchStatus() {
 
         const decimals = isForexOrEvent ? 4 : 2;
         headerPrice.textContent = `$${lastPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: decimals })}`;
-        chartSymbolName.textContent = getDisplayBase(data.symbol);
+        if (data.feeder_type === "limitless_sports" || (data.symbol && data.symbol.includes("SPORTS"))) {
+            chartSymbolName.textContent = "⚽ " + (data.symbol || "Limitless Sports Event");
+        } else if (data.feeder_type === "binary_arb" || (data.symbol && data.symbol.includes("BINARY"))) {
+            chartSymbolName.textContent = "⚡ " + (data.symbol || "Limitless Binary Arb");
+        } else {
+            chartSymbolName.textContent = getDisplayBase(data.symbol);
+        }
         chartSymbolName.title = data.symbol;
         chartSourceName.textContent = data.feeder_type.toUpperCase() + " FEED";
         
-        // Simular info de cabecera de Binance
-        headerChange.textContent = isOnline ? "+1.42%" : "+0.00%";
-        headerHigh.textContent = `$${(lastPrice * 1.02).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: decimals })}`;
-        headerLow.textContent = `$${(lastPrice * 0.98).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: decimals })}`;
-        headerVolume.textContent = `428.14 ${getDisplayBase(baseAsset)}`;
-        
-        // Trazado dinámico de visualización: Gráfica para Crypto/Forex, Dial Radial para Predicciones
-        isPredictionMarket = data.feeder_type === "kalshi" || data.feeder_type === "polymarket" || data.feeder_type === "limitless" || data.feeder_type === "limitless_sports";
+        // Actualizar indicadores de cabecera
+        if (viewProbP) {
+            const rawProb = data.teorical_probability !== undefined ? data.teorical_probability : 0.5;
+            const displayProb = rawProb <= 1.0 ? rawProb * 100 : (lastPrice <= 1.0 ? lastPrice * 100 : 50.0);
+            viewProbP.textContent = `${displayProb.toFixed(1)}%`;
+        }
+        if (viewEdge) {
+            viewEdge.textContent = `${((data.edge || 0) * 100).toFixed(2)}%`;
+        }
+        if (viewKelly) {
+            viewKelly.textContent = `${((data.kelly_recommendation || 0) * 100).toFixed(2)}%`;
+        }
+
+        // Smart lookup for quote and base balances
+        const findBalance = (portfolio, asset) => {
+            if (!portfolio) return 0.0;
+            if (portfolio[asset] !== undefined) return Number(portfolio[asset]) || 0.0;
+            for (const key of [asset, "USD", "USDT", "CASH", "USDC"]) {
+                if (portfolio[key] !== undefined) return Number(portfolio[key]) || 0.0;
+            }
+            return 0.0;
+        };
+
+        // Trazado dinámico de visualización: Expiración de eventos
         if (data.expiration) {
             eventExpirationTime = new Date(data.expiration);
         } else {
             eventExpirationTime = null;
         }
-        if (isPredictionMarket) {
-            if (radialGaugeContainer) radialGaugeContainer.style.display = "flex";
-            if (priceChartCanvas) priceChartCanvas.style.display = "block";
-            
-            let prob = (data.teorical_probability !== undefined && data.teorical_probability < 1.5) ? data.teorical_probability : (lastPrice < 1.5 ? lastPrice : 0.50);
-            prob = Math.max(0.01, Math.min(0.99, prob));
-            const probPct = prob * 100;
-            
-            if (gaugePercentText) gaugePercentText.textContent = `${probPct.toFixed(1)}%`;
-            if (gaugeCircleFill) {
-                const radius = 90;
-                const circumference = 2 * Math.PI * radius;
-                const offset = circumference - (probPct / 100) * circumference;
-                gaugeCircleFill.style.strokeDashoffset = offset;
-                
-                if (probPct >= 50) {
-                    gaugeCircleFill.setAttribute("stroke", "#02c076");
-                    if (gaugeLabelText) {
-                        gaugeLabelText.textContent = "SI PROBABLE";
-                        gaugeLabelText.style.color = "#02c076";
-                    }
-                } else {
-                    gaugeCircleFill.setAttribute("stroke", "#f6465d");
-                    if (gaugeLabelText) {
-                        gaugeLabelText.textContent = "NO PROBABLE";
-                        gaugeLabelText.style.color = "#f6465d";
-                    }
-                }
-            }
-        } else {
-            if (radialGaugeContainer) radialGaugeContainer.style.display = "none";
-            if (priceChartCanvas) priceChartCanvas.style.display = "block";
-        }
 
-        // Alimentar gráfica desde el histórico del backend si cambiamos de activo o no hay datos
-        if (data.price_history && data.price_history.length > 0 && (data.symbol !== lastActiveSymbol || tickBuffer.length === 0)) {
+        // Alimentar gráfica desde el histórico del backend SOLO si cambiamos de activo
+        if (data.price_history && data.price_history.length > 0 && data.symbol !== lastActiveSymbol) {
+            lastActiveSymbol = data.symbol;
+            const isHighValueAsset = data.symbol && (data.symbol.includes("BTC") || data.symbol.includes("ETH"));
+            
             tickBuffer = data.price_history.map(item => {
                 const d = parseApiDate(item.timestamp);
                 const secs = Math.floor(d.getTime() / 1000);
                 return { time: Number(secs) || 0, price: Number(item.price) || 0 };
-            }).filter(t => t.time > 0 && t.price > 0);
+            }).filter(t => t.time > 0 && t.price > 0 && (!isHighValueAsset || t.price > 100));
 
             rawCandles = data.price_history.map(item => {
                 const d = parseApiDate(item.timestamp);
                 const secs = Math.floor(d.getTime() / 1000);
+                const pClose = item.close !== undefined ? Number(item.close) : Number(item.price);
+                const pOpen = item.open !== undefined ? Number(item.open) : Number(item.price);
+                const pHigh = item.high !== undefined ? Number(item.high) : Number(item.price);
+                const pLow = item.low !== undefined ? Number(item.low) : Number(item.price);
+                const isValidProb = isPredictionMarket ? (pClose >= 0.01 && pClose <= 0.99) : true;
                 return {
                     time: Number(secs) || 0,
-                    open: item.open !== undefined ? Number(item.open) : Number(item.price),
-                    high: item.high !== undefined ? Number(item.high) : Number(item.price),
-                    low: item.low !== undefined ? Number(item.low) : Number(item.price),
-                    close: item.close !== undefined ? Number(item.close) : Number(item.price)
+                    open: isHighValueAsset && pOpen <= 100 ? pClose : pOpen,
+                    high: isHighValueAsset && pHigh <= 100 ? pClose : pHigh,
+                    low: isHighValueAsset && pLow <= 100 ? pClose : pLow,
+                    close: pClose,
+                    _validProb: isValidProb
                 };
-            }).filter(_isCandleValid);
+            }).filter(c => _isCandleValid(c) && c._validProb && (!isHighValueAsset || (c.open > 100 && c.close > 100 && c.low > 100)));
 
             if (candleSeries && rawCandles.length > 0) {
                 _currentCandleBucket = null;
@@ -1746,72 +1843,24 @@ async function fetchStatus() {
                 candleBuffer = aggregateCandles(rawCandles, TF_MINUTES[currentTimeframe]);
                 const cleaned = prepareSeriesData(candleBuffer);
                 if (cleaned.length > 0) {
-                    try { candleSeries.setData(cleaned); } catch (e) { console.warn("[setData] failed:", e.message); }
+                    setSeriesData(cleaned);
+                    fitChartToData();
                 }
             }
         }
         
-        // Si no hay velas en memoria para este activo, generar un baseline alrededor del precio actual
-        if (rawCandles.length === 0 && lastPrice > 0) {
-            const chartPrice = (isPredictionMarket && lastPrice > 10.0) ? (data.teorical_probability || 0.50) : lastPrice;
-            const now = Math.floor(Date.now() / 1000);
-            const baseline = [];
-            for (let i = 25; i >= 0; i--) {
-                const t = now - (i * 60);
-                const price = Math.max(0.0001, chartPrice);
-                baseline.push({ time: t, open: price, high: price, low: price, close: price });
-            }
-            rawCandles = baseline;
-            const cleaned = prepareSeriesData(rawCandles);
-            if (candleSeries && cleaned.length > 0) {
-                try { candleSeries.setData(cleaned); } catch (_) {}
-            }
-        }
-
-        // Transmitir tick en tiempo real para todos los activos
-        if (lastPrice > 0) {
-            const chartPrice = (isPredictionMarket && lastPrice > 10.0) ? (data.teorical_probability || 0.50) : lastPrice;
-            pushTick(chartPrice);
+        // Transmitir tick en tiempo real si hay un precio válido registrado y no acabamos de resetear el buffer con price_history
+        const loadedHistoryJustNow = (data.price_history && data.price_history.length > 0 && (data.symbol !== lastActiveSymbol || tickBuffer.length === 0));
+        const isHighVal = data.symbol && (data.symbol.includes("BTC") || data.symbol.includes("ETH"));
+        if (!loadedHistoryJustNow && data.last_price && data.last_price > 0 && (!isHighVal || data.last_price > 100)) {
+            pushTick(data.last_price);
         }
         
-        // Alimentar gráfica de comparación si es arbitraje cross-platform
-        if (comparisonSeries) {
-            if (data.comparison_history && data.comparison_history.length > 0) {
-                const otherPlatform = data.feeder_type === "kalshi" ? "POLYMARKET" : "KALSHI";
-                comparisonSeries.applyOptions({ title: otherPlatform });
-                
-                const compData = data.comparison_history.map(item => {
-                    const d = parseApiDate(item.timestamp);
-                    const secs = Math.floor(d.getTime() / 1000);
-                    return { time: Number(secs) || 0, value: Number(item.price) || 0 };
-                }).filter(t => t.time > 0 && t.value > 0).sort((a, b) => a.time - b.time);
-
-                const uniqueComp = [];
-                let lastT = null;
-                for (const pt of compData) {
-                    if (pt.time !== lastT) {
-                        uniqueComp.push(pt);
-                        lastT = pt.time;
-                    }
-                }
-                
-                if (data.symbol !== lastActiveSymbol) {
-                    try { comparisonSeries.setData(uniqueComp); } catch (e) { console.warn("[comparisonSeries] setData failed:", e.message); }
-                } else if (uniqueComp.length > 0) {
-                    try { comparisonSeries.update(uniqueComp[uniqueComp.length - 1]); } catch (_) {}
-                }
-            } else {
-                try {
-                    comparisonSeries.setData([]);
-                } catch (_) {}
-            }
-        }
-
         lastActiveSymbol = data.symbol;
 
-        // Sincronizar balances del portafolio
-        availableQuote = data.portfolio[quoteAsset] || 0.0;
-        availableBase = data.portfolio[baseAsset] || 0.0;
+        // Sincronizar balances del portafolio con búsqueda inteligente
+        availableQuote = findBalance(data.portfolio, quoteAsset);
+        availableBase = findBalance(data.portfolio, baseAsset);
 
         let lockedQuote = 0.0;
         let lockedBase = 0.0;
@@ -1826,13 +1875,11 @@ async function fetchStatus() {
         const dispQuote = Math.max(availableQuote - lockedQuote, 0);
         const dispBase = Math.max(availableBase - lockedBase, 0);
 
-        isPredictionMarket = data.feeder_type === "kalshi" || data.feeder_type === "polymarket" || data.feeder_type === "binary_arb" || data.feeder_type === "limitless" || data.feeder_type === "limitless_sports";
         const avgEntryPrice = data.avg_entry_price || 0.0;
 
-        // Si es mercado de predicción u opción binaria (entrada <= 1.0$) y lastPrice es el Spot de BTC (> 10$), usamos el precio efectivo del contrato
         let effectivePrice = lastPrice;
-        if ((isPredictionMarket || avgEntryPrice <= 1.0) && lastPrice > 10.0) {
-            effectivePrice = data.teorical_probability || 0.50;
+        if (isPredictionMarket && (lastPrice <= 0 || lastPrice > 1.0)) {
+            effectivePrice = (data.teorical_probability && data.teorical_probability <= 1.0) ? data.teorical_probability : (lastPrice <= 1.0 ? lastPrice : 0.0);
         }
 
         const totalEstimated = availableQuote + (availableBase * effectivePrice);
@@ -1990,7 +2037,7 @@ async function fetchTrades() {
         // Separar órdenes abiertas (status PENDING_NEW, NEW, ACCEPTED) de las completadas
         const openOrders = data.filter(t => t.status === "PENDING_NEW" || t.status === "NEW" || t.status === "ACCEPTED");
         openOrdersList = openOrders;
-        updatePortfolioTable();
+                updatePortfolioTable();
         const completedTrades = data.filter(t => t.status !== "PENDING_NEW" && t.status !== "NEW" && t.status !== "ACCEPTED");
         
         // 1. RENDERIZAR ÓRDENES ABIERTAS
@@ -1998,8 +2045,7 @@ async function fetchTrades() {
             openOrdersTableBody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No hay órdenes abiertas activas.</td></tr>';
         } else {
             openOrders.forEach(order => {
-                const date = parseApiDate(order.timestamp);
-                const dateStr = date.toLocaleString();
+                const dateStr = formatColombiaDateTime(order.timestamp);
                 const sideClass = order.side.toLowerCase() === 'buy' ? 'badge-buy' : 'badge-sell';
                 const decimals = isForexOrEvent ? 4 : 2;
                 const amountDecs = baseAsset === "BTC" || baseAsset === "ETH" ? 6 : 2;
@@ -2027,8 +2073,7 @@ async function fetchTrades() {
         }
         
         completedTrades.forEach(trade => {
-            const date = parseApiDate(trade.timestamp);
-            const dateStr = date.toLocaleString();
+            const dateStr = formatColombiaDateTime(trade.timestamp);
             const sideClass = trade.side.toLowerCase() === 'buy' ? 'badge-buy' : 'badge-sell';
             const decimals = isForexOrEvent ? 4 : 2;
             const amountDecs = baseAsset === "BTC" || baseAsset === "ETH" ? 6 : 2;
@@ -2105,8 +2150,7 @@ async function fetchLogs() {
         }
         
         data.forEach(log => {
-            const date = parseApiDate(log.timestamp);
-            const timeStr = date.toLocaleTimeString();
+            const timeStr = formatColombiaTime(log.timestamp);
             const levelClass = log.level.toLowerCase();
             
             const line = document.createElement("div");
@@ -2454,6 +2498,26 @@ async function fetchArbitrageData() {
     }
 }
 
+function selectArbitrageEvent(eventId, eventLabel) {
+    if (!eventId) return;
+    const label = eventLabel || eventId;
+    if (chartSymbolName) {
+        chartSymbolName.textContent = "⚽ " + label;
+        chartSymbolName.title = eventId;
+    }
+    activeSymbol = eventId;
+    lastKnownActiveSymbol = eventId;
+    
+    // Refrescar status inmediatamente
+    fetchStatus();
+    
+    // Desplazar suavemente hacia la gráfica
+    const chartCard = document.querySelector(".chart-card");
+    if (chartCard) {
+        chartCard.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+}
+
 function renderArbitragePanel(data) {
     const { opportunities, market_prices, active_pairs_count } = data;
 
@@ -2477,8 +2541,11 @@ function renderArbitragePanel(data) {
                 diffHtml = `<span style="color:${diffColor}; font-weight:700;">${diffPct}%</span>`;
             }
 
+            const isSelected = activeSymbol === eventId;
+            const borderStyle = isSelected ? "border: 2px solid #00e6ff; box-shadow: 0 0 10px rgba(0,230,255,0.3);" : "border: 1px solid #2d3139;";
+
             html += `
-            <div style="background:#1e2329; border:1px solid #2d3139; border-radius:8px; padding:12px;">
+            <div onclick="selectArbitrageEvent('${eventId}', '${info.event_label}')" style="background:#1e2329; ${borderStyle} border-radius:8px; padding:12px; cursor:pointer; transition: transform 0.2s, border-color 0.2s;" onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='none'">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                     <span style="font-size:12px; font-weight:600; color:#eaecef;">${info.event_label}</span>
                     <span style="font-size:10px; padding:2px 6px; background:rgba(0,230,255,0.1); color:#00e6ff; border-radius:3px;">${info.category}</span>
@@ -2499,8 +2566,9 @@ function renderArbitragePanel(data) {
                         ${pBid !== null ? `<div style="font-size:9px; color:#848e9c;">Bid ${pBid.toFixed(2)} / Ask ${pAsk.toFixed(2)}</div>` : ''}
                     </div>
                 </div>
-                <div style="text-align:center; padding-top:6px; border-top:1px solid #2d3139;">
-                    <span style="font-size:10px; color:#848e9c;">Spread: </span>${diffHtml}
+                <div style="display:flex; justify-content:space-between; align-items:center; padding-top:6px; border-top:1px solid #2d3139;">
+                    <span style="font-size:10px; color:#848e9c;">Spread: ${diffHtml}</span>
+                    <span style="font-size:10px; color:#00e6ff; font-weight:600;">📈 Ver Gráfica ➔</span>
                 </div>
             </div>`;
         }
@@ -2512,14 +2580,24 @@ function renderArbitragePanel(data) {
     if (tbody) {
         if (opportunities && opportunities.length > 0) {
             let rows = "";
+            let idx = 0;
             for (const opp of opportunities) {
-                const dirColor = opp.direction.includes("KALSHI") ? "#00c8ff" : "#a03ffc";
-                const dirLabel = opp.direction === "BUY_YES_KALSHI_SELL_NO_POLY"
-                    ? "BUY Kalshi → HEDGE Poly"
-                    : "BUY Poly → HEDGE Kalshi";
+                idx++;
+                const is1xN = opp.direction && opp.direction.includes("1XN");
+                const dirColor = is1xN ? "#00e6ff" : (opp.direction.includes("KALSHI") ? "#00c8ff" : "#a03ffc");
+                const dirLabel = is1xN
+                    ? (opp.direction === "BUY_ALL_YES_1XN" ? "🎯 ARB 1×N: COMPRAR TODOS YES" : "🛡️ ARB 1×N: COMPRAR TODOS NO")
+                    : (opp.direction === "BUY_YES_KALSHI_SELL_NO_POLY" ? "BUY Kalshi → HEDGE Poly" : "BUY Poly → HEDGE Kalshi");
+                
+                const hasOutcomes = opp.outcomes && opp.outcomes.length > 0;
+                const toggleId = `outcomes-row-${idx}`;
+
                 rows += `
-                <tr style="border-bottom:1px solid #2d3139;">
-                    <td style="padding:10px; font-size:12px; color:#eaecef; font-weight:500;">${opp.event_label || opp.event_id}</td>
+                <tr onclick="selectArbitrageEvent('${opp.event_id}', '${opp.event_label}')" style="border-bottom:1px solid #2d3139; cursor:pointer;" onmouseover="this.style.background='rgba(255,255,255,0.04)'" onmouseout="this.style.background='transparent'">
+                    <td style="padding:10px; font-size:12px; color:#eaecef; font-weight:500;">
+                        <span style="color:#00e6ff; margin-right:4px;">📊</span> ${opp.event_label || opp.event_id}
+                        ${hasOutcomes ? `<button onclick="event.stopPropagation(); const el=document.getElementById('${toggleId}'); el.style.display = el.style.display === 'none' ? 'table-row' : 'none';" style="margin-left:8px; background:rgba(0,230,255,0.15); border:1px solid #00e6ff; color:#00e6ff; font-size:10px; padding:2px 6px; border-radius:4px; cursor:pointer;">🔍 Ver Outcomes (${opp.outcomes.length})</button>` : ''}
+                    </td>
                     <td style="padding:10px; text-align:center; font-family:'JetBrains Mono',monospace; color:#00c8ff;">${(opp.kalshi_yes * 100).toFixed(1)}%</td>
                     <td style="padding:10px; text-align:center; font-family:'JetBrains Mono',monospace; color:#a03ffc;">${(opp.polymarket_yes * 100).toFixed(1)}%</td>
                     <td style="padding:10px; text-align:center; color:${dirColor}; font-weight:600; font-size:11px;">${dirLabel}</td>
@@ -2527,6 +2605,30 @@ function renderArbitragePanel(data) {
                     <td style="padding:10px; text-align:center; font-family:'JetBrains Mono',monospace; color:#f0b90b;">${(opp.total_cost * 100).toFixed(2)}%</td>
                     <td style="padding:10px; text-align:center; font-family:'JetBrains Mono',monospace; color:#02c076; font-weight:700;">${(opp.guaranteed_profit * 100).toFixed(2)}¢</td>
                 </tr>`;
+
+                if (hasOutcomes) {
+                    let outcomesHtml = opp.outcomes.map(o => `
+                        <div style="background:#161a1e; border:1px solid #2d3139; padding:6px 10px; border-radius:6px; font-size:11px; display:flex; justify-content:space-between; align-items:center;">
+                            <span style="color:#eaecef; font-weight:600;">• ${o.title || o.slug}</span>
+                            <span>
+                                <span style="color:#848e9c; margin-right:6px;">YES:</span>
+                                <span style="color:#02c076; font-weight:700; font-family:'JetBrains Mono',monospace;">${(o.yes_price * 100).toFixed(1)}%</span>
+                            </span>
+                        </div>
+                    `).join("");
+
+                    rows += `
+                    <tr id="${toggleId}" style="display:none; background:rgba(0,0,0,0.2);">
+                        <td colspan="7" style="padding:12px 16px;">
+                            <div style="font-size:11px; font-weight:700; color:#00e6ff; margin-bottom:8px; text-transform:uppercase; letter-spacing:0.5px;">
+                                🔍 Desglose Auditoría 1×N: ${opp.event_label} (Costo total: ${(opp.total_cost * 100).toFixed(1)}% | Profit: ${(opp.guaranteed_profit * 100).toFixed(2)}¢)
+                            </div>
+                            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:8px;">
+                                ${outcomesHtml}
+                            </div>
+                        </td>
+                    </tr>`;
+                }
             }
             tbody.innerHTML = rows;
 
@@ -2538,16 +2640,74 @@ function renderArbitragePanel(data) {
                 const best = opportunities[0];
                 details.innerHTML = `
                     <strong>Mercado:</strong> ${best.event_label || best.event_id} &nbsp;|&nbsp;
-                    <strong>Kalshi YES:</strong> ${(best.kalshi_yes * 100).toFixed(1)}% &nbsp;|&nbsp;
-                    <strong>Poly YES:</strong> ${(best.polymarket_yes * 100).toFixed(1)}% &nbsp;|&nbsp;
+                    <strong>Dirección:</strong> ${best.direction} &nbsp;|&nbsp;
+                    <strong>Costo Total:</strong> ${(best.total_cost * 100).toFixed(1)}% &nbsp;|&nbsp;
                     <strong>Edge:</strong> ${(best.edge_pct * 100).toFixed(2)}% &nbsp;|&nbsp;
-                    <strong>Ganancia garantizada:</strong> ${(best.guaranteed_profit * 100).toFixed(2)}¢ por contrato
+                    <strong>Ganancia garantizada:</strong> ${(best.guaranteed_profit * 100).toFixed(2)}¢ por lote
                 `;
             }
         } else {
             tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted" style="padding:24px;">Sin oportunidades de arbitraje en este momento. El bot escanea continuamente...</td></tr>';
             const banner = document.getElementById("arb-alert-banner");
             if (banner) banner.style.display = "none";
+        }
+    }
+}
+
+// ============================================================
+//  BACKTESTING & SIMULACIÓN HISTÓRICA
+// ============================================================
+async function executeBacktestUI() {
+    const workerId = document.getElementById("bt-worker-select").value;
+    const days = parseInt(document.getElementById("bt-days-select").value, 10);
+    const capital = parseFloat(document.getElementById("bt-capital-input").value) || 1000.0;
+
+    const badge = document.getElementById("bt-status-badge");
+    const elPF = document.getElementById("bt-res-profit-factor");
+    const elWR = document.getElementById("bt-res-win-rate");
+    const elPnL = document.getElementById("bt-res-total-pnl");
+    const elSharpe = document.getElementById("bt-res-sharpe-dd");
+
+    if (badge) {
+        badge.textContent = "⏳ Ejecutando simulación...";
+        badge.style.color = "#00e6ff";
+    }
+
+    try {
+        const res = await fetch(`${API_BASE}/backtest?worker_id=${workerId}&days=${days}&initial_capital=${capital}`, {
+            method: "POST"
+        });
+        if (!res.ok) throw new Error("Error ejecutando backtest");
+        const data = await res.json();
+        const m = data.metrics || {};
+
+        if (badge) {
+            badge.textContent = "✅ Completado con éxito";
+            badge.style.color = "#02c076";
+        }
+
+        if (elPF) {
+            elPF.textContent = m.profit_factor !== undefined ? m.profit_factor.toFixed(2) : "—";
+            elPF.style.color = m.profit_factor >= 1.5 ? "#02c076" : (m.profit_factor >= 1.0 ? "#f0b90b" : "#f6465d");
+        }
+        if (elWR) {
+            elWR.textContent = m.win_rate_pct !== undefined ? `${m.win_rate_pct.toFixed(1)}% (${m.winning_trades || 0}/${m.total_trades || 0})` : "—";
+        }
+        if (elPnL) {
+            const pnlVal = m.total_pnl_usd || 0;
+            elPnL.textContent = `$${pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(2)}`;
+            elPnL.style.color = pnlVal >= 0 ? "#02c076" : "#f6465d";
+        }
+        if (elSharpe) {
+            const sharpe = m.sharpe_ratio || 0;
+            const dd = m.max_drawdown_pct || 0;
+            elSharpe.textContent = `Sharpe: ${sharpe.toFixed(2)} | Max DD: ${dd.toFixed(1)}%`;
+        }
+
+    } catch (err) {
+        if (badge) {
+            badge.textContent = "❌ Error en simulación";
+            badge.style.color = "#f6465d";
         }
     }
 }

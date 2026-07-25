@@ -27,7 +27,7 @@ from src.events import PriceUpdateEvent
 class LimitlessSportsFeeder(BaseFeeder):
     def __init__(self, symbol: str, event_queue: asyncio.Queue):
         super().__init__(symbol.upper(), event_queue)
-        self.poll_interval = float(os.getenv("SPORTS_POLL_INTERVAL", "10"))
+        self.poll_interval = float(os.getenv("SPORTS_POLL_INTERVAL", "1.0"))
         self.min_volume = float(os.getenv("SPORTS_MIN_VOLUME", "100"))
         self.task = None
 
@@ -72,34 +72,21 @@ class LimitlessSportsFeeder(BaseFeeder):
             await http_client.close()
 
     async def _scan_sports_markets(self):
+        try:
+            # Obtener mercados de la página general y categorías deportivas
+            resp = await self._page_fetcher.get_markets("2a91349c-3308-4234-afb7-0663e42968c1", {"limit": 50})
+            markets = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
 
-        sport_categories = [
-            "2a91349c-3308-4234-afb7-0663e42968c1",
-            "746c37e2-9d57-4e57-8527-7b1ae4817fb8",
-        ]
+            for m in markets:
+                slug = m.slug if hasattr(m, "slug") else (m.get("slug", "") if isinstance(m, dict) else "")
+                title = m.title if hasattr(m, "title") else (m.get("title", "") if isinstance(m, dict) else "")
+                if not slug:
+                    continue
 
-        for cat_id in sport_categories:
-            try:
-                resp = await self._page_fetcher.get_markets(cat_id, {"limit": 25})
-                markets = resp.data if hasattr(resp, "data") else resp.get("data", [])
+                await self._check_group_arb(slug, title)
 
-                for m in markets:
-                    slug = m.slug if hasattr(m, "slug") else m.get("slug", "")
-                    title = m.title if hasattr(m, "title") else m.get("title", "")
-                    vol = getattr(m, "volume_formatted", None) or "0"
-
-                    try:
-                        vol_float = float(vol) if vol else 0
-                    except (ValueError, TypeError):
-                        vol_float = 0
-
-                    if vol_float < self.min_volume:
-                        continue
-
-                    await self._check_group_arb(slug, title)
-
-            except Exception as e:
-                print(f"[Sports] Error scanning category: {e}")
+        except Exception as e:
+            print(f"[Sports] Error escaneando eventos dinámicos: {e}")
 
     async def _check_group_arb(self, group_slug, group_title):
         from src.strategy.cross_platform_tracker import cross_platform_tracker
@@ -118,8 +105,14 @@ class LimitlessSportsFeeder(BaseFeeder):
         has_liquidity = False
 
         for sub in subs:
-            prices = sub.prices if hasattr(sub, "prices") else [0.5, 0.5]
-            yes_price = float(prices[0]) if prices else 0.5
+            prices = getattr(sub, "prices", None)
+            if not prices or len(prices) == 0:
+                continue
+            try:
+                yes_price = float(prices[0])
+            except (ValueError, TypeError):
+                continue
+
             slug = sub.slug if hasattr(sub, "slug") else ""
             title = sub.title if hasattr(sub, "title") else ""
 
@@ -136,13 +129,13 @@ class LimitlessSportsFeeder(BaseFeeder):
                 }
             )
 
-        if not has_liquidity:
+        if not has_liquidity or len(outcomes) < 2:
             return
 
         edge = 1.0 - total_yes
 
         event_id = f"limitless_sport_{group_slug}"
-        primary_price = outcomes[0]["yes_price"] if outcomes else 0.5
+        primary_price = outcomes[0]["yes_price"]
 
         cross_platform_tracker.update_price(
             event_id=event_id,
@@ -165,32 +158,24 @@ class LimitlessSportsFeeder(BaseFeeder):
             group_slug=group_slug,
         )
 
+        # Emitir actualización de precio regular para el worker (usando self.symbol para aislamiento estricto)
+        event = PriceUpdateEvent(
+            symbol=self.symbol,
+            price=primary_price,
+            ask=primary_price,
+            bid=primary_price,
+        )
+        await self.queue.put(event)
+
         if edge > 0.02:
             print(
                 f"[Sports ARB YES] {group_title} | "
                 f"Total YES={total_yes:.4f} | Edge={edge:+.2%} | "
                 f"{len(outcomes)} outcomes | BUY ALL YES"
             )
-
-            event = PriceUpdateEvent(
-                symbol=event_id,
-                price=primary_price,
-                ask=primary_price,
-                bid=primary_price,
-            )
-            await self.queue.put(event)
-
         elif edge < -0.02:
             print(
                 f"[Sports ARB NO] {group_title} | "
                 f"Total YES={total_yes:.4f} | Overedge={edge:+.2%} | "
                 f"{len(outcomes)} outcomes | BUY ALL NO"
             )
-
-            event = PriceUpdateEvent(
-                symbol=event_id,
-                price=primary_price,
-                ask=primary_price,
-                bid=primary_price,
-            )
-            await self.queue.put(event)

@@ -30,6 +30,7 @@ services:
     volumes:
       - ./backend/src:/app/src
       - .env:/app/.env
+      - ./web:/app/web
     depends_on:
       db_trading:
         condition: service_healthy

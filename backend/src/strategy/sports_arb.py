@@ -128,8 +128,18 @@ class SportsArbitrageStrategy(BaseStrategy):
         title = edge_data.get("title", event_id)
         arb_type = edge_data.get("arb_type", "YES" if self.edge > 0 else "NO")
 
-        # 5. Validate: need minimum edge and outcomes
+        # 5. Validate: need minimum edge, net profitability after friction, and outcomes
         if abs(self.edge) < self.min_edge_pct:
+            return None
+
+        # Filtro de Rentabilidad Neta Anti-Fricción
+        from src.engine.friction_guard import friction_guard
+        is_profitable, net_edge, reason_guard = friction_guard.validate_arbitrage_profitability(
+            feeder_type=self.feeder_type,
+            gross_edge_pct=abs(self.edge),
+            position_size_usd=self.position_size_usd
+        )
+        if not is_profitable:
             return None
         if len(outcomes) < 2:
             return None
@@ -325,20 +335,18 @@ class SportsArbitrageStrategy(BaseStrategy):
 
         for i, outcome in enumerate(outcomes):
             if i == 0:
-                sell_price = 1.0
+                sell_price = 0.99
             else:
-                sell_price = 0.0
+                sell_price = 0.01
 
-            signals.append(
-                SignalEvent(
-                    symbol=f"{event_id}_{outcome['slug']}",
-                    side="SELL",
-                    price=sell_price,
-                    reason=f"1xN {arb_type} Arb exit: {reason}",
-                    amount=per_outcome_amount,
-                    position_id=None,
-                )
-            )
+            signals.append(SignalEvent(
+                symbol=f"{event_id}_{outcome['slug']}",
+                side="SELL",
+                price=sell_price,
+                reason=f"1xN {arb_type} Arb exit: {reason}",
+                amount=per_outcome_amount,
+                position_id=None,
+            ))
 
         if signals:
             if len(signals) > 1:

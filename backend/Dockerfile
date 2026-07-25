@@ -11,6 +11,7 @@ COPY backend/pyproject.toml ./
 RUN uv sync --no-dev
 
 COPY backend/src/ ./src
+COPY backend/tests/ ./tests
 COPY backend/main.py ./
 COPY web/ ./web
 

@@ -3,6 +3,15 @@ import os
 import requests
 import uuid
 import datetime
+
+# Load .env from project root before anything else
+from dotenv import load_dotenv as _ld
+_load_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_ld(os.path.join(_load_dir, ".env"), override=True)
+
+# Forzar aceleración a 1.0 segundo para escaneo de Alta Frecuencia (HFT) en tiempo real
+os.environ["SPORTS_POLL_INTERVAL"] = "1.0"
+os.environ["ORACLE_POLL_INTERVAL"] = "1.0"
 from src.database import DatabaseManager
 from src.events import SignalEvent
 from src.strategy.lead_lag_arbitrage import LeadLagArbitrageStrategy
@@ -19,6 +28,7 @@ from src.feeders.limitless_sports_feeder import LimitlessSportsFeeder
 from src.feeders.binary_arb_feeder import LimitlessOracleFeeder
 from src.strategy.sports_arb import SportsArbitrageStrategy
 from src.strategy.binary_arb_strategy import OracleMomentumStrategy
+from src.strategy.market_making_strategy import MarketMakingStrategy
 from src.core.security import security_guard
 from src.websocket_server import ws_server, make_event
 
@@ -70,6 +80,18 @@ class TradingWorker:
                 db=self.db,
                 worker_id=self.worker_id,
             )
+        elif self.feeder_type == "maker_making":
+            self.strategy = MarketMakingStrategy(
+                self.symbol,
+                position_size_usd=float(os.getenv("MM_POSITION_SIZE_USD", "25.0")),
+                half_spread_pct=float(os.getenv("MM_HALF_SPREAD_PCT", "0.02")),
+                min_spread_pct=float(os.getenv("MM_MIN_SPREAD_PCT", "0.01")),
+                max_inventory=int(os.getenv("MM_MAX_INVENTORY", "5")),
+                cooldown_seconds=float(os.getenv("MM_COOLDOWN_SECONDS", "10.0")),
+                min_edge_pct=float(os.getenv("MM_MIN_EDGE_PCT", "0.005")),
+                db=self.db,
+                worker_id=self.worker_id,
+            )
         else:
             self.strategy = LeadLagArbitrageStrategy(
                 self.symbol, db=self.db, worker_id=self.worker_id
@@ -93,6 +115,17 @@ class TradingWorker:
             self.feeder = LimitlessSportsFeeder(self.symbol, self.queue)
         elif self.feeder_type == "binary_arb":
             self.feeder = LimitlessOracleFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "maker_making":
+            self.feeder = LimitlessFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "hyperliquid":
+            from src.feeders.hyperliquid_feeder import HyperliquidFeeder
+            self.feeder = HyperliquidFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "dydx":
+            from src.feeders.dydx_feeder import DydxFeeder
+            self.feeder = DydxFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "forecastex":
+            from src.feeders.forecastex_feeder import ForecastExFeeder
+            self.feeder = ForecastExFeeder(self.symbol, self.queue)
         else:
             self.feeder = MockFeeder(self.symbol, self.queue, interval=1.0)
 
@@ -161,6 +194,7 @@ class TradingWorker:
             "limitless",
             "limitless_sports",
             "binary_arb",
+            "maker_making",
         ):
             return symbol, "USD"
 
@@ -354,6 +388,20 @@ class TradingWorker:
                 await asyncio.sleep(10)
                 if not self.is_running:
                     break
+
+                # Bucle de Control Adaptativo (Feedback Loop)
+                try:
+                    from src.engine.adaptive_controller import adaptive_controller
+                    if hasattr(self.strategy, "min_edge_pct") and hasattr(self.strategy, "position_size_usd"):
+                        curr_edge = getattr(self.strategy, "min_edge_pct", 0.03)
+                        curr_pos = getattr(self.strategy, "position_size_usd", 50.0)
+                        adj_edge, adj_pos, reason_feedback = adaptive_controller.evaluate_and_adjust_worker(
+                            self.worker_id, curr_edge, curr_pos
+                        )
+                        setattr(self.strategy, "min_edge_pct", adj_edge)
+                        setattr(self.strategy, "position_size_usd", adj_pos)
+                except Exception as e_adapt:
+                    logger.debug(f"[Feedback Loop Error] {e_adapt}")
                 try:
                     if self.alpaca_client:
                         await self._sync_alpaca_portfolio()
@@ -403,7 +451,13 @@ class TradingWorker:
                                     "price_update",
                                     {
                                         "symbol": event.symbol,
+                                        "worker_id": self.worker_id,
+                                        # Hora del tick de mercado en UTC. El
+                                        # frontend debe usarla para la vela,
+                                        # nunca su propio Date.now().
+                                        "timestamp": event.timestamp.isoformat(),
                                         "price": event.price,
+                                        "chart_price": event.chart_price,
                                         "bid": event.bid,
                                         "ask": event.ask,
                                         "teorical_probability": getattr(
@@ -428,6 +482,12 @@ class TradingWorker:
                                 ),
                             )
                         if signal:
+                            # Verificar Fusible de Seguridad Financiera (CircuitBreaker)
+                            from src.engine.circuit_breaker import circuit_breaker
+                            if circuit_breaker.is_tripped:
+                                self.db.log("WARNING", f"[CIRCUIT BREAKER DETENIDO] Orden cancelada: {circuit_breaker.tripped_reason}", self.worker_id)
+                                continue
+
                             # Execute this signal immediately
                             await self._execute_order(signal)
                             if ws_server.has_clients(self.worker_id):
@@ -656,11 +716,11 @@ class TradingWorker:
                         side=signal.side,
                         price=price,
                         amount=float(abs(units)),
+                        total=float(abs(units)) * price,
                         external_order_id=str(trade_id),
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
-                        trading_mode=self.trading_mode,
                     )
                     await self._sync_oanda_portfolio()
                 else:
@@ -753,11 +813,11 @@ class TradingWorker:
                             side=signal.side,
                             price=price,
                             amount=float(contracts_count),
+                            total=float(contracts_count) * price,
                             external_order_id=str(order_id),
                             status="COMPLETED",
                             worker_id=self.worker_id,
                             position_id=getattr(signal, "position_id", None),
-                            trading_mode=self.trading_mode,
                         )
                         await self._sync_kalshi_portfolio()
                     else:
@@ -791,10 +851,10 @@ class TradingWorker:
                         side="BUY",
                         price=price,
                         amount=contracts_count,
+                        total=spend_amount,
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
-                        trading_mode=self.trading_mode,
                     )
                     self._update_db_portfolio(self.quote_asset, new_quote)
                     self._update_db_portfolio(self.base_asset, new_base)
@@ -826,10 +886,10 @@ class TradingWorker:
                         side="SELL",
                         price=price,
                         amount=amount_to_sell,
+                        total=revenue,
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
-                        trading_mode=self.trading_mode,
                     )
                     self._update_db_portfolio(self.quote_asset, new_quote)
                     self._update_db_portfolio(self.base_asset, new_base)
@@ -868,10 +928,10 @@ class TradingWorker:
                 side="BUY",
                 price=price,
                 amount=amount_to_buy,
+                total=spend_amount,
                 status="COMPLETED",
                 worker_id=self.worker_id,
                 position_id=getattr(signal, "position_id", None),
-                trading_mode=self.trading_mode,
             )
             self._update_db_portfolio(self.quote_asset, new_quote)
             self._update_db_portfolio(self.base_asset, new_base)
@@ -927,10 +987,10 @@ class TradingWorker:
                 side="SELL",
                 price=price,
                 amount=amount_to_sell,
+                total=revenue,
                 status="COMPLETED",
                 worker_id=self.worker_id,
                 position_id=getattr(signal, "position_id", None),
-                trading_mode=self.trading_mode,
             )
             self._update_db_portfolio(self.quote_asset, new_quote)
             self._update_db_portfolio(self.base_asset, new_base)
@@ -1215,13 +1275,54 @@ class TradingWorker:
                         self.worker_id,
                     )
                     await self._generate_synthetic_history()
-            elif self.feeder_type in ("limitless", "limitless_sports"):
+            elif self.feeder_type == "binance":
+                # El gráfico no debe mezclar ticks reales con un random-walk
+                # local. Cargar velas reales antes de abrir el stream mantiene
+                # la escala y la continuidad correctas desde el primer punto.
                 self.db.log(
                     "INFO",
-                    "Limitless: generando historial sintético (no hay API de velas)...",
+                    f"Pre-cargando historial real de {self.symbol} desde Binance...",
                     self.worker_id,
                 )
-                await self._generate_synthetic_history()
+                symbol = self.symbol.replace("/", "").upper()
+                response = await asyncio.to_thread(
+                    requests.get,
+                    "https://api.binance.com/api/v3/klines",
+                    params={"symbol": symbol, "interval": "1m", "limit": 120},
+                    timeout=10,
+                )
+                response.raise_for_status()
+                candles = response.json()
+                if not candles:
+                    raise ValueError("Binance no devolvió velas")
+
+                import pandas as pd
+
+                rows = [
+                    {
+                        "timestamp": datetime.datetime.utcfromtimestamp(
+                            int(candle[0]) / 1000
+                        ),
+                        "open": float(candle[1]),
+                        "high": float(candle[2]),
+                        "low": float(candle[3]),
+                        "close": float(candle[4]),
+                        "price": float(candle[4]),
+                    }
+                    for candle in candles
+                ]
+                self.strategy.prices_df = pd.DataFrame(rows)
+                self.db.log(
+                    "INFO",
+                    f"Pre-carga Binance completada. {len(rows)} velas reales cargadas.",
+                    self.worker_id,
+                )
+            elif self.feeder_type in ("limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal", "maker_making"):
+                self.db.log(
+                    "INFO",
+                    f"{self.feeder_type}: omitiendo historial sintético (esperando datos reales del feeder)...",
+                    self.worker_id,
+                )
             else:
                 # Otros feeders (simulación / paper): Generar historial sintético para evitar arrancar con pantalla en blanco
                 await self._generate_synthetic_history()
@@ -1229,13 +1330,14 @@ class TradingWorker:
         except Exception as e:
             self.db.log(
                 "ERROR",
-                f"Error al pre-cargar datos históricos: {e}. Generando fallback sintético...",
+                f"Error al pre-cargar datos históricos: {e}.",
                 self.worker_id,
             )
-            try:
-                await self._generate_synthetic_history()
-            except Exception:
-                pass
+            if self.feeder_type not in ("binance", "limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal", "maker_making"):
+                try:
+                    await self._generate_synthetic_history()
+                except Exception:
+                    pass
 
     async def _generate_synthetic_history(self):
         try:
@@ -1248,16 +1350,16 @@ class TradingWorker:
             import random
 
             # Determinar precio inicial realista
-            start_price = (
-                0.50
-                if self.feeder_type
-                in ["kalshi", "polymarket", "limitless", "limitless_sports"]
-                else 63000.0
-                if "BTC" in self.symbol
-                else 3400.0
-                if "ETH" in self.symbol
-                else 100.0
-            )
+            if "BTC" in self.symbol:
+                start_price = 65000.0
+            elif "ETH" in self.symbol:
+                start_price = 3500.0
+            elif "SOL" in self.symbol:
+                start_price = 140.0
+            elif self.feeder_type in ["kalshi", "polymarket", "limitless", "limitless_sports"]:
+                start_price = 0.50
+            else:
+                start_price = 100.0
 
             # Generar 120 velas de 1 minuto hacia atrás
             now = datetime.datetime.now()
@@ -1266,7 +1368,10 @@ class TradingWorker:
             for i in range(120, 0, -1):
                 dt = now - datetime.timedelta(minutes=i)
                 # Camino aleatorio (Random Walk)
-                if self.feeder_type in [
+                if "BTC" in self.symbol or "ETH" in self.symbol or "SOL" in self.symbol:
+                    change = random.uniform(-0.003, 0.003)
+                    current_price = max(1.0, current_price * (1 + change))
+                elif self.feeder_type in [
                     "kalshi",
                     "polymarket",
                     "limitless",
@@ -1339,44 +1444,120 @@ class TradingEngine:
         self.db.add_log_hook(broadcast_log)
 
     def _load_workers(self):
-        # Intentar leer configuraciones de múltiples workers de .env
-        w1_enabled = os.getenv("WORKER1_ENABLED", "true").lower() == "true"
-        w2_enabled = os.getenv("WORKER2_ENABLED", "true").lower() == "true"
-        w3_enabled = os.getenv("WORKER3_ENABLED", "true").lower() == "true"
+        # Perfil de Configuración Global de Workers: 'pure_arbitrage', 'balanced' o 'crypto_hft_volatile'
+        profile_mode = os.getenv("WORKER_PROFILE_MODE", "pure_arbitrage").lower()
 
-        if w1_enabled:
-            w1_type = os.getenv(
-                "WORKER1_FEEDER_TYPE", os.getenv("FEEDER_TYPE", "alpaca")
-            )
-            w1_sym = os.getenv("WORKER1_SYMBOL", os.getenv("TRADING_SYMBOL", "BTC/USD"))
+        if profile_mode == "pure_arbitrage":
+            # Perfil ARBITRAJE PURO SINO RIESGO DIRECCIONAL (Ganancia garantizada del 2-3% neto por evento)
+            # Worker 1: Desactivado / En espera (Worker 1 se trabajará después)
             self.workers["worker_1"] = TradingWorker(
-                "worker_1", "Alpaca Ventana", w1_sym, w1_type, self.db
+                "worker_1", "Binance Spot Feed", "BTCUSDT", "binance", self.db
             )
-
-        if w2_enabled:
-            w2_type = os.getenv("WORKER2_FEEDER_TYPE", "limitless")
-            w2_sym = os.getenv("WORKER2_SYMBOL", "fed-rate-july-2026")
+            # Worker 2: Arbitraje Cross-Platform Regulado/DEX (Kalshi ↔ Polymarket ↔ Limitless Macro)
             self.workers["worker_2"] = TradingWorker(
-                "worker_2", "Limitless Macro", w2_sym, w2_type, self.db
+                "worker_2", "Cross-Platform Macro Arb", "CORE-PCE-YOY-JUNE-2026-1784042260443", "limitless", self.db
             )
+            # Worker 3: Arbitraje Deportivo 1xN (Cobertura Total sum(YES) < 1.00)
+            self.workers["worker_3"] = TradingWorker(
+                "worker_3", "Sports Arbitrage 1xN", "SPORTS", "limitless_sports", self.db
+            )
+            # Worker 4: Market Making or Binary Arb (toggle with WORKER4_STRATEGY)
+            w4_strategy = os.getenv("WORKER4_STRATEGY", "binary_arb")
+            try:
+                if w4_strategy == "maker_making":
+                    w4_worker = TradingWorker(
+                        "worker_4", "Market Making", "core-pce-yoy-june-2026-1784042260443", "maker_making", self.db
+                    )
+                    self.workers["worker_4"] = w4_worker
+                    with open("w4_debug.txt", "w") as _f: _f.write(f"CREATED: name={w4_worker.name} feeder={w4_worker.feeder_type} strategy={type(w4_worker.strategy).__name__}\n")
+                else:
+                    self.workers["worker_4"] = TradingWorker(
+                        "worker_4", "Crypto Binary Arb 5m", "BTC-5MIN-UP-OR-DOWN", "binary_arb", self.db
+                    )
+                    with open("w4_debug.txt", "w") as _f: _f.write(f"ELSE BRANCH: strategy={w4_strategy}\n")
+            except Exception as e:
+                import traceback
+                with open("w4_debug.txt", "w") as _f: _f.write(f"ERROR: {e}\n{traceback.format_exc()}\n")
+                self.workers["worker_4"] = TradingWorker(
+                    "worker_4", "Crypto Binary Arb 5m", "BTC-5MIN-UP-OR-DOWN", "binary_arb", self.db
+                )
+            # Worker 5: Arbitraje Intra-Market (YES_ask + NO_ask < 0.97)
+            self.workers["worker_5"] = TradingWorker(
+                "worker_5", "Intra-Market YES/NO Arb", "us-recession-by-end-of-2026-1767804297592", "limitless", self.db
+            )
+            # Worker 6: NUEVO MÓDULO — Maker Liquidity Rewards Strategy ($0.00 Fees + Rebates Diarios)
+            from src.strategy.maker_rewards_strategy import MakerLiquidityRewardsStrategy
+            worker6 = TradingWorker(
+                "worker_6", "Maker Liquidity Rewards", "us-recession-by-end-of-2026-1767804297592", "limitless", self.db
+            )
+            worker6.strategy = MakerLiquidityRewardsStrategy(
+                "us-recession-by-end-of-2026-1767804297592", db=self.db, worker_id="worker_6"
+            )
+            self.workers["worker_6"] = worker6
 
-        if w3_enabled:
-            w3_type = os.getenv("WORKER3_FEEDER_TYPE", "limitless_sports")
-            w3_sym = os.getenv(
-                "WORKER3_SYMBOL",
-                "SPORTS",
+            # Worker 7: NUEVO MÓDULO — NegRisk Multi-Outcome Arbitrage (Mercados Complejos 4 a 10 Opciones)
+            from src.strategy.negrisk_strategy import NegRiskMultiOutcomeStrategy
+            worker7 = TradingWorker(
+                "worker_7", "NegRisk 10x Arbitrage", "core-pce-yoy-june-2026-1784042260443", "limitless", self.db
+            )
+            worker7.strategy = NegRiskMultiOutcomeStrategy(
+                "core-pce-yoy-june-2026-1784042260443", db=self.db, worker_id="worker_7"
+            )
+            self.workers["worker_7"] = worker7
+        elif profile_mode == "crypto_hft_volatile":
+            self.workers["worker_1"] = TradingWorker(
+                "worker_1", "Hyperliquid BTC Perp", "BTC-PERP", "hyperliquid", self.db
+            )
+            self.workers["worker_2"] = TradingWorker(
+                "worker_2", "dYdX v4 BTC AppChain", "BTC-USD", "dydx", self.db
             )
             self.workers["worker_3"] = TradingWorker(
-                "worker_3", "Limitless Sports", w3_sym, w3_type, self.db
+                "worker_3", "Binance Lead-Lag", "BTCUSDT", "binance", self.db
             )
-
-        w4_enabled = os.getenv("WORKER4_ENABLED", "false").lower() == "true"
-        if w4_enabled:
-            w4_type = os.getenv("WORKER4_FEEDER_TYPE", "binary_arb")
-            w4_sym = os.getenv("WORKER4_SYMBOL", "BINARY_ARB")
             self.workers["worker_4"] = TradingWorker(
-                "worker_4", "Binary Arb", w4_sym, w4_type, self.db
+                "worker_4", "Hyperliquid ETH Perp", "ETH-PERP", "hyperliquid", self.db
             )
+        else:
+            # Perfil Balanceado por Defecto: Predicción + Deportes + Crypto
+            w1_enabled = os.getenv("WORKER1_ENABLED", "true").lower() == "true"
+            w2_enabled = os.getenv("WORKER2_ENABLED", "true").lower() == "true"
+            w3_enabled = os.getenv("WORKER3_ENABLED", "true").lower() == "true"
+
+            if w1_enabled:
+                w1_type = os.getenv("WORKER1_FEEDER_TYPE", "alpaca")
+                w1_sym = os.getenv("WORKER1_SYMBOL", "BTC/USD")
+                self.workers["worker_1"] = TradingWorker(
+                    "worker_1", "Alpaca Ventana", w1_sym, w1_type, self.db
+                )
+
+            if w2_enabled:
+                w2_type = os.getenv("WORKER2_FEEDER_TYPE", "limitless")
+                w2_sym = os.getenv("WORKER2_SYMBOL", "fed-rate-july-2026")
+                self.workers["worker_2"] = TradingWorker(
+                    "worker_2", "Limitless Macro", w2_sym, w2_type, self.db
+                )
+
+            if w3_enabled:
+                w3_type = os.getenv("WORKER3_FEEDER_TYPE", "limitless_sports")
+                w3_sym = os.getenv("WORKER3_SYMBOL", "SPORTS")
+                self.workers["worker_3"] = TradingWorker(
+                    "worker_3", "Limitless Sports", w3_sym, w3_type, self.db
+                )
+
+            w4_enabled = os.getenv("WORKER4_ENABLED", "true").lower() == "true"
+            if w4_enabled:
+                w4_strategy = os.getenv("WORKER4_STRATEGY", "binary_arb")
+                if w4_strategy == "maker_making":
+                    w4_type = "maker_making"
+                    w4_sym = os.getenv("WORKER4_SYMBOL", "SPORTS")
+                    w4_name = "Market Making"
+                else:
+                    w4_type = os.getenv("WORKER4_FEEDER_TYPE", "binary_arb")
+                    w4_sym = os.getenv("WORKER4_SYMBOL", "BINARY_ARB")
+                    w4_name = "Binary Arb"
+                self.workers["worker_4"] = TradingWorker(
+                    "worker_4", w4_name, w4_sym, w4_type, self.db
+                )
 
     @property
     def is_running(self):

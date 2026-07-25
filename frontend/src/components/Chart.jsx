@@ -25,6 +25,12 @@ export default function Chart({ statusData }) {
         crosshair: {
           mode: 0,
         },
+        leftPriceScale: {
+          visible: true,
+        },
+        rightPriceScale: {
+          visible: true,
+        },
         timeScale: {
           borderColor: '#242c35',
           timeVisible: true,
@@ -41,6 +47,7 @@ export default function Chart({ statusData }) {
           borderVisible: false,
           wickUpColor: '#02c076',
           wickDownColor: '#f84960',
+          priceScaleId: 'right',
         });
       }
 
@@ -50,6 +57,7 @@ export default function Chart({ statusData }) {
           lineWidth: 2,
           priceLineVisible: false,
           title: 'COBERTA',
+          priceScaleId: 'left',
         });
       }
     } catch (e) {
@@ -111,7 +119,8 @@ export default function Chart({ statusData }) {
   }, [statusData]);
 
   const isPredictionMarket = statusData?.feeder_type === 'kalshi' || statusData?.feeder_type === 'polymarket';
-  const prob = (statusData?.teorical_probability || 0.5) * 100;
+  const rawProb = statusData?.teorical_probability ?? 0.5;
+  const prob = rawProb <= 1.0 ? rawProb * 100 : 50.0;
 
   return (
     <div className="chart-panel" style={{ position: 'relative', width: '100%', flex: 1, minHeight: '380px', background: '#161a1e' }}>
