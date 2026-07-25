@@ -17,9 +17,9 @@ class KalshiFeeder(BaseFeeder):
 
         # Determinar hosts según el entorno
         if self.environment == "prod":
-            self.ws_url = "wss://trading-api.kalshi.com/trade-api/v2/websocket"
+            self.ws_url = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
         else:
-            self.ws_url = "wss://demo-api.kalshi.co/trade-api/v2/websocket"
+            self.ws_url = "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2"
 
         self.task = None
 

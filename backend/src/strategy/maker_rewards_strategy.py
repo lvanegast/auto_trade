@@ -67,10 +67,8 @@ class MakerLiquidityRewardsStrategy(BaseStrategy):
         if maker_edge >= self.min_rebate_edge_pct:
             # Validar con el escudo de fricción Maker (0% fee + $0 gas en Maker Limit Orders)
             from src.engine.friction_guard import friction_guard
-            is_profitable, net_edge, _ = friction_guard.validate_arbitrage_profitability(
-                feeder_type="limitless",
-                gross_edge_pct=maker_edge,
-                position_size_usd=self.position_size_usd
+            is_profitable, net_edge, _reason, _details = friction_guard.validate_arbitrage_profitability(
+                "limitless", "limitless", maker_edge, self.position_size_usd
             )
 
             if is_profitable:

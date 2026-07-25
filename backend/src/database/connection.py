@@ -152,6 +152,17 @@ class DatabaseManager:
             "ALTER TABLE trades ALTER COLUMN symbol TYPE VARCHAR(100);",
             "ALTER TABLE positions ALTER COLUMN entry_lead_price DROP NOT NULL;",
             "ALTER TABLE positions ALTER COLUMN amount DROP NOT NULL;",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS requested_price NUMERIC(18, 8);",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS filled_price NUMERIC(18, 8);",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS requested_qty NUMERIC(18, 8);",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS filled_qty NUMERIC(18, 8);",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS fee_per_asset NUMERIC(18, 8);",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS gas_usd NUMERIC(18, 8);",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS slippage_usd NUMERIC(18, 8);",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS latency_ms NUMERIC(10, 2);",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS net_pnl NUMERIC(18, 8);",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS leg_id VARCHAR(20);",
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_hedge_price NUMERIC(18, 8);",
         ]
 
         conn = None
@@ -286,10 +297,25 @@ class DatabaseManager:
         external_order_id: str = None,
         worker_id: str = "worker_1",
         position_id: int = None,
+        requested_price: float = None,
+        filled_price: float = None,
+        requested_qty: float = None,
+        filled_qty: float = None,
+        fee_per_asset: float = None,
+        gas_usd: float = None,
+        slippage_usd: float = None,
+        latency_ms: float = None,
+        net_pnl: float = None,
+        leg_id: str = None,
     ):
         query = """
-        INSERT INTO trades (symbol, side, price, amount, total, status, external_order_id, worker_id, position_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO trades (
+            symbol, side, price, amount, total, status, external_order_id,
+            worker_id, position_id, requested_price, filled_price,
+            requested_qty, filled_qty, fee_per_asset, gas_usd,
+            slippage_usd, latency_ms, net_pnl, leg_id
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id;
         """
         conn = None
@@ -308,6 +334,16 @@ class DatabaseManager:
                         external_order_id,
                         worker_id,
                         position_id,
+                        requested_price,
+                        filled_price,
+                        requested_qty,
+                        filled_qty,
+                        fee_per_asset,
+                        gas_usd,
+                        slippage_usd,
+                        latency_ms,
+                        net_pnl,
+                        leg_id,
                     ),
                 )
                 trade_id = cursor.fetchone()[0]

@@ -794,7 +794,6 @@ async def get_arbitrage_opportunities():
     pairs = get_active_pairs()
     all_opportunities = cross_platform_tracker.scan_all_pairs(min_edge_pct=0.01)
 
-    # Enriquecer con info del pair
     results = []
     for opp in all_opportunities:
         pair = next((p for p in pairs if p["event_id"] == opp["event_id"]), None)
@@ -803,26 +802,34 @@ async def get_arbitrage_opportunities():
             opp["category"] = pair["category"]
         results.append(opp)
 
-    # También incluir el estado de precios de todos los pares conocidos
     price_map = {}
     for pair in pairs:
-        both = cross_platform_tracker.get_both_prices(pair["event_id"])
+        both = cross_platform_tracker.get_both_books(pair["event_id"])
+        kalshi_book = both.get("kalshi") or {}
+        limitless_book = both.get("limitless") or {}
         price_map[pair["event_id"]] = {
             "event_label": pair["event_label"],
             "category": pair["category"],
-            "kalshi": both.get("kalshi", {}),
-            "limitless": both.get("limitless", {}),
+            "kalshi": {
+                "price": kalshi_book.get("yes_ask", 0.0),
+                "bid": kalshi_book.get("yes_bid", 0.0),
+                "ask": kalshi_book.get("yes_ask", 0.0),
+            },
+            "limitless": {
+                "price": limitless_book.get("yes_ask", 0.0),
+                "bid": limitless_book.get("yes_bid", 0.0),
+                "ask": limitless_book.get("yes_ask", 0.0),
+            },
         }
 
-    # Enriquecer con eventos deportivos (1xN)
     for event_id, edge_info in _sports_edge_data.items():
         total_yes = edge_info.get("total_yes", 0.95)
         edge_val = edge_info.get("edge", 0.05)
         title = edge_info.get("title", event_id)
-        
+
         if event_id not in price_map:
             price_map[event_id] = {
-                "event_label": f"⚽ {title}",
+                "event_label": f"{title}",
                 "category": "sports",
                 "kalshi": {"price": round(total_yes * 0.5, 4), "bid": round(total_yes * 0.49, 4), "ask": round(total_yes * 0.5, 4)},
                 "limitless": {"price": round(1.0 - edge_val, 4), "bid": round(0.95 - edge_val, 4), "ask": round(1.0 - edge_val, 4)},
@@ -830,15 +837,76 @@ async def get_arbitrage_opportunities():
 
         results.append({
             "event_id": event_id,
-            "event_label": f"⚽ {title}",
+            "event_label": f"{title}",
             "direction": "BUY_ALL_YES_1XN" if edge_val > 0 else "BUY_ALL_NO_1XN",
             "kalshi_yes": round(total_yes * 0.5, 4),
             "polymarket_yes": round(1.0 - total_yes, 4),
             "edge_pct": abs(edge_val),
             "total_cost": total_yes,
             "guaranteed_profit": abs(edge_val),
-            "outcomes": edge_info.get("outcomes", [])
+            "outcomes": edge_info.get("outcomes", []),
         })
+
+    return {"opportunities": results, "price_map": price_map, "catalog_version": "2.0.0"}
+
+
+@app.get("/api/opportunities")
+async def get_opportunities():
+    """Dashboard de oportunidades: arbitraje 2 piernas + 1xN, con profundidad y exposición."""
+    from src.strategy.cross_platform_tracker import cross_platform_tracker
+    from src.strategy.market_pairs import get_active_pairs, CATALOG_VERSION
+    from src.strategy.sports_arb import _sports_edge_data
+    from src.engine.friction_guard import friction_guard
+
+    pairs = get_active_pairs()
+    all_opportunities = cross_platform_tracker.scan_all_pairs(min_edge_pct=0.01)
+
+    enriched = []
+    for opp in all_opportunities:
+        pair = next((p for p in pairs if p["event_id"] == opp["event_id"]), None)
+        if pair:
+            opp["event_label"] = pair["event_label"]
+            opp["category"] = pair["category"]
+            opp["expiration"] = pair.get("expiration")
+            opp["resolution"] = pair.get("resolution", {})
+
+        is_profitable, net_edge, _, friction_details = friction_guard.validate_arbitrage_profitability(
+            leg1_feeder=opp["buy_platform"],
+            leg2_feeder=opp["hedge_platform"],
+            gross_edge_pct=opp["edge_pct"],
+            position_size_usd=50.0,
+        )
+        opp["net_edge_pct"] = net_edge
+        opp["friction_total"] = friction_details.get("total_friction", 0.0)
+        opp["is_profitable"] = is_profitable
+        opp["friction_details"] = friction_details
+        enriched.append(opp)
+
+    for event_id, edge_info in _sports_edge_data.items():
+        total_yes = edge_info.get("total_yes", 0.95)
+        edge_val = edge_info.get("edge", 0.05)
+        title = edge_info.get("title", event_id)
+        outcomes = edge_info.get("outcomes", [])
+
+        enriched.append({
+            "event_id": event_id,
+            "event_label": title,
+            "category": "sports",
+            "direction": "BUY_ALL_YES_1XN" if edge_val > 0 else "BUY_ALL_NO_1XN",
+            "edge_pct": abs(edge_val),
+            "total_cost": total_yes,
+            "guaranteed_profit": abs(edge_val),
+            "is_profitable": abs(edge_val) > 0.02,
+            "outcomes": outcomes,
+            "num_outcomes": len(outcomes),
+        })
+
+    return {
+        "catalog_version": CATALOG_VERSION,
+        "total_opportunities": len(enriched),
+        "profitable_count": sum(1 for o in enriched if o.get("is_profitable")),
+        "opportunities": enriched,
+    }
 
 @app.post("/api/backtest")
 async def run_backtest_endpoint(worker_id: str = "worker_3", days: int = 7, initial_capital: float = 1000.0):
@@ -1087,6 +1155,20 @@ async def release_stop():
     return {
         "status": "RELEASED",
         "message": f"Kill switch liberado. Peak reset a ${current_equity:.2f}.",
+    }
+
+
+@app.post("/api/circuit-breaker/reset")
+async def reset_circuit_breaker():
+    """Reset the circuit breaker after daily loss halt."""
+    from src.engine.circuit_breaker import circuit_breaker
+    circuit_breaker.reset_circuit()
+    current_equity = db.get_total_equity_usd()
+    circuit_breaker.starting_capital_day = current_equity
+    db.log("INFO", f"Circuit breaker reset. Capital inicial: ${current_equity:.2f}", "ALL")
+    return {
+        "status": "RESET",
+        "message": f"Circuit breaker reset. Capital inicial: ${current_equity:.2f}",
     }
 
 

@@ -22,6 +22,10 @@ class SecurityGuard:
         self.cooldown_after_loss_seconds = float(
             os.getenv("COOLDOWN_AFTER_LOSS_SECONDS", "30")
         )
+        self.max_order_size_usd = float(os.getenv("MAX_ORDER_SIZE_USD", "500"))
+
+        # --- Backtesting mode ---
+        self._backtesting = False
 
         # --- State ---
         self._kill_switch = False
@@ -35,8 +39,12 @@ class SecurityGuard:
         self._last_loss_time: dict[str, float] = {}
         self._halted = False
         self._halt_reason = ""
+        self._worker_peak_equity: dict[str, float] = {}
 
     def can_trade(self, worker_id: str) -> tuple[bool, str]:
+        if self._backtesting:
+            return True, "OK"
+
         if self._kill_switch:
             return False, f"KILL SWITCH activo: {self._kill_reason}"
 
@@ -78,6 +86,9 @@ class SecurityGuard:
         self._ensure_daily_reset()
         self._daily_pnl[worker_id] = self._daily_pnl.get(worker_id, 0.0) + pnl
 
+        if self._backtesting:
+            return
+
         if pnl < 0:
             self._consecutive_losses[worker_id] = (
                 self._consecutive_losses.get(worker_id, 0) + 1
@@ -99,12 +110,14 @@ class SecurityGuard:
             self._consecutive_losses[worker_id] = 0
 
         total_daily = sum(self._daily_pnl.values())
-        if total_daily < -self.max_daily_loss_usd:
+        if not self._backtesting and total_daily < -self.max_daily_loss_usd:
             self._halt_all(
                 f"Límite diario de pérdidas alcanzado: ${total_daily:.2f} (límite: -${self.max_daily_loss_usd:.2f})"
             )
 
     def update_equity(self, total_equity: float):
+        if self._backtesting:
+            return
         if total_equity > self._peak_equity:
             self._peak_equity = total_equity
 
@@ -114,6 +127,45 @@ class SecurityGuard:
                 self._halt_all(
                     f"Drawdown máximo alcanzado: {drawdown:.2%} desde pico (${self._peak_equity:.2f} → ${total_equity:.2f})"
                 )
+
+    def check_worker_drawdown(self, worker_id: str, current_equity: float, peak_equity: float) -> bool:
+        if self._backtesting:
+            return True
+
+        if peak_equity > 0:
+            self._worker_peak_equity[worker_id] = max(
+                self._worker_peak_equity.get(worker_id, 0.0), peak_equity
+            )
+
+        worker_peak = self._worker_peak_equity.get(worker_id, 0.0)
+        if worker_peak > 0:
+            drawdown = (worker_peak - current_equity) / worker_peak
+            if drawdown >= self.max_drawdown_pct:
+                logger.warning(
+                    f"[SecurityGuard] Worker {worker_id} drawdown {drawdown:.2%} excede límite ({self.max_drawdown_pct:.2%})"
+                )
+                if self.db:
+                    self.db.log(
+                        "WARNING",
+                        f"[SecurityGuard] Worker {worker_id} drawdown {drawdown:.2%} excede límite",
+                        worker_id,
+                    )
+                return False
+
+        return True
+
+    def check_order_size(self, worker_id: str, order_value_usd: float) -> tuple[bool, str]:
+        if self._backtesting:
+            return True, "OK"
+
+        if order_value_usd > self.max_order_size_usd:
+            msg = f"Orden de ${order_value_usd:.2f} excede MAX_ORDER_SIZE_USD (${self.max_order_size_usd:.2f})"
+            logger.warning(f"[SecurityGuard] Worker {worker_id}: {msg}")
+            if self.db:
+                self.db.log("WARNING", f"[SecurityGuard] {msg}", worker_id)
+            return False, msg
+
+        return True, "OK"
 
     def trigger_kill_switch(self, reason: str = "Manual emergency stop"):
         self._kill_switch = True
@@ -140,10 +192,14 @@ class SecurityGuard:
         if self._halted:
             return
         self._halted = True
-        self._halt_reason = reason
-        logger.error(f"[SecurityGuard] TRADING DETENIDO: {reason}")
+        breakdown = ", ".join(
+            f"{wid}: ${pnl:.2f}" for wid, pnl in sorted(self._daily_pnl.items())
+        )
+        full_reason = f"{reason} | P&L por worker: [{breakdown}]" if breakdown else reason
+        self._halt_reason = full_reason
+        logger.error(f"[SecurityGuard] TRADING DETENIDO: {full_reason}")
         if self.db:
-            self.db.log("ERROR", f"[SecurityGuard] Trading detenido: {reason}", "ALL")
+            self.db.log("ERROR", f"[SecurityGuard] Trading detenido: {full_reason}", "ALL")
 
     def get_metrics(self) -> dict:
         self._ensure_daily_reset()

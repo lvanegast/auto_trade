@@ -72,7 +72,7 @@ class BacktestEngine:
             # Actualizar tracker líder si la estrategia requiere Binance (Lead-Lag)
             if "BTC" in strategy.symbol:
                 try:
-                    from src.feeders.binance_feeder import BinanceTracker
+                    from src.strategy.lead_lag_arbitrage import BinanceTracker
                     lead_price = float(row.get('lead_price', price * (1 + np.random.uniform(-0.005, 0.005))))
                     BinanceTracker.latest_btc_price = lead_price
                 except Exception:
@@ -94,15 +94,51 @@ class BacktestEngine:
                             "amount": amount,
                             "cost": cost,
                             "reason": signal.reason,
-                            "position_id": signal.position_id
+                            "position_id": signal.position_id,
+                            "side": "BUY",
                         }
-                elif signal.side == "SELL" and open_position:
+                elif signal.side == "SELL" and not open_position:
+                    # Short entry
+                    entry_price = bid
+                    amount = signal.amount or (self.position_size_usd / entry_price if entry_price > 0 else 0)
+                    cost = amount * entry_price
+                    if self.capital >= cost:
+                        self.capital -= cost
+                        open_position = {
+                            "entry_time": timestamp,
+                            "entry_price": entry_price,
+                            "amount": amount,
+                            "cost": cost,
+                            "reason": signal.reason,
+                            "position_id": signal.position_id,
+                            "side": "SELL",
+                        }
+                elif signal.side == "SELL" and open_position and open_position.get("side") == "BUY":
+                    # Close long
                     exit_price = bid
                     revenue = open_position["amount"] * exit_price
                     pnl = revenue - open_position["cost"]
                     pnl_pct = (pnl / open_position["cost"]) if open_position["cost"] > 0 else 0
 
                     self.capital += revenue
+                    self.trades.append({
+                        "entry_time": open_position["entry_time"],
+                        "exit_time": timestamp,
+                        "entry_price": open_position["entry_price"],
+                        "exit_price": exit_price,
+                        "amount": open_position["amount"],
+                        "pnl": pnl,
+                        "pnl_pct": pnl_pct,
+                        "reason": open_position["reason"]
+                    })
+                    open_position = None
+                elif signal.side == "BUY" and open_position and open_position.get("side") == "SELL":
+                    # Close short
+                    exit_price = ask
+                    pnl = (open_position["entry_price"] - exit_price) * open_position["amount"]
+                    pnl_pct = (pnl / open_position["cost"]) if open_position["cost"] > 0 else 0
+
+                    self.capital += open_position["cost"] + pnl
                     self.trades.append({
                         "entry_time": open_position["entry_time"],
                         "exit_time": timestamp,

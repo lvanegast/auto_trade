@@ -180,9 +180,9 @@ class TradingWorker:
         self.kalshi_private_key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH")
         self.kalshi_env = os.getenv("KALSHI_ENV", "demo").lower()
         if self.kalshi_env == "prod":
-            self.kalshi_rest_url = "https://trading-api.kalshi.com/trade-api/v2"
+            self.kalshi_rest_url = "https://external-api.kalshi.com/trade-api/v2"
         else:
-            self.kalshi_rest_url = "https://demo-api.kalshi.co/trade-api/v2"
+            self.kalshi_rest_url = "https://external-api.demo.kalshi.co/trade-api/v2"
 
         # Saldo virtual inicial
         self._init_portfolio()
@@ -426,6 +426,15 @@ class TradingWorker:
                 try:
                     total = self.db.get_total_equity_usd()
                     security_guard.update_equity(total)
+
+                    from src.engine.circuit_breaker import circuit_breaker
+                    if circuit_breaker.starting_capital_day <= 0:
+                        circuit_breaker.starting_capital_day = total
+                    safe, reason = circuit_breaker.check_portfolio_safety(
+                        circuit_breaker.starting_capital_day, total
+                    )
+                    if not safe:
+                        self.db.log("WARNING", f"[CIRCUIT BREAKER] {reason}", self.worker_id)
                 except Exception:
                     pass
         except asyncio.CancelledError:

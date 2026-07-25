@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time as _time
 from src.strategy.base import BaseStrategy
 from src.events import PriceUpdateEvent, SignalEvent
 from src.feeders.connection_manager import AsyncWebSocketManager
@@ -86,39 +87,14 @@ class LeadLagArbitrageStrategy(BaseStrategy):
         worker_id: str = "worker_1",
     ):
         super().__init__(symbol)
-        self.arbitrage_threshold = float(
-            os.getenv("ARBITRAGE_THRESHOLD", str(arbitrage_threshold))
-        )
-        self.min_profit_target = float(
-            os.getenv("TAKE_PROFIT_PCT", str(min_profit_target))
-        )
-        self.max_hold_seconds = float(
-            os.getenv("MAX_HOLD_SECONDS", str(max_hold_seconds))
-        )
-        self.stop_loss_pct = float(
-            os.getenv(
-                "STOP_LOSS_PCT",
-                str(stop_loss_pct if stop_loss_pct is not None else 0.005),
-            )
-        )
-        self.stop_loss_usd = float(
-            os.getenv(
-                "STOP_LOSS_USD",
-                str(stop_loss_usd if stop_loss_usd is not None else 15.0),
-            )
-        )
-        self.trailing_stop_pct = float(
-            os.getenv(
-                "TRAILING_STOP_PCT",
-                str(trailing_stop_pct if trailing_stop_pct is not None else 0.0010),
-            )
-        )
-        self.cooldown_seconds = float(
-            os.getenv("COOLDOWN_SECONDS", str(cooldown_seconds))
-        )
-        self.position_size_pct = float(
-            os.getenv("POSITION_SIZE_PCT", str(position_size_pct))
-        )
+        self.arbitrage_threshold = arbitrage_threshold
+        self.min_profit_target = min_profit_target
+        self.max_hold_seconds = max_hold_seconds
+        self.stop_loss_pct = stop_loss_pct if stop_loss_pct is not None else 0.005
+        self.stop_loss_usd = stop_loss_usd if stop_loss_usd is not None else 15.0
+        self.trailing_stop_pct = trailing_stop_pct if trailing_stop_pct is not None else 0.0010
+        self.cooldown_seconds = cooldown_seconds
+        self.position_size_pct = position_size_pct
 
         self.db = db
         self.worker_id = worker_id
@@ -157,8 +133,21 @@ class LeadLagArbitrageStrategy(BaseStrategy):
     def evaluate_signal(self, event: PriceUpdateEvent) -> SignalEvent:
         return None
 
+    def _event_time(self, event):
+        """Get time from event timestamp (backtesting) or wall clock (live)."""
+        if event and hasattr(event, 'timestamp') and event.timestamp:
+            try:
+                return event.timestamp.timestamp()
+            except Exception:
+                pass
+        return _time.time()
+
     def on_price_update(self, event: PriceUpdateEvent) -> SignalEvent:
-        asyncio.create_task(ensure_binance_websocket())
+        try:
+            loop = asyncio.get_running_loop()
+            asyncio.create_task(ensure_binance_websocket())
+        except RuntimeError:
+            pass  # No event loop (backtesting mode)
         super().on_price_update(event)
 
         current_price = event.price
@@ -174,9 +163,9 @@ class LeadLagArbitrageStrategy(BaseStrategy):
             return None
 
         if self.last_position is not None:
-            return self._evaluate_exit(current_price, lead_price)
+            return self._evaluate_exit(current_price, lead_price, event)
 
-        now = asyncio.get_event_loop().time()
+        now = self._event_time(event)
 
         # Cooldown: no entrar demasiado rápido después de un cierre
         if (
@@ -188,19 +177,19 @@ class LeadLagArbitrageStrategy(BaseStrategy):
         deviation = (lead_price - current_price) / current_price
 
         if deviation > self.arbitrage_threshold:
-            return self._enter_position("BUY", current_price, lead_price, deviation)
+            return self._enter_position("BUY", current_price, lead_price, deviation, event)
         elif deviation < -self.arbitrage_threshold:
-            return self._enter_position("SELL", current_price, lead_price, deviation)
+            return self._enter_position("SELL", current_price, lead_price, deviation, event)
 
         return None
 
     def _enter_position(
-        self, side: str, current_price: float, lead_price: float, deviation: float
+        self, side: str, current_price: float, lead_price: float, deviation: float, event=None
     ) -> SignalEvent:
         self.last_position = side
         self.entry_price = current_price
         self.entry_lead_price = lead_price
-        self.entry_time = asyncio.get_event_loop().time()
+        self.entry_time = self._event_time(event)
         self._peak_profit = 0.0
 
         if self.db and hasattr(self.db, "save_open_position"):
@@ -227,8 +216,8 @@ class LeadLagArbitrageStrategy(BaseStrategy):
             position_id=self._position_id,
         )
 
-    def _evaluate_exit(self, current_price: float, lead_price: float) -> SignalEvent:
-        now = asyncio.get_event_loop().time()
+    def _evaluate_exit(self, current_price: float, lead_price: float, event=None) -> SignalEvent:
+        now = self._event_time(event)
         elapsed = now - self.entry_time
 
         if self.last_position == "BUY":
@@ -248,7 +237,7 @@ class LeadLagArbitrageStrategy(BaseStrategy):
         # Salida 1: Profit target
         if profit_pct >= self.min_profit_target:
             return self._trigger_exit(
-                current_price, f"Profit Target: {profit_pct:+.2%} en {elapsed:.1f}s"
+                current_price, f"Profit Target: {profit_pct:+.2%} en {elapsed:.1f}s", event
             )
 
         # Salida 2: Trailing stop (si el profit bajó X% desde el máximo)
@@ -261,6 +250,7 @@ class LeadLagArbitrageStrategy(BaseStrategy):
                 return self._trigger_exit(
                     current_price,
                     f"Trailing Stop: pico {self._peak_profit:+.2%} -> actual {profit_pct:+.2%} (drawdown: {drawdown:.2%}) en {elapsed:.1f}s",
+                    event,
                 )
 
         # Salida 3a: USD stop loss (hard cap)
@@ -268,24 +258,24 @@ class LeadLagArbitrageStrategy(BaseStrategy):
             loss_usd = abs(profit_pct) * self.position_size_pct * self.entry_price
             if loss_usd >= self.stop_loss_usd:
                 return self._trigger_exit(
-                    current_price, f"Stop Loss USD: -${loss_usd:.2f} en {elapsed:.1f}s"
+                    current_price, f"Stop Loss USD: -${loss_usd:.2f} en {elapsed:.1f}s", event
                 )
 
         # Salida 3b: Percentage stop loss (fallback)
         if self.stop_loss_pct > 0 and profit_pct <= -self.stop_loss_pct:
             return self._trigger_exit(
-                current_price, f"Stop Loss: {profit_pct:+.2%} en {elapsed:.1f}s"
+                current_price, f"Stop Loss: {profit_pct:+.2%} en {elapsed:.1f}s", event
             )
 
         # Salida 4: Time stop
         if elapsed >= self.max_hold_seconds:
             return self._trigger_exit(
-                current_price, f"Time Stop ({elapsed:.1f}s): {profit_pct:+.2%}"
+                current_price, f"Time Stop ({elapsed:.1f}s): {profit_pct:+.2%}", event
             )
 
         return None
 
-    def _trigger_exit(self, price: float, reason: str) -> SignalEvent:
+    def _trigger_exit(self, price: float, reason: str, event=None) -> SignalEvent:
         closed_position_id = self._position_id
         closing_side = "SELL" if self.last_position == "BUY" else "BUY"
 
@@ -304,7 +294,7 @@ class LeadLagArbitrageStrategy(BaseStrategy):
 
         # Record P&L in security guard if available
         try:
-            from src.security import security_guard
+            from src.core.security import security_guard
             security_guard.record_pnl(self.worker_id, pnl)
         except (ImportError, ModuleNotFoundError):
             pass
@@ -315,7 +305,7 @@ class LeadLagArbitrageStrategy(BaseStrategy):
         elif self.last_position == "SELL" and price < self.entry_price:
             self._win_count += 1
 
-        self._last_exit_time = asyncio.get_event_loop().time()
+        self._last_exit_time = self._event_time(event)
         self.last_position = None
         self.entry_price = 0.0
         self.entry_lead_price = 0.0

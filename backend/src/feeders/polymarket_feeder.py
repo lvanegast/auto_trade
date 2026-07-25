@@ -1,66 +1,264 @@
+"""
+PolymarketFeeder — WebSocket en tiempo real para el orderbook de Polymarket CLOB.
+
+Cambios vs. versión anterior:
+  - FALLA CERRADO: si WebSocket falla, marca mercado degradado y bloquea señales
+  - NO simula precios random walk bajo ninguna circunstancia
+  - Almacena: timestamp_origen, recepcion_local, book_age_ms, sequence, depth
+  - Fallback a REST solo para reconexión, nunca para generar precios
+"""
+
 import asyncio
 import json
-import urllib.request
+import time
 from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
+from src.strategy.cross_platform_tracker import cross_platform_tracker
 
 
 class PolymarketFeeder(BaseFeeder):
     def __init__(self, symbol: str, event_queue: asyncio.Queue, interval: float = 2.0):
-        # El símbolo en Polymarket es el Token ID (un entero muy grande como string)
         self.token_id = symbol.strip()
         super().__init__(symbol, event_queue)
         self.interval = interval
+        self._ws = None
+        self._ws_task = None
+        self._last_snapshots: dict = {}
+        self._market_degraded = False
+        self._degraded_reason = ""
+        self.last_book_update: float = 0.0
+        self._connected = False
 
-    def _fetch_book(self):
-        """Llamada síncrona a la API pública de Polymarket para obtener el libro."""
+    @property
+    def is_degraded(self) -> bool:
+        return self._market_degraded
+
+    def mark_market_degraded(self, reason: str):
+        self._market_degraded = True
+        self._degraded_reason = reason
+        if self.running:
+            print(f"[Polymarket {self.symbol}] MERCADO DEGRADADO: {reason}")
+
+    def _clear_degraded(self):
+        self._market_degraded = False
+        self._degraded_reason = ""
+
+    def _fetch_book_sync(self):
+        import urllib.request
         url = f"https://clob.polymarket.com/book?token_id={self.token_id}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    async def _fetch_book(self):
+        return await asyncio.to_thread(self._fetch_book_sync)
+
     async def start(self):
         self.running = True
-        print(
-            f"[Feeder Polymarket] Iniciada recolección para Token ID: {self.symbol}..."
-        )
+        self._ws_task = asyncio.create_task(self._run_websocket_stream())
 
+    async def stop(self):
+        self.running = False
+        if self._ws_task:
+            self._ws_task.cancel()
+            try:
+                await self._ws_task
+            except asyncio.CancelledError:
+                pass
+            self._ws_task = None
+
+    async def _run_websocket_stream(self):
+        import websockets
+
+        retry_count = 0
         while self.running:
             try:
-                try:
-                    # Realizar llamada en hilo secundario
-                    data = await asyncio.to_thread(self._fetch_book)
-                    bids = data.get("bids", [])
-                    asks = data.get("asks", [])
-                    bid = float(bids[0]["price"]) if bids else 0.50
-                    ask = float(asks[0]["price"]) if asks else 0.50
-                    price = round((bid + ask) / 2.0, 4)
-                except Exception as ex:
-                    # Si falla (por geobloqueo, red, etc.), simulamos un precio con random walk
-                    if not hasattr(self, "_last_sim_price"):
-                        self._last_sim_price = 0.50
+                self._connected = False
+                print(f"[Polymarket {self.symbol}] Conectando WebSocket...")
 
-                    import random
+                ws_url = "wss://ws-clob.polymarket.com"
+                async with websockets.connect(
+                    ws_url,
+                    extra_headers={"User-Agent": "AutoTrade-Bot/1.0"},
+                    ping_interval=20,
+                    ping_timeout=10,
+                ) as ws:
+                    self._ws = ws
+                    self._connected = True
+                    retry_count = 0
+                    self._clear_degraded()
+                    print(f"[Polymarket {self.symbol}] WebSocket conectado")
 
-                    drift = random.uniform(-0.01, 0.01)
-                    new_price = max(0.01, min(0.99, self._last_sim_price + drift))
-                    self._last_sim_price = round(new_price, 4)
+                    subscribe_msg = json.dumps({
+                        "auth": {},
+                        "type": "subscribe",
+                        "markets": [self.token_id],
+                        "assets_ids": [self.token_id],
+                        "channels": ["book", "price"],
+                    })
+                    await ws.send(subscribe_msg)
 
-                    bid = round(max(0.01, self._last_sim_price - 0.005), 4)
-                    ask = round(min(0.99, self._last_sim_price + 0.005), 4)
-                    price = self._last_sim_price
-                    # Imprimir advertencia pero continuar con la simulación
-                    print(
-                        f"[Feeder Polymarket] Error API ({ex}). Usando precio simulado: {price}"
-                    )
+                    while self.running:
+                        try:
+                            raw_msg = await asyncio.wait_for(ws.recv(), timeout=15.0)
+                            msg = json.loads(raw_msg)
+                            await self._handle_message(msg)
+                        except asyncio.TimeoutError:
+                            continue
+                        except websockets.exceptions.ConnectionClosed:
+                            print(f"[Polymarket {self.symbol}] Conexión cerrada")
+                            break
+                        except json.JSONDecodeError:
+                            continue
 
-                event = PriceUpdateEvent(
-                    symbol=self.symbol, price=price, ask=ask, bid=bid
-                )
-
-                await self.queue.put(event)
-
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                print(f"[Feeder Polymarket] Error inesperado en loop Polymarket: {e}")
+                retry_count += 1
+                self._connected = False
+                self.mark_market_degraded(f"WebSocket fallo: {e}")
 
-            await asyncio.sleep(self.interval)
+                if retry_count > 5:
+                    wait_time = min(2 ** retry_count, 60)
+                    print(f"[Polymarket {self.symbol}] Reconectando en {wait_time}s (intento {retry_count})")
+                    await asyncio.sleep(wait_time)
+                else:
+                    await asyncio.sleep(2)
+
+        self._ws = None
+        self._connected = False
+
+    async def _handle_message(self, msg: dict):
+        msg_type = msg.get("type", "")
+
+        if msg_type == "book":
+            await self._process_book_snapshot(msg)
+        elif msg_type == "price_change":
+            await self._process_price_change(msg)
+        elif msg_type == "last_trade_price":
+            await self._process_last_trade(msg)
+        elif msg_type == "error":
+            err_msg = msg.get("message", "unknown")
+            self.mark_market_degraded(f"Error del servidor: {err_msg}")
+
+    async def _process_book_snapshot(self, msg: dict):
+        ts_received = time.time()
+        ts_origin = msg.get("timestamp", ts_received)
+        if isinstance(ts_origin, str):
+            try:
+                ts_origin = float(ts_origin)
+            except ValueError:
+                ts_origin = ts_received
+
+        book = msg.get("book", msg)
+        bids = book.get("bids", [])
+        asks = book.get("asks", [])
+
+        if not bids and not asks:
+            self.mark_market_degraded("Snapshot vacío (sin bids/asks)")
+            return
+
+        if not asks:
+            self.mark_market_degraded("Snapshot sin asks — no puedo comprar")
+            return
+
+        try:
+            best_bid = float(bids[0]["price"]) if bids else 0.0
+            best_ask = float(asks[0]["price"]) if asks else 0.0
+            bid_depth = sum(float(b.get("size", 0)) for b in bids) if bids else 0.0
+            ask_depth = sum(float(a.get("size", 0)) for a in asks) if asks else 0.0
+        except (KeyError, IndexError, TypeError, ValueError):
+            self.mark_market_degraded("Formato de libro inválido")
+            return
+
+        if best_ask <= 0:
+            self.mark_market_degraded("Ask <= 0")
+            return
+
+        book_age_ms = (ts_received - ts_origin) * 1000
+        self.last_book_update = ts_received
+
+        self._last_snapshots[self.token_id] = {
+            "timestamp_origin": ts_origin,
+            "timestamp_local": ts_received,
+            "bid": best_bid,
+            "ask": best_ask,
+            "bid_depth": bid_depth,
+            "ask_depth": ask_depth,
+            "book_age_ms": book_age_ms,
+        }
+
+        current_price = round((best_bid + best_ask) / 2.0, 4)
+
+        cross_platform_tracker.update_book(
+            event_id="polymarket_" + self.token_id,
+            platform="polymarket",
+            yes_bid=round(best_bid, 4),
+            yes_ask=round(best_ask, 4),
+            bid_depth=bid_depth,
+            ask_depth=ask_depth,
+            ts_origin=ts_origin,
+        )
+
+        event = PriceUpdateEvent(
+            symbol=self.token_id,
+            price=current_price,
+            ask=round(best_ask, 4),
+            bid=round(best_bid, 4),
+        )
+
+        await self.queue.put(event)
+
+    async def _process_price_change(self, msg: dict):
+        ts_received = time.time()
+        ts_origin = msg.get("timestamp", ts_received)
+        if isinstance(ts_origin, str):
+            try:
+                ts_origin = float(ts_origin)
+            except ValueError:
+                ts_origin = ts_received
+
+        try:
+            asset_id = msg.get("asset_id", msg.get("market", ""))
+            if asset_id != self.token_id:
+                return
+
+            price = float(msg.get("price", 0))
+            if price <= 0:
+                return
+
+            self.last_book_update = ts_received
+
+            current = self._last_snapshots.get(self.token_id, {})
+            best_bid = current.get("bid", price * 0.999)
+            best_ask = current.get("ask", price * 1.001)
+
+            if "bid" in msg:
+                best_bid = float(msg["bid"])
+            if "ask" in msg:
+                best_ask = float(msg["ask"])
+
+            cross_platform_tracker.update_book(
+                event_id="polymarket_" + self.token_id,
+                platform="polymarket",
+                yes_bid=round(best_bid, 4),
+                yes_ask=round(best_ask, 4),
+                bid_depth=current.get("bid_depth", 0),
+                ask_depth=current.get("ask_depth", 0),
+                ts_origin=ts_origin,
+            )
+
+            event = PriceUpdateEvent(
+                symbol=self.token_id,
+                price=round(price, 4),
+                ask=round(best_ask, 4),
+                bid=round(best_bid, 4),
+            )
+
+            await self.queue.put(event)
+
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    async def _process_last_trade(self, msg: dict):
+        pass

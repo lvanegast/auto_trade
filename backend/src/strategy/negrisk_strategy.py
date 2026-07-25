@@ -7,6 +7,7 @@ Ejecuta la compra del paquete completo de N opciones de forma simultánea, asegu
 
 import asyncio
 import os
+import time as _time
 from src.strategy.base import BaseStrategy
 from src.events import PriceUpdateEvent, SignalEvent
 
@@ -15,10 +16,13 @@ class NegRiskMultiOutcomeStrategy(BaseStrategy):
     def __init__(
         self,
         symbol: str,
-        min_negrisk_edge_pct: float = 0.03, # 3.0% de margen mínimo
+        min_negrisk_edge_pct: float = 0.03,
         position_size_usd: float = 50.0,
         max_outcomes: int = 10,
         cooldown_seconds: float = 5.0,
+        max_hold_seconds: float = 120.0,
+        stop_loss_pct: float = 0.05,
+        take_profit_pct: float = 0.08,
         db=None,
         worker_id: str = "worker_7",
     ):
@@ -27,6 +31,9 @@ class NegRiskMultiOutcomeStrategy(BaseStrategy):
         self.position_size_usd = position_size_usd
         self.max_outcomes = max_outcomes
         self.cooldown_seconds = cooldown_seconds
+        self.max_hold_seconds = float(os.getenv("NEGRISK_MAX_HOLD_SECONDS", str(max_hold_seconds)))
+        self.stop_loss_pct = float(os.getenv("NEGRISK_STOP_LOSS_PCT", str(stop_loss_pct)))
+        self.take_profit_pct = float(os.getenv("NEGRISK_TAKE_PROFIT_PCT", str(take_profit_pct)))
         self.db = db
         self.worker_id = worker_id
 
@@ -34,9 +41,9 @@ class NegRiskMultiOutcomeStrategy(BaseStrategy):
         self.teorical_probability = 0.50
         self._last_exit_time = 0.0
         self._pending_signals = []
+        self._arb_groups = {}
 
     def evaluate_signal(self, df):
-        """Método abstracto de BaseStrategy."""
         return None
 
     def on_price_update(self, event: PriceUpdateEvent) -> SignalEvent:
@@ -45,11 +52,15 @@ class NegRiskMultiOutcomeStrategy(BaseStrategy):
         if self._pending_signals:
             return self._pending_signals.pop(0)
 
-        now = asyncio.get_event_loop().time()
+        event_id = event.symbol
+        now = _time.time()
+
+        if event_id in self._arb_groups:
+            return self._evaluate_exit(event_id, event.price, now)
+
         if (now - self._last_exit_time) < self.cooldown_seconds:
             return None
 
-        # Leer datos de NegRisk multilaterales del almacén compartido del feeder
         from src.feeders.limitless_feeder import get_macro_edge_data
         macro_store = get_macro_edge_data()
         edge_data = macro_store.get(event.symbol)
@@ -69,34 +80,32 @@ class NegRiskMultiOutcomeStrategy(BaseStrategy):
 
         if negrisk_edge >= self.min_negrisk_edge_pct:
             from src.engine.friction_guard import friction_guard
-            is_profitable, net_edge, _ = friction_guard.validate_arbitrage_profitability(
-                feeder_type="limitless",
-                gross_edge_pct=negrisk_edge,
-                position_size_usd=self.position_size_usd
+            is_profitable, net_edge, _reason, _details = friction_guard.validate_arbitrage_profitability(
+                "limitless", "limitless", negrisk_edge, self.position_size_usd
             )
 
             if is_profitable:
                 expected_profit = negrisk_edge * self.position_size_usd
                 title = edge_data.get("title", event.symbol)
-                reason = (
-                    f"NegRisk {outcomes_count}x Arb: Paquete Completo '{title}' | "
-                    f"Cost: ${total_yes_cost:.4f} | Edge: {negrisk_edge:.2%} | "
-                    f"Profit Neto Asegurado: ${expected_profit:.2f}"
-                )
 
-                self._last_exit_time = now
+                self._arb_groups[event_id] = {
+                    "entry_time": now,
+                    "total_cost": total_yes_cost,
+                    "expected_profit": expected_profit,
+                    "outcomes": outcomes,
+                    "title": title,
+                    "entry_price": total_yes_cost,
+                }
 
                 if self.db:
-                    self.db.log("INFO", f"[NegRisk-10x] 👑 {reason}", self.worker_id)
-                    pos_id = self.db.save_position(
+                    self.db.log(
+                        "INFO",
+                        f"[NegRisk {outcomes_count}x] Entrada: '{title}' | "
+                        f"Cost: ${total_yes_cost:.4f} | Edge: {negrisk_edge:.2%} | "
+                        f"Profit: ${expected_profit:.2f}",
                         self.worker_id,
-                        self.symbol,
-                        "BUY_NEGRISK",
-                        total_yes_cost,
-                        1.0 - total_yes_cost
                     )
 
-                # Generar cola de señales para comprar cada uno de los N outcomes del paquete
                 for out in outcomes:
                     self._pending_signals.append(
                         SignalEvent(
@@ -104,11 +113,86 @@ class NegRiskMultiOutcomeStrategy(BaseStrategy):
                             side="BUY",
                             price=out.get("yes_price", 0.10),
                             reason=f"NegRisk Leg: {out.get('title')}",
-                            amount=self.position_size_usd / outcomes_count
+                            amount=self.position_size_usd / outcomes_count,
+                            position_id=None,
                         )
                     )
 
                 if self._pending_signals:
                     return self._pending_signals.pop(0)
+
+        return None
+
+    def _evaluate_exit(self, event_id: str, current_price: float, now: float) -> SignalEvent:
+        group = self._arb_groups.get(event_id)
+        if not group:
+            return None
+
+        elapsed = now - group["entry_time"]
+
+        if elapsed >= self.max_hold_seconds:
+            return self._close_group(event_id, f"Time Stop ({elapsed:.0f}s)")
+
+        from src.feeders.limitless_feeder import get_macro_edge_data
+        macro_store = get_macro_edge_data()
+        edge_data = macro_store.get(event_id)
+        if edge_data:
+            current_total = edge_data.get("total_yes", 1.0)
+            current_edge = 1.0 - current_total
+
+            if current_edge <= -self.stop_loss_pct:
+                return self._close_group(
+                    event_id, f"Stop Loss (edge: {current_edge:+.2%})"
+                )
+
+            if current_edge >= self.take_profit_pct:
+                return self._close_group(
+                    event_id, f"Take Profit (edge: {current_edge:+.2%})"
+                )
+
+        return None
+
+    def _close_group(self, event_id: str, reason: str) -> SignalEvent:
+        group = self._arb_groups.pop(event_id, None)
+        if not group:
+            return None
+
+        self._last_exit_time = _time.time()
+
+        outcomes = group["outcomes"]
+        entry_cost = group["total_cost"]
+        expected_profit = group["expected_profit"]
+        title = group["title"]
+
+        signals = []
+        per_outcome_amount = self.position_size_usd / len(outcomes) if outcomes else self.position_size_usd
+
+        for i, outcome in enumerate(outcomes):
+            if i == 0:
+                sell_price = 0.99
+            else:
+                sell_price = 0.01
+
+            signals.append(SignalEvent(
+                symbol=outcome.get("slug", event_id),
+                side="SELL",
+                price=sell_price,
+                reason=f"NegRisk exit: {reason} | {title}",
+                amount=per_outcome_amount,
+                position_id=None,
+            ))
+
+        if self.db:
+            self.db.log(
+                "INFO",
+                f"[NegRisk] Cierre: {reason} | '{title}' | "
+                f"Cost: ${entry_cost:.4f} | Expected Profit: ${expected_profit:.2f}",
+                self.worker_id,
+            )
+
+        if signals:
+            if len(signals) > 1:
+                self._pending_signals = signals[1:]
+            return signals[0]
 
         return None
