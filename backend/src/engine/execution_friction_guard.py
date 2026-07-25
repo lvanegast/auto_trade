@@ -1,7 +1,7 @@
 """
-ExecutionFrictionGuard — calcula comisiones, costos de red (gas fees)
-y deslizamiento (slippage) estimado para AMBOS legos de una operación cruzada.
-Suma toda la fricção de ambos legos y verifica que el edge neto >= 2%.
+ExecutionFrictionGuard — calcula comissões, custos de rede (gas fees)
+e deslizamento (slippage) estimado para AMBOS legos de uma operação cruzada.
+Soma toda a fricção de ambos os legos.
 """
 
 import os
@@ -10,6 +10,7 @@ from typing import Tuple, Dict, Any
 
 class ExecutionFrictionGuard:
     def __init__(self):
+        # Estrutura de comissões por plataforma (Maker / Taker / Fixed Fee)
         self.friction_table: Dict[str, Dict[str, float]] = {
             "limitless_sports": {
                 "commission_pct": 0.00,
@@ -58,9 +59,11 @@ class ExecutionFrictionGuard:
             },
         }
 
-        self.min_net_margin_pct = float(os.getenv("MIN_NET_MARGIN_PCT", "0.02"))
+        # Margem líquida mínima requerida após subtrair TODA a fricção cruzada
+        self.min_net_margin_pct = float(os.getenv("MIN_NET_MARGIN_PCT", "0.015"))  # 0.015 = 1.5%
 
     def calculate_friction(self, feeder_type: str, position_size_usd: float) -> Dict[str, float]:
+        """Calcula o custo total de fricção em dólares USD para um tamanho de posição."""
         info = self.friction_table.get(feeder_type, {
             "commission_pct": 0.002,
             "gas_fee_usd": 0.0,
@@ -70,6 +73,7 @@ class ExecutionFrictionGuard:
         commission_cost = position_size_usd * info["commission_pct"]
         gas_cost = info["gas_fee_usd"]
         slippage_cost = position_size_usd * info["slippage_pct"]
+
         total_friction_usd = commission_cost + gas_cost + slippage_cost
         total_friction_pct = (total_friction_usd / position_size_usd) if position_size_usd > 0 else 0.0
 
@@ -84,6 +88,9 @@ class ExecutionFrictionGuard:
     def calculate_total_friction(
         self, leg1_feeder: str, leg2_feeder: str, position_size_usd: float
     ) -> Dict[str, Any]:
+        """Calcula a fricção TOTAL para AMBOS legos de uma operação cruzada.
+        Soma a fricção de ambas as plataformas de trading.
+        """
         leg1_friction = self.calculate_friction(leg1_feeder, position_size_usd)
         leg2_friction = self.calculate_friction(leg2_feeder, position_size_usd)
 
@@ -91,7 +98,9 @@ class ExecutionFrictionGuard:
             leg1_friction["total_friction_usd"] + leg2_friction["total_friction_usd"]
         )
         total_friction_pct = (
-            total_friction_usd / position_size_usd if position_size_usd > 0 else 0.0
+            total_friction_usd / position_size_usd
+            if position_size_usd > 0
+            else 0.0
         )
 
         return {
@@ -112,8 +121,11 @@ class ExecutionFrictionGuard:
         leg1_feeder: str,
         leg2_feeder: str,
         gross_edge_pct: float,
-        position_size_usd: float = 50.0,
+        position_size_usd: float = 50.0
     ) -> Tuple[bool, float, str, Dict[str, Any]]:
+        """Avalia se uma operação cruzada é verdadeiramente RENTÁVEL LÍQUIDA.
+        Retorna (is_profitable, net_edge_pct, reason, friction_details).
+        """
         friction_details = self.calculate_total_friction(
             leg1_feeder, leg2_feeder, position_size_usd
         )
@@ -125,9 +137,9 @@ class ExecutionFrictionGuard:
                 True,
                 net_edge_pct,
                 (
-                    f"APROBADO | Edge Bruto: {gross_edge_pct:.2%} | "
-                    f"Fricción Total: -{friction_details['total_friction_pct']:.2%} | "
-                    f"Net: +{net_edge_pct:.2%}"
+                    f"APROVADO RENTÁVEL | Edge Bruto: {gross_edge_pct:.2%} | "
+                    f"Fricção Total Cruzada: -{friction_details['total_friction_pct']:.2%} | "
+                    f"Profit Neto: +{net_edge_pct:.2%}"
                 ),
                 friction_details,
             )
@@ -136,13 +148,14 @@ class ExecutionFrictionGuard:
                 False,
                 net_edge_pct,
                 (
-                    f"RECHAZADO | Edge Bruto: {gross_edge_pct:.2%} | "
-                    f"Fricción Total: -{friction_details['total_friction_pct']:.2%} | "
-                    f"Net: {net_edge_pct:.2%} < {self.min_net_margin_pct:.2%}"
+                    f"REJEITADO POR FRICÇÃO CRUZADA | Edge Bruto: {gross_edge_pct:.2%} | "
+                    f"Fricção Total Cruzada: -{friction_details['total_friction_pct']:.2%} | "
+                    f"Profit Neto Insuficiente: {net_edge_pct:.2%} "
+                    f"(Requerido >= {self.min_net_margin_pct:.2%})"
                 ),
                 friction_details,
             )
 
 
-friction_guard = ExecutionFrictionGuard()
-execution_friction_guard = friction_guard
+# Singleton instance
+execution_friction_guard = ExecutionFrictionGuard()

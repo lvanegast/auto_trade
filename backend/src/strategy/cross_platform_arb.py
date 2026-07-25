@@ -2,15 +2,20 @@
 Cross-Platform Arbitrage Strategy — dual mode.
 
 Mode 1 (Cross-Platform): When both Kalshi and Limitless have the same event,
-buy YES on the cheaper + buy NO on the other. Guaranteed profit = $1 - total_cost.
+buy YES on one platform + buy NO on the other. Both legs executed as separate signals.
+Guaranteed profit = $1 - (yes_ask + no_ask).
 
 Mode 2 (1×N Intra-Platform): When only Limitless is available, detect group
 markets where sum(YES) != 1.0 and buy ALL outcomes.
-  sum(YES) < 1.0 → buy all YES → profit = $1 - sum(YES)
-  sum(YES) > 1.0 → buy all NO → profit = sum(YES) - $1
 
 Mode is auto-detected: if CrossPlatformTracker has both platforms → cross-platform.
 If only one platform → 1×N.
+
+KEY CHANGE vs. old version:
+  - Generates TWO signals per arbitrage (leg1 + leg2), not one
+  - Uses ask prices (executable), not midpoint
+  - Validates depth before sending signal
+  - Friction validated across BOTH platforms
 """
 
 import asyncio
@@ -37,6 +42,8 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         stop_loss_usd: float = None,
         take_profit_pct: float = 0.08,
         cooldown_seconds: float = 10.0,
+        max_exposure_per_event_pct: float = 0.10,
+        max_exposure_per_platform_pct: float = 0.20,
         db=None,
         worker_id: str = "worker_2",
     ):
@@ -68,6 +75,18 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         self.cooldown_seconds = float(
             os.getenv("CROSS_ARB_COOLDOWN_SECONDS", str(cooldown_seconds))
         )
+        self.max_exposure_per_event_pct = float(
+            os.getenv(
+                "CROSS_ARB_MAX_EXPOSURE_EVENT_PCT",
+                str(max_exposure_per_event_pct),
+            )
+        )
+        self.max_exposure_per_platform_pct = float(
+            os.getenv(
+                "CROSS_ARB_MAX_EXPOSURE_PLATFORM_PCT",
+                str(max_exposure_per_platform_pct),
+            )
+        )
         self.db = db
         self.worker_id = worker_id
         self._position_id = None
@@ -89,13 +108,16 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         self._pending_signals = []
         self._last_exit_time = {}
 
+        # Exposure tracking
+        self._open_exposure_by_event = {}   # event_id -> total USD exposed
+        self._open_exposure_by_platform = {}  # platform -> total USD exposed
+
         self.teorical_probability = 0.50
         self.edge = 0.0
         self.kelly_recommendation = 0.0
-        self.mode = "cross_platform"  # or "1xN"
+        self.mode = "cross_platform"
 
     def _resolve_event_id(self) -> str | None:
-        """Resuelve el event_id lógico a partir del ticker/token del feeder."""
         if self.feeder_type == "kalshi":
             pair = get_pair_by_kalshi_ticker(self.symbol)
             return pair["event_id"] if pair else None
@@ -104,59 +126,110 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
             return pair["event_id"] if pair else None
         return None
 
+    def _get_total_capital(self) -> float:
+        if self.db:
+            try:
+                portfolio = self.db.get_portfolio(self.worker_id)
+                return sum(float(item.get("free_balance", 0)) for item in portfolio)
+            except Exception:
+                pass
+        return 10000.0
+
+    def _get_platform_exposure(self, platform: str) -> float:
+        return self._open_exposure_by_platform.get(platform, 0.0)
+
+    def _get_event_exposure(self, event_id: str) -> float:
+        return self._open_exposure_by_event.get(event_id, 0.0)
+
+    def _can_open_position(self, event_id: str, platform: str, size_usd: float) -> tuple[bool, str]:
+        total_capital = self._get_total_capital()
+        if total_capital <= 0:
+            return False, "Capital total es 0"
+
+        event_limit = total_capital * self.max_exposure_per_event_pct
+        current_event_exposure = self._get_event_exposure(event_id)
+        if current_event_exposure + size_usd > event_limit:
+            remaining = event_limit - current_event_exposure
+            return False, (
+                f"Límite evento {event_id}: "
+                f"${current_event_exposure:.2f} / ${event_limit:.2f} | "
+                f"Disponible: ${remaining:.2f}"
+            )
+
+        platform_limit = total_capital * self.max_exposure_per_platform_pct
+        current_platform_exposure = self._get_platform_exposure(platform)
+        if current_platform_exposure + size_usd > platform_limit:
+            remaining = platform_limit - current_platform_exposure
+            return False, (
+                f"Límite plataforma {platform}: "
+                f"${current_platform_exposure:.2f} / ${platform_limit:.2f} | "
+                f"Disponible: ${remaining:.2f}"
+            )
+
+        return True, "OK"
+
+    def _record_exposure(self, event_id: str, platform: str, size_usd: float):
+        self._open_exposure_by_event[event_id] = (
+            self._get_event_exposure(event_id) + size_usd
+        )
+        self._open_exposure_by_platform[platform] = (
+            self._get_platform_exposure(platform) + size_usd
+        )
+
+    def _release_exposure(self, event_id: str, platform: str, size_usd: float):
+        self._open_exposure_by_event[event_id] = max(
+            0.0, self._get_event_exposure(event_id) - size_usd
+        )
+        self._open_exposure_by_platform[platform] = max(
+            0.0, self._get_platform_exposure(platform) - size_usd
+        )
+
     def on_price_update(self, event: PriceUpdateEvent) -> SignalEvent:
-        """Procesa cada tick: cross-platform arb o 1×N intra-platform."""
         super().on_price_update(event)
 
-        # Drain pending 1×N signals
         if self._pending_signals:
             return self._pending_signals.pop(0)
 
         current_price = event.price
         self.teorical_probability = current_price
 
-        # Check Intra-Market Single Contract Arbitrage (YES_ask + NO_ask < 0.97)
         real_bid = getattr(event, "bid", 0.0)
         real_ask = getattr(event, "ask", 0.0)
         if real_ask > 0 and real_bid > 0:
-            # En un contrato binario, el precio implícito de NO es (1 - bid)
             no_ask = 1.0 - real_bid
             total_intra_cost = real_ask + no_ask
             if total_intra_cost < 0.97:
                 intra_edge = 1.0 - total_intra_cost
-                reason = (
-                    f"Intra-Market Arb: YES_ask={real_ask:.4f} + NO_ask={no_ask:.4f} = {total_intra_cost:.4f} | "
-                    f"Edge: {intra_edge:.2%} | Profit Asegurado: ${(1.0 - total_intra_cost) * 50.0:.2f}"
-                )
                 if self.db:
-                    self.db.log("INFO", f"[Intra-Arb] 🚨 OPORTUNIDAD CAPTURADA! {reason}", self.worker_id)
+                    self.db.log(
+                        "INFO",
+                        f"[Intra-Arb] Oportunidad: YES_ask={real_ask:.4f} + NO_ask={no_ask:.4f} = {total_intra_cost:.4f} | Edge: {intra_edge:.2%}",
+                        self.worker_id,
+                    )
                 return SignalEvent(
                     symbol=self.symbol,
                     side="BUY",
                     price=real_ask,
-                    reason=reason,
+                    reason=f"Intra-Arb: YES_ask={real_ask:.4f} NO_ask={no_ask:.4f} edge={intra_edge:.2%}",
                     amount=0.5,
-                    position_id=getattr(self, "_position_id", None)
+                    position_id=getattr(self, "_position_id", None),
                 )
 
-        # Check if we have cross-platform data
         if self.event_id:
-            both = self._tracker.get_both_prices(self.event_id)
-            has_kalshi = both.get("kalshi", {}).get("price", 0) > 0
-            has_limitless = both.get("limitless", {}).get("price", 0) > 0
+            both = self._tracker.get_both_books(self.event_id)
+            has_kalshi = both.get("kalshi") is not None
+            has_limitless = both.get("limitless") is not None
 
             if has_kalshi and has_limitless:
                 self.mode = "cross_platform"
                 return self._handle_cross_platform(event, current_price)
 
-        # Fallback: 1×N intra-platform on Limitless macro group markets
         self.mode = "1xN"
         return self._handle_1xN(event, current_price)
 
     def _handle_cross_platform(
         self, event: PriceUpdateEvent, current_price: float
-    ) -> SignalEvent:
-        """Original cross-platform arbitrage logic."""
+    ) -> SignalEvent | None:
         # Update tracker with our price
         self._tracker.update_price(
             event_id=self.event_id,
@@ -166,16 +239,13 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
             ask=event.ask,
         )
 
-        # If we have an open position, evaluate exit
         if self.last_position is not None:
             return self._evaluate_exit(current_price)
 
-        # Cooldown
         now = asyncio.get_event_loop().time()
         if now - self.last_exit_time < self.cooldown_seconds:
             return None
 
-        # Calculate arbitrage
         opp = self._tracker.calculate_arbitrage(
             self.event_id, min_edge_pct=self.min_edge_pct
         )
@@ -186,12 +256,13 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
             self.last_arbitrage_opportunity = None
             return None
 
-        # Filtro de Rentabilidad Neta Anti-Fricción
         from src.engine.friction_guard import friction_guard
-        is_profitable, net_edge, _ = friction_guard.validate_arbitrage_profitability(
-            feeder_type=self.feeder_type,
-            gross_edge_pct=opp.get("edge_pct", 0.0),
-            position_size_usd=self.position_size_usd
+
+        is_profitable, net_edge, _, friction_details = friction_guard.validate_arbitrage_profitability(
+            leg1_feeder=opp["buy_platform"],
+            leg2_feeder=opp["hedge_platform"],
+            gross_edge_pct=opp["edge_pct"],
+            position_size_usd=self.position_size_usd,
         )
         if not is_profitable:
             return None
@@ -203,76 +274,117 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
             self.kelly_recommendation = 0.0
             return None
 
-        # Kelly sizing
-        cost = opp["total_cost"]
-        if cost > 0 and cost < 1.0:
-            self.kelly_recommendation = self.position_size_pct * (
-                opp["edge_pct"] / cost
-            )
-        else:
-            self.kelly_recommendation = 0.0
+        buy_ask = opp["buy_ask"]
+        hedge_ask = opp["hedge_ask"]
 
-        if self.kelly_recommendation > 0.01:
-            self.last_position = "BUY"
-            self.entry_price = current_price
-            self.entry_time = asyncio.get_event_loop().time()
+        buy_depth = opp["buy_depth"]
+        hedge_depth = opp["hedge_depth"]
 
+        max_by_depth = min(buy_depth, hedge_depth) if buy_depth > 0 and hedge_depth > 0 else self.position_size_usd
+        position_size = min(self.position_size_usd, max_by_depth)
+        if position_size <= 0:
+            return None
+
+        can_open, limit_msg = self._can_open_position(self.event_id, self.feeder_type, position_size)
+        if not can_open:
             if self.db:
-                self._position_id = self.db.save_position(
-                    self.worker_id,
-                    self.symbol,
-                    "BUY",
-                    current_price,
-                    opp["limitless_yes"]
-                    if self.feeder_type == "kalshi"
-                    else opp["kalshi_yes"],
-                )
+                self.db.log("WARNING", f"[Cross-Arb] {limit_msg}", self.worker_id)
+            return None
 
-            reason = (
-                f"Cross-Platform Arb: "
-                f"YES @{self.feeder_type.upper()}={current_price:.4f} | "
-                f"Edge: {opp['edge_pct']:.2%} | "
-                f"Cost: {cost:.4f} | Profit: {opp['guaranteed_profit']:.4f}"
+        buy_qty = position_size / buy_ask if buy_ask > 0 else 0
+        hedge_qty = position_size / hedge_ask if hedge_ask > 0 else 0
+
+        if buy_qty <= 0 or hedge_qty <= 0:
+            return None
+
+        self._record_exposure(self.event_id, self.feeder_type, position_size)
+
+        self.last_position = "BUY"
+        self.entry_price = current_price
+        self.entry_time = asyncio.get_event_loop().time()
+
+        leg1_fee = friction_details["leg1_fee_per_asset"]
+        leg2_fee = friction_details["leg2_fee_per_asset"]
+
+        buy_reason = (
+            f"Arb Pata 1: BUY {opp['buy_side']} @{opp['buy_platform'].upper()} "
+            f"ask={buy_ask:.4f} qty={buy_qty:.2f} | "
+            f"Edge: {opp['edge_pct']:.2%} Net: {net_edge:.2%} | "
+            f"Leg1 Fee: ${leg1_fee:.2f} Leg2 Fee: ${leg2_fee:.2f}"
+        )
+
+        hedge_reason = (
+            f"Arb Pata 2: BUY {opp['hedge_side']} @{opp['hedge_platform'].upper()} "
+            f"ask={hedge_ask:.4f} qty={hedge_qty:.2f} | "
+            f"Edge: {opp['edge_pct']:.2%} Net: {net_edge:.2%} | "
+            f"Leg1 Fee: ${leg1_fee:.2f} Leg2 Fee: ${leg2_fee:.2f}"
+        )
+
+        if self.db:
+            self.db.log("INFO", f"[Cross-Arb] {buy_reason}", self.worker_id)
+            self.db.log("INFO", f"[Cross-Arb] {hedge_reason}", self.worker_id)
+            self._position_id = self.db.save_position(
+                self.worker_id,
+                self.symbol,
+                "BUY",
+                buy_ask,
+                hedge_ask,
             )
 
-            if self.db:
-                self.db.log("INFO", f"[Cross-Arb] {reason}", self.worker_id)
+        leg1_signal = SignalEvent(
+            symbol=self.symbol,
+            side="BUY",
+            price=buy_ask,
+            reason=buy_reason,
+            amount=buy_qty,
+            position_id=self._position_id,
+        )
 
-            return SignalEvent(
-                symbol=self.symbol,
-                side="BUY",
-                price=current_price,
-                reason=reason,
-                amount=self.kelly_recommendation,
-                position_id=self._position_id,
-            )
+        hedge_symbol = self._resolve_hedge_symbol(opp["hedge_platform"])
+        leg2_signal = SignalEvent(
+            symbol=hedge_symbol,
+            side="BUY",
+            price=hedge_ask,
+            reason=hedge_reason,
+            amount=hedge_qty,
+            position_id=self._position_id,
+        )
 
-        return None
+        self._pending_signals = [leg2_signal]
+        return leg1_signal
+
+    def _resolve_hedge_symbol(self, hedge_platform: str) -> str:
+        if self.event_id and self.feeder_type == "kalshi":
+            pair = None
+            for p in __import__("src.strategy.market_pairs", fromlist=["MARKET_PAIRS"]).MARKET_PAIRS:
+                if p["event_id"] == self.event_id:
+                    pair = p
+                    break
+            if pair:
+                if hedge_platform == "limitless":
+                    return pair.get("limitless_slug", self.symbol)
+                elif hedge_platform == "kalshi":
+                    return pair.get("kalshi_ticker", self.symbol)
+        return self.symbol
 
     def _handle_1xN(self, event: PriceUpdateEvent, current_price: float) -> SignalEvent:
-        """1×N intra-platform arb on Limitless macro group markets."""
         event_id = event.symbol
 
-        # Check exit for active groups
         if event_id in self._arb_groups:
             return self._evaluate_group_exit(event_id, current_price)
 
-        # Cooldown
         now = asyncio.get_event_loop().time()
         if event_id in self._last_exit_time:
             if now - self._last_exit_time[event_id] < self.cooldown_seconds:
                 return None
 
-        # Read macro edge data from feeder
         from src.feeders.limitless_feeder import get_macro_edge_data
 
         macro_data = get_macro_edge_data()
-
         edge_data = macro_data.get(event_id)
         if edge_data is None:
             return None
 
-        edge_data["total_yes"]
         edge = edge_data["edge"]
         outcomes = edge_data.get("outcomes", [])
         title = edge_data.get("title", event_id)
@@ -287,10 +399,7 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         if event_id in self._arb_groups:
             return None
 
-        # Determine arb type
         arb_type = "YES" if edge > 0 else "NO"
-
-        # Calculate 1×N
         total_cost = 0.0
         per_outcome_signals = []
 
@@ -298,47 +407,38 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
             for outcome in outcomes:
                 yes_price = outcome["yes_price"]
                 total_cost += yes_price
-                per_outcome_signals.append(
-                    {
-                        "slug": outcome["slug"],
-                        "title": outcome["title"],
-                        "side": "BUY",
-                        "token": "YES",
-                        "price": yes_price,
-                    }
-                )
+                per_outcome_signals.append({
+                    "slug": outcome["slug"],
+                    "title": outcome["title"],
+                    "token": "YES",
+                    "price": yes_price,
+                })
         else:
             for outcome in outcomes:
                 no_price = outcome["no_price"]
                 total_cost += no_price
-                per_outcome_signals.append(
-                    {
-                        "slug": outcome["slug"],
-                        "title": outcome["title"],
-                        "side": "BUY",
-                        "token": "NO",
-                        "price": no_price,
-                    }
-                )
+                per_outcome_signals.append({
+                    "slug": outcome["slug"],
+                    "title": outcome["title"],
+                    "token": "NO",
+                    "price": no_price,
+                })
 
         expected_profit = 1.0 - total_cost if arb_type == "YES" else total_cost - 1.0
         if expected_profit <= 0:
             return None
 
         per_outcome_amount = self.position_size_usd / len(outcomes)
-        total_spend = per_outcome_amount * len(outcomes)
 
-        # Check balance
         if self.db:
             balances = {
                 item["asset"]: float(item["free_balance"])
                 for item in self.db.get_portfolio(self.worker_id)
             }
             available = balances.get("USD", 0.0)
-            if available < total_spend:
+            if available < per_outcome_amount * len(outcomes):
                 return None
 
-        # Record arb group
         self._arb_groups[event_id] = {
             "entry_time": now,
             "total_cost": total_cost,
@@ -349,7 +449,6 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
             "position_ids": [],
         }
 
-        # Generate N sequential BUY signals
         signals = []
         for i, sig_data in enumerate(per_outcome_signals):
             position_id = None
@@ -394,7 +493,6 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         return signals[0]
 
     def _evaluate_exit(self, current_price: float) -> SignalEvent:
-        """Exit cross-platform position."""
         now = asyncio.get_event_loop().time()
         elapsed = now - self.entry_time
 
@@ -455,7 +553,6 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         return None
 
     def _evaluate_group_exit(self, event_id: str, current_price: float) -> SignalEvent:
-        """Exit 1×N arb group."""
         group = self._arb_groups.get(event_id)
         if not group:
             return None
@@ -469,7 +566,6 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         return None
 
     def _close_group(self, event_id: str, reason: str) -> SignalEvent:
-        """Close all outcomes in a 1×N group."""
         group = self._arb_groups.pop(event_id, None)
         if not group:
             return None
@@ -481,17 +577,17 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         expected_profit = group["expected_profit"]
         title = group["title"]
 
+        per_outcome_amount = self.position_size_usd / len(outcomes)
+        total_exposure = per_outcome_amount * len(outcomes)
+        self._release_exposure(event_id, self.feeder_type, total_exposure)
+
         for pos_id in group.get("position_ids", []):
             if self.db and pos_id:
                 self.db.close_position(
-                    pos_id,
-                    0.0,
-                    f"1xN {arb_type} closed: {reason}",
-                    worker_id=self.worker_id,
+                    pos_id, 0.0, f"1xN {arb_type} closed: {reason}", worker_id=self.worker_id,
                 )
 
-        from src.security import security_guard
-
+        from src.core.security import security_guard
         security_guard.record_pnl(self.worker_id, expected_profit)
 
         if self.db:
@@ -501,12 +597,9 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
                 self.worker_id,
             )
 
-        per_outcome_amount = self.position_size_usd / len(outcomes)
         signals = []
         for i, outcome in enumerate(outcomes):
-            sell_price = (
-                outcome["yes_price"] if arb_type == "YES" else outcome["no_price"]
-            )
+            sell_price = outcome["yes_price"] if arb_type == "YES" else outcome["no_price"]
             position_id = (
                 group.get("position_ids", [None])[i]
                 if i < len(group.get("position_ids", []))
@@ -531,7 +624,6 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         return None
 
     def _trigger_exit(self, side: str, price: float, reason: str) -> SignalEvent:
-        """Close cross-platform position."""
         closed_position_id = self._position_id
         self.last_exit_time = asyncio.get_event_loop().time()
 
@@ -542,13 +634,16 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         else:
             pnl = 0.0
 
+        if self.event_id and self.feeder_type:
+            self._release_exposure(self.event_id, self.feeder_type, self.position_size_usd)
+
         if self._position_id and self.db:
             self.db.close_position(
                 self._position_id, price, reason, worker_id=self.worker_id
             )
 
         try:
-            from src.security import security_guard
+            from src.core.security import security_guard
             security_guard.record_pnl(self.worker_id, pnl)
         except (ImportError, ModuleNotFoundError):
             pass
