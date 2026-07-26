@@ -1515,10 +1515,6 @@ class TradingEngine:
             worker6.strategy = MakerLiquidityRewardsStrategy("SPORTS", db=self.db, worker_id="worker_6")
             self.workers["worker_6"] = worker6
 
-            # Worker 7: Arbitraje Intra-Plataforma 1xN (3 Opciones Estricto)
-            worker7 = TradingWorker("worker_7", "Intra-Platform Sports", "SPORTS", "limitless_sports", self.db)
-            worker7.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=0.015, position_size_usd=2.0, db=self.db, worker_id="worker_7")
-            self.workers["worker_7"] = worker7
         elif profile_mode == "crypto_hft_volatile":
             self.workers["worker_1"] = TradingWorker(
                 "worker_1", "Hyperliquid BTC Perp", "BTC-PERP", "hyperliquid", self.db
