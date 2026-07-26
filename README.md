@@ -22,13 +22,13 @@ El sistema opera con 7 trabajadores (*workers*) independientes coordinados por `
 
 | Worker ID | Nombre del Worker | Plataforma / Feeder | Tipo de Arbitraje / Función |
 | :--- | :--- | :--- | :--- |
-| **Worker 1** | Crypto BTC Intraday Arb | Polymarket / Public Feed | Opciones Binarias Crypto Intradía (`BTC-INTRADAY`). |
-| **Worker 2** | Cross-Platform Macro Arb | Kalshi Demo (API RSA PSS) | Opciones Binarias Ethereum Intradía (`ETH-INTRADAY`). |
-| **Worker 3** | Limitless Sports Arb | Limitless Exchange (Base L2) | Arbitraje Deportivo $1 \times N$ (Partidos de Champions League / Europa League). |
-| **Worker 4** | Limitless Macro Arb | Limitless Exchange (Base L2) | Opciones Binarias Eventos Macro ($<1.00 USD). |
+| **Worker 1** | Crypto BTC HFT | Limitless / Kalshi | Arbitraje Spot-to-Prediction (Lead-Lag vs Binance). |
+| **Worker 2** | Cross-Platform Sports | Limitless vs Polymarket | Arbitraje Deportivo Cruzado 1xN (Mejores precios de canasta). |
+| **Worker 3** | Limitless Sports (3 Opciones) | Limitless Exchange (Base L2) | Arbitraje Deportivo $1 \times N$ (Fútbol, Local/Visitante/Empate). |
+| **Worker 4** | Limitless Sports (2 Opciones) | Limitless Exchange (Base L2) | Arbitraje Deportivo $1 \times N$ (Over/Under, Sí/No de 2 opciones). |
 | **Worker 5** | Binance HFT Oracle | Binance Spot (`BTCUSDT`) | Oráculo Spot de Referencia a 0 latencia (Reloj Atómico del Sistema). |
-| **Worker 6** | Maker Liquidity Rewards | Limitless Exchange (Base L2) | Captura de Incentivos de Liquidez en la punta del libro (0% fees). |
-| **Worker 7** | Intra-Platform 1xN Arb | Limitless Exchange (Base L2) | Arbitraje Deportivo $1 \times N$ (Estricto a 2 y 3 Opciones). |
+| **Worker 6** | Maker Arbitrage MM | Limitless / Kalshi | Delta-Neutral Market Making (Post-Only, compra de YES + NO a < $0.95). |
+| **Worker 7** | Intra-Platform Sports | Limitless Exchange (Base L2) | Arbitraje Deportivo $1 \times N$ (Estricto a 3 opciones). |
 
 ---
 
