@@ -1486,8 +1486,8 @@ class TradingEngine:
             # Perfil ARBITRAJE PURO INTRADÍA (100% Win-Rate por Cobertura & >2.0% ROI Neto)
             
             # Worker 1: Arbitraje de Opciones Binarias Crypto HFT (BTC-INTRADAY)
-            worker1 = TradingWorker("worker_1", "Crypto BTC HFT", "BTC-INTRADAY", "limitless", self.db)
-            worker1.strategy = CrossPlatformArbitrageStrategy("BTC-INTRADAY", feeder_type="limitless", min_edge_pct=0.015, position_size_pct=0.5, db=self.db, worker_id="worker_1")
+            worker1 = TradingWorker("worker_1", "Crypto BTC HFT", "BTC-INTRADAY", "kalshi", self.db)
+            worker1.strategy = CrossPlatformArbitrageStrategy("BTC-INTRADAY", feeder_type="kalshi", min_edge_pct=0.015, position_size_pct=0.5, db=self.db, worker_id="worker_1")
             self.workers["worker_1"] = worker1
 
             # Worker 2: Arbitraje Cross-Platform Deportes (Limitless vs Polymarket)
