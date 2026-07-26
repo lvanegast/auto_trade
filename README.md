@@ -28,7 +28,6 @@ El sistema opera con 7 trabajadores (*workers*) independientes coordinados por `
 | **Worker 4** | Limitless Sports (2 Opciones) | Limitless Exchange (Base L2) | Arbitraje Deportivo $1 \times N$ (Over/Under, Sí/No de 2 opciones). |
 | **Worker 5** | Binance HFT Oracle | Binance Spot (`BTCUSDT`) | Oráculo Spot de Referencia a 0 latencia (Reloj Atómico del Sistema). |
 | **Worker 6** | Maker Arbitrage MM | Limitless / Kalshi | Delta-Neutral Market Making (Post-Only, compra de YES + NO a < $0.95). |
-| **Worker 7** | Intra-Platform Sports | Limitless Exchange (Base L2) | Arbitraje Deportivo $1 \times N$ (Estricto a 3 opciones). |
 
 ---
 
