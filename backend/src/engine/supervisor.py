@@ -1486,8 +1486,8 @@ class TradingEngine:
             # Perfil ARBITRAJE PURO INTRADÍA (100% Win-Rate por Cobertura & >2.0% ROI Neto)
             
             # Worker 1: Arbitraje de Opciones Binarias Crypto HFT (BTC-INTRADAY)
-            worker1 = TradingWorker("worker_1", "Crypto BTC HFT", "BTC-INTRADAY", "kalshi", self.db)
-            worker1.strategy = CrossPlatformArbitrageStrategy("BTC-INTRADAY", feeder_type="kalshi", min_edge_pct=0.015, position_size_pct=0.5, db=self.db, worker_id="worker_1")
+            worker1 = TradingWorker("worker_1", "Crypto BTC HFT", "BTC-INTRADAY", "limitless", self.db)
+            worker1.strategy = CrossPlatformArbitrageStrategy("BTC-INTRADAY", feeder_type="limitless", min_edge_pct=0.015, position_size_pct=0.5, db=self.db, worker_id="worker_1")
             self.workers["worker_1"] = worker1
 
             # Worker 2: Arbitraje Cross-Platform Deportes (Limitless vs Polymarket)
@@ -1511,8 +1511,8 @@ class TradingEngine:
 
             # Worker 6: Maker Arbitrage MM (Captura de Spread + Post-Only)
             from src.strategy.maker_rewards_strategy import MakerLiquidityRewardsStrategy
-            worker6 = TradingWorker("worker_6", "Maker Arbitrage MM", "SPORTS", "limitless_sports", self.db)
-            worker6.strategy = MakerLiquidityRewardsStrategy("SPORTS", db=self.db, worker_id="worker_6")
+            worker6 = TradingWorker("worker_6", "Maker Arbitrage MM", "BTC-INTRADAY", "limitless", self.db)
+            worker6.strategy = MakerLiquidityRewardsStrategy("BTC-INTRADAY", db=self.db, worker_id="worker_6")
             self.workers["worker_6"] = worker6
 
         elif profile_mode == "crypto_hft_volatile":

@@ -716,6 +716,9 @@ const portfolioTotal = document.getElementById("portfolio-total");
 // Elementos de la UI - Paneles Inferiores (Tabs)
 const bottomTabBtns = document.querySelectorAll(".bottom-tab-btn");
 const bottomTabPanels = document.querySelectorAll(".bottom-tab-panel");
+const infoStrategiesBtn = document.getElementById("info-strategies-btn");
+const strategiesModal = document.getElementById("strategies-modal");
+const closeStrategiesModal = document.getElementById("close-strategies-modal");
 const openOrdersTableBody = document.getElementById("open-orders-table-body");
 const portfolioWalletTableBody = document.getElementById("portfolio-wallet-table-body");
 const tradesTableBody = document.getElementById("trades-table-body");
@@ -1338,6 +1341,21 @@ bottomTabBtns.forEach(btn => {
     document.getElementById(targetId).classList.remove("hidden");
 });
 });
+
+// --- STRATEGIES INFO MODAL LISTENERS ---
+if (infoStrategiesBtn && strategiesModal && closeStrategiesModal) {
+    infoStrategiesBtn.addEventListener("click", () => {
+        strategiesModal.classList.remove("hidden");
+    });
+    closeStrategiesModal.addEventListener("click", () => {
+        strategiesModal.classList.add("hidden");
+    });
+    window.addEventListener("click", (e) => {
+        if (e.target === strategiesModal) {
+            strategiesModal.classList.add("hidden");
+        }
+    });
+}
 
 // --- POSICIONES: SUB-TABS ---
 posSubTabs.forEach(tab => {

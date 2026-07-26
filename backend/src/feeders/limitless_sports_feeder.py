@@ -20,6 +20,7 @@ Ejemplo de arbitraje intra-platform:
 
 import asyncio
 import os
+import time
 from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
 
@@ -86,15 +87,39 @@ class LimitlessSportsFeeder(BaseFeeder):
         async with _sports_scan_lock:
             _last_sports_scan_time = now
             try:
-                # Obtener mercados de la página general y categorías deportivas
-                resp = await self._page_fetcher.get_markets("2a91349c-3308-4234-afb7-0663e42968c1", {"limit": 50})
-                markets = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
+                page_ids = [
+                    "2a91349c-3308-4234-afb7-0663e42968c1",  # Sport
+                    "f2a04a4e-580a-4cd1-bcc9-c23ed9ff8916",  # Esports
+                ]
+                
+                markets = []
+                for page_id in page_ids:
+                    try:
+                        resp = await self._page_fetcher.get_markets(page_id, {"limit": 30})
+                        page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
+                        markets.extend(page_m)
+                    except Exception as pe:
+                        print(f"[Sports Feeder] Error fetching page {page_id}: {pe}")
 
                 for m in markets:
                     slug = m.slug if hasattr(m, "slug") else (m.get("slug", "") if isinstance(m, dict) else "")
                     title = m.title if hasattr(m, "title") else (m.get("title", "") if isinstance(m, dict) else "")
                     if not slug:
                         continue
+
+                    # Filter out matches/contracts that started in the past
+                    try:
+                        parts = slug.split("-")
+                        ts_str = parts[-1]
+                        if ts_str.isdigit():
+                            ts_val = int(ts_str)
+                            # Convert milliseconds to seconds if 13 digits
+                            match_start_s = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
+                            # If current time is past start time
+                            if time.time() > match_start_s:
+                                continue  # Skip finished or active matches
+                    except Exception:
+                        pass
 
                     await self._check_group_arb(slug, title)
 

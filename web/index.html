@@ -55,6 +55,7 @@
                     <span id="bot-status-text" class="status-lbl">Cargando...</span>
                 </div>
                 <div class="mode-badge" id="bot-mode">SIMULACIÓN</div>
+                <button id="info-strategies-btn" class="info-btn" title="Ver Estrategias de Workers">🛈</button>
             </div>
         </header>
 
@@ -670,7 +671,67 @@
 
         </div>
     </div>
-
+ 
+    <!-- MODAL DE ESTRATEGIAS ACTIVAS -->
+    <div id="strategies-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>💡 Estrategias de Arbitraje Activas</h3>
+                <button id="close-strategies-modal" class="close-modal-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <table class="strategies-table">
+                    <thead>
+                        <tr>
+                            <th>Worker</th>
+                            <th>Instrumento</th>
+                            <th>Arbitraje</th>
+                            <th>Lógica y Ejecución</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Worker 1</strong></td>
+                            <td>Bitcoin (BTC)</td>
+                            <td>Intra-Plataforma Local (1xN)</td>
+                            <td>Escanea Kalshi Demo buscando descalces rápidos donde Ask(YES) + Ask(NO) < $0.97 USD. Compra ambos lados y hace merge() en dólares.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Worker 2</strong></td>
+                            <td>Deportes</td>
+                            <td>Cross-Platform (Limitless ↔ Polymarket)</td>
+                            <td>Compara precios de partidos en vivo. Compra cada opción (Local/Visitante/Empate) en la plataforma donde cotice más barata para armar la canasta al menor costo.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Worker 3</strong></td>
+                            <td>Deportes (3 Opciones)</td>
+                            <td>Intra-Plataforma Local (1xN)</td>
+                            <td>Compra todos los resultados posibles (Local, Visitante, Empate) de un partido de fútbol en Limitless si suman < $0.97 USD.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Worker 4</strong></td>
+                            <td>Deportes (2 Opciones)</td>
+                            <td>Intra-Plataforma Local (1xN)</td>
+                            <td>Escanea eventos binarios deportivos (Over/Under) en Limitless para comprar YES + NO si la suma es < $0.97 USD.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Worker 5</strong></td>
+                            <td>Bitcoin (BTC/USD)</td>
+                            <td>Oráculo de Referencia HFT</td>
+                            <td>Monitorea el feed de milisegundos de Binance Spot para proveer el precio real del mercado que sirve de base para el cálculo de volatilidad y spreads.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Worker 6</strong></td>
+                            <td>Bitcoin / Ethereum</td>
+                            <td>Maker Market Making (Post-Only)</td>
+                            <td>Coloca ofertas de compra pasivas (Bids) para YES y NO a la vez en Limitless/Kalshi a precio combinado de $0.95 USD. Si minoristas venden a mercado, capturamos el spread.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+ 
     <script src="lightweight-charts.standalone.production.js"></script>
     <script src="app.js?v=streaming-timestamps-1"></script>
 </body>
