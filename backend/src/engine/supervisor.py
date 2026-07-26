@@ -1485,21 +1485,21 @@ class TradingEngine:
         if profile_mode == "pure_arbitrage":
             # Perfil ARBITRAJE PURO INTRADÍA (100% Win-Rate por Cobertura & >2.0% ROI Neto)
             
-            # Worker 1: Arbitraje de Opciones Binarias Crypto Intradía (BTC-INTRADAY)
-            worker1 = TradingWorker("worker_1", "Crypto BTC Intraday Arb", "BTC-INTRADAY", "polymarket", self.db)
-            worker1.strategy = CrossPlatformArbitrageStrategy("BTC-INTRADAY", feeder_type="polymarket", min_edge_pct=0.015, position_size_pct=0.5, db=self.db, worker_id="worker_1")
+            # Worker 1: Arbitraje de Opciones Binarias Crypto HFT (BTC-INTRADAY)
+            worker1 = TradingWorker("worker_1", "Crypto BTC HFT", "BTC-INTRADAY", "limitless", self.db)
+            worker1.strategy = CrossPlatformArbitrageStrategy("BTC-INTRADAY", feeder_type="limitless", min_edge_pct=0.015, position_size_pct=0.5, db=self.db, worker_id="worker_1")
             self.workers["worker_1"] = worker1
 
-            # Worker 2: Arbitraje Cross-Platform ETH/Macro (Kalshi vs Polymarket)
-            worker2 = TradingWorker("worker_2", "Cross-Platform Macro Arb", "ETH-INTRADAY", "kalshi", self.db)
-            worker2.strategy = CrossPlatformArbitrageStrategy("ETH-INTRADAY", feeder_type="kalshi", min_edge_pct=0.02, position_size_pct=0.5, db=self.db, worker_id="worker_2")
+            # Worker 2: Arbitraje Cross-Platform Deportes (Limitless vs Polymarket)
+            worker2 = TradingWorker("worker_2", "Cross-Platform Sports", "SPORTS", "limitless_sports", self.db)
+            worker2.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=0.015, position_size_usd=2.0, db=self.db, worker_id="worker_2")
             self.workers["worker_2"] = worker2
 
-            # Worker 3: Arbitraje Deportivo en Vivo (Partidos del día)
-            self.workers["worker_3"] = TradingWorker("worker_3", "Limitless Sports Arb", "SPORTS", "limitless_sports", self.db)
+            # Worker 3: Arbitraje Deportivo en Vivo (Partidos de 3 opciones)
+            self.workers["worker_3"] = TradingWorker("worker_3", "Limitless Sports (3 Opciones)", "SPORTS", "limitless_sports", self.db)
 
-            # Worker 4: Arbitraje Deportivo y Macro 1xN (Limitless Exchange)
-            worker4 = TradingWorker("worker_4", "Limitless Macro Arb", "SPORTS", "limitless_sports", self.db)
+            # Worker 4: Arbitraje Deportivo 1xN (Opciones Binarias de 2 opciones)
+            worker4 = TradingWorker("worker_4", "Limitless Sports (2 Opciones)", "SPORTS", "limitless_sports", self.db)
             worker4.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=0.015, position_size_usd=2.0, db=self.db, worker_id="worker_4")
             self.workers["worker_4"] = worker4
 
@@ -1509,14 +1509,14 @@ class TradingEngine:
             worker5.strategy = LeadLagArbitrageStrategy("BTCUSDT", db=self.db, worker_id="worker_5")
             self.workers["worker_5"] = worker5
 
-            # Worker 6: Maker Liquidity Rewards Intraday (Captura de Spread + 0% Fees)
+            # Worker 6: Maker Arbitrage MM (Captura de Spread + Post-Only)
             from src.strategy.maker_rewards_strategy import MakerLiquidityRewardsStrategy
-            worker6 = TradingWorker("worker_6", "Maker Liquidity Rewards", "SPORTS", "limitless_sports", self.db)
+            worker6 = TradingWorker("worker_6", "Maker Arbitrage MM", "SPORTS", "limitless_sports", self.db)
             worker6.strategy = MakerLiquidityRewardsStrategy("SPORTS", db=self.db, worker_id="worker_6")
             self.workers["worker_6"] = worker6
 
-            # Worker 7: Arbitraje Intra-Plataforma 1xN (2 y 3 Opciones Estricto)
-            worker7 = TradingWorker("worker_7", "Intra-Platform 1xN Arb", "SPORTS", "limitless_sports", self.db)
+            # Worker 7: Arbitraje Intra-Plataforma 1xN (3 Opciones Estricto)
+            worker7 = TradingWorker("worker_7", "Intra-Platform Sports", "SPORTS", "limitless_sports", self.db)
             worker7.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=0.015, position_size_usd=2.0, db=self.db, worker_id="worker_7")
             self.workers["worker_7"] = worker7
         elif profile_mode == "crypto_hft_volatile":
