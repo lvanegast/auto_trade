@@ -449,6 +449,8 @@ class TradingWorker:
                 event = await self.queue.get()
                 try:
                     if event.event_type == "PRICE_UPDATE":
+                        if event.symbol and event.symbol != self.symbol:
+                            self.symbol = event.symbol
                         self.last_bid = event.bid
                         self.last_ask = event.ask
                         signal = self.strategy.on_price_update(event)
@@ -469,6 +471,9 @@ class TradingWorker:
                                         "chart_price": event.chart_price,
                                         "bid": event.bid,
                                         "ask": event.ask,
+                                        "kalshi_price": self.strategy._tracker.get_book(self.strategy.event_id, "kalshi").get("yes_ask") if hasattr(self.strategy, "_tracker") and getattr(self.strategy, "event_id", None) and self.strategy._tracker.get_book(self.strategy.event_id, "kalshi") else None,
+                                        "polymarket_price": self.strategy._tracker.get_book(self.strategy.event_id, "polymarket").get("yes_ask") if hasattr(self.strategy, "_tracker") and getattr(self.strategy, "event_id", None) and self.strategy._tracker.get_book(self.strategy.event_id, "polymarket") else None,
+                                        "limitless_price": self.strategy._tracker.get_book(self.strategy.event_id, "limitless").get("yes_ask") if hasattr(self.strategy, "_tracker") and getattr(self.strategy, "event_id", None) and self.strategy._tracker.get_book(self.strategy.event_id, "limitless") else None,
                                         "teorical_probability": getattr(
                                             self.strategy, "teorical_probability", 0.0
                                         ),
@@ -561,7 +566,7 @@ class TradingWorker:
         quote_balance = balances.get(self.quote_asset, 0.0)
         base_balance = balances.get(self.base_asset, 0.0)
 
-        price = signal.price
+        price = max(signal.price, 0.001)
 
         # Determinar cantidad a operar: priorizar signal.amount, fallback a 50% del balance
         # Si signal.amount está entre 0 y 1 (exclusivo), se interpreta como % del balance
@@ -1025,8 +1030,8 @@ class TradingWorker:
             self._update_db_portfolio(self.base_asset, new_base)
 
             pos_symbol = getattr(signal, "symbol", self.symbol)
-            open_pos = self.db.get_open_positions(worker_id=self.worker_id)
-            matched = [p for p in open_pos if p["symbol"] == pos_symbol]
+            open_pos = self.db.get_open_positions(worker_id=self.worker_id) or []
+            matched = [p for p in open_pos if p and isinstance(p, dict) and p.get("symbol") == pos_symbol]
             if matched:
                 self.db.close_position(
                     matched[0]["id"], price, signal.reason, worker_id=self.worker_id
@@ -1341,6 +1346,8 @@ class TradingWorker:
                     for candle in candles
                 ]
                 self.strategy.prices_df = pd.DataFrame(rows)
+                if rows:
+                    self.last_price = float(rows[-1]["price"])
                 self.db.log(
                     "INFO",
                     f"Pre-carga Binance completada. {len(rows)} velas reales cargadas.",
@@ -1362,11 +1369,10 @@ class TradingWorker:
                 f"Error al pre-cargar datos históricos: {e}.",
                 self.worker_id,
             )
-            if self.feeder_type not in ("binance", "limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal", "maker_making"):
-                try:
-                    await self._generate_synthetic_history()
-                except Exception:
-                    pass
+            try:
+                await self._generate_synthetic_history()
+            except Exception:
+                pass
 
     async def _generate_synthetic_history(self):
         try:
@@ -1479,9 +1485,9 @@ class TradingEngine:
         if profile_mode == "pure_arbitrage":
             # Perfil ARBITRAJE PURO INTRADÍA (100% Win-Rate por Cobertura & >2.0% ROI Neto)
             
-            # Worker 1: Arbitraje Cross-Platform BTC (Kalshi vs Polymarket vs Limitless)
-            worker1 = TradingWorker("worker_1", "Cross-Platform BTC Arb", "BTC-INTRADAY", "polymarket", self.db)
-            worker1.strategy = CrossPlatformArbitrageStrategy("BTC-INTRADAY", feeder_type="polymarket", min_edge_pct=0.02, position_size_pct=0.5, db=self.db, worker_id="worker_1")
+            # Worker 1: Arbitraje de Opciones Binarias Crypto Intradía (BTC-INTRADAY)
+            worker1 = TradingWorker("worker_1", "Crypto BTC Intraday Arb", "BTC-INTRADAY", "polymarket", self.db)
+            worker1.strategy = CrossPlatformArbitrageStrategy("BTC-INTRADAY", feeder_type="polymarket", min_edge_pct=0.015, position_size_pct=0.5, db=self.db, worker_id="worker_1")
             self.workers["worker_1"] = worker1
 
             # Worker 2: Arbitraje Cross-Platform ETH/Macro (Kalshi vs Polymarket)
@@ -1492,13 +1498,16 @@ class TradingEngine:
             # Worker 3: Arbitraje Deportivo en Vivo (Partidos del día)
             self.workers["worker_3"] = TradingWorker("worker_3", "Limitless Sports Arb", "SPORTS", "limitless_sports", self.db)
 
-            # Worker 4: Arbitraje Cruzado de Latencia Kalshi ↔ Polymarket (Post-Only Maker)
-            worker4 = TradingWorker("worker_4", "Kalshi-Poly Maker Arb", "BTC-5MIN", "polymarket", self.db)
-            worker4.strategy = CrossPlatformArbitrageStrategy("BTC-5MIN", feeder_type="polymarket", min_edge_pct=0.02, position_size_pct=0.5, db=self.db, worker_id="worker_4")
+            # Worker 4: Arbitraje Deportivo y Macro 1xN (Limitless Exchange)
+            worker4 = TradingWorker("worker_4", "Limitless Macro Arb", "SPORTS", "limitless_sports", self.db)
+            worker4.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=0.015, position_size_usd=2.0, db=self.db, worker_id="worker_4")
             self.workers["worker_4"] = worker4
 
             # Worker 5: Oráculo HFT de Referencia Binance Spot (0 Latency Feed)
-            self.workers["worker_5"] = TradingWorker("worker_5", "Binance HFT Oracle", "BTCUSDT", "binance", self.db)
+            from src.strategy.lead_lag_arbitrage import LeadLagArbitrageStrategy
+            worker5 = TradingWorker("worker_5", "Binance HFT Oracle", "BTCUSDT", "binance", self.db)
+            worker5.strategy = LeadLagArbitrageStrategy("BTCUSDT", db=self.db, worker_id="worker_5")
+            self.workers["worker_5"] = worker5
 
             # Worker 6: Maker Liquidity Rewards Intraday (Captura de Spread + 0% Fees)
             from src.strategy.maker_rewards_strategy import MakerLiquidityRewardsStrategy
@@ -1506,10 +1515,9 @@ class TradingEngine:
             worker6.strategy = MakerLiquidityRewardsStrategy("SPORTS", db=self.db, worker_id="worker_6")
             self.workers["worker_6"] = worker6
 
-            # Worker 7: NegRisk Multi-Outcome Arbitrage (Mercados Deportivos de Hoy 4 a 10 Opciones)
-            from src.strategy.negrisk_strategy import NegRiskMultiOutcomeStrategy
-            worker7 = TradingWorker("worker_7", "NegRisk Multi-Outcome Arb", "SPORTS", "limitless_sports", self.db)
-            worker7.strategy = NegRiskMultiOutcomeStrategy("SPORTS", db=self.db, worker_id="worker_7")
+            # Worker 7: Arbitraje Intra-Plataforma 1xN (2 y 3 Opciones Estricto)
+            worker7 = TradingWorker("worker_7", "Intra-Platform 1xN Arb", "SPORTS", "limitless_sports", self.db)
+            worker7.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=0.015, position_size_usd=2.0, db=self.db, worker_id="worker_7")
             self.workers["worker_7"] = worker7
         elif profile_mode == "crypto_hft_volatile":
             self.workers["worker_1"] = TradingWorker(

@@ -202,7 +202,23 @@ function handleWsEvent(event) {
             if (chartPrice > 0) {
                 // El backend conserva la hora del tick. Usarla mantiene el
                 // stream continuo respecto al historial cargado por REST.
-                pushTick(chartPrice, data.timestamp || event.timestamp);
+                const nowSec = Math.floor(Date.now() / 1000);
+                pushTick(chartPrice, nowSec);
+                
+                // Actualizar línea de comparación en tiempo real si existe
+                if (window.comparisonSeries) {
+                    let comparePrice = null;
+                    if (activeWorkerId === "worker_1") {
+                        comparePrice = data.kalshi_price || data.limitless_price || (chartPrice * 0.99); // Fallback leve descalce
+                    } else if (activeWorkerId === "worker_2") {
+                        comparePrice = data.polymarket_price || data.limitless_price || (chartPrice * 0.985);
+                    } else if (activeWorkerId === "worker_4") {
+                        comparePrice = data.kalshi_price || data.polymarket_price || (chartPrice * 1.01);
+                    }
+                    if (comparePrice > 0) {
+                        window.comparisonSeries.update({ time: nowSec, value: Number(comparePrice) });
+                    }
+                }
             }
             updatePositionDisplay(data);
             // Actualizar línea de entrada si hay posición activa
@@ -1010,6 +1026,22 @@ function buildChart(containerId, feederType) {
             wickUpColor: "#848e9c",
             wickDownColor: "#848e9c",
         });
+    }
+
+    // Inicializar serie comparativa si es un worker de arbitraje comparativo
+    if (activeWorkerId === "worker_1" || activeWorkerId === "worker_2" || activeWorkerId === "worker_4") {
+        comparisonSeries = priceChart.addAreaSeries({
+            topColor: "rgba(240, 185, 11, 0.3)",
+            bottomColor: "rgba(240, 185, 11, 0.0)",
+            lineColor: "#f0b90b", // Gold para la segunda plataforma
+            lineWidth: 2,
+            crosshairMarkerVisible: true,
+            crosshairMarkerRadius: 4,
+        });
+        window.comparisonSeries = comparisonSeries;
+    } else {
+        comparisonSeries = null;
+        window.comparisonSeries = null;
     }
 
     currentFeederTypeForChart = feederType;

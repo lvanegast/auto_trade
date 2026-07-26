@@ -9,8 +9,65 @@ _load_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.p
 load_dotenv(os.path.join(_load_dir, ".env"), override=True)
 
 
+import sqlite3
+
+class SQLiteDictCursor:
+    def __init__(self, cursor):
+        self.cursor = cursor
+    def execute(self, query, params=()):
+        q = query.replace("%s", "?")
+        q = q.replace("SERIAL PRIMARY KEY", "INTEGER PRIMARY KEY AUTOINCREMENT")
+        q = q.replace("ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP", "ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        q = q.replace("ON CONFLICT (asset, worker_id) DO UPDATE SET free_balance = EXCLUDED.free_balance, locked_balance = EXCLUDED.locked_balance", "ON CONFLICT(asset, worker_id) DO UPDATE SET free_balance=excluded.free_balance")
+        q = q.replace("RETURNING timestamp", "")
+        q = q.replace("RETURNING id", "")
+
+        if "DISTINCT ON" in q:
+            # Adapt PostgreSQL DISTINCT ON (asset) to SQLite GROUP BY asset
+            q = "SELECT asset, free_balance, locked_balance, timestamp FROM portfolio_state WHERE worker_id = ? GROUP BY asset HAVING id = MAX(id)"
+
+        if "ADD COLUMN IF NOT EXISTS" in q:
+            parts = q.split("ADD COLUMN IF NOT EXISTS")
+            tbl = parts[0].replace("ALTER TABLE", "").strip()
+            col_def = parts[1].strip()
+            col_name = col_def.split()[0]
+            try:
+                self.cursor.execute(f"SELECT {col_name} FROM {tbl} LIMIT 1")
+                return
+            except Exception:
+                q = f"ALTER TABLE {tbl} ADD COLUMN {col_def}"
+
+        self.cursor.execute(q, params)
+    def fetchone(self):
+        r = self.cursor.fetchone()
+        if r is None:
+            return None
+        if isinstance(r, sqlite3.Row):
+            return dict(r)
+        return r
+    def fetchall(self):
+        rows = self.cursor.fetchall()
+        return [dict(r) if isinstance(r, sqlite3.Row) else r for r in rows]
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+class SQLiteConnectionAdapter:
+    def __init__(self, db_path):
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+    def cursor(self, cursor_factory=None):
+        return SQLiteDictCursor(self.conn.cursor())
+    def commit(self):
+        self.conn.commit()
+    def rollback(self):
+        self.conn.rollback()
+    def close(self):
+        self.conn.close()
+
 class DatabaseManager:
-    """Administrador central del pool de conexiones PostgreSQL y migraciones de esquema."""
+    """Administrador central del pool de conexiones PostgreSQL (con Fallback a SQLite)."""
 
     def __init__(self):
         self.host = os.getenv("DB_HOST", "localhost")
@@ -19,6 +76,8 @@ class DatabaseManager:
         self.user = os.getenv("DB_USER", "trading_user")
         self.password = os.getenv("DB_PASSWORD", "trading_password")
         self._log_hooks = []
+        self.use_sqlite = False
+        self._sqlite_conn = None
 
         self._pool = None
         self._init_pool()
@@ -37,24 +96,38 @@ class DatabaseManager:
             )
             print("[DB] Pool de conexiones PostgreSQL inicializado.")
         except Exception as e:
-            print(f"[DB] Error al crear pool de conexiones: {e}")
+            print(f"[DB] PostgreSQL no disponible ({e}). Activando fallback local SQLite...")
             self._pool = None
+            self.use_sqlite = True
+            db_file = os.path.join(_load_dir, "trading_bot_local.db")
+            self._sqlite_conn = SQLiteConnectionAdapter(db_file)
+            print(f"[DB] Fallback a SQLite activo: {db_file}")
 
     def add_log_hook(self, hook):
         self._log_hooks.append(hook)
 
     def _get_connection(self):
+        if self.use_sqlite:
+            return self._sqlite_conn
         if self._pool:
             return self._pool.getconn()
-        return psycopg2.connect(
-            host=self.host,
-            port=self.port,
-            dbname=self.dbname,
-            user=self.user,
-            password=self.password,
-        )
+        try:
+            return psycopg2.connect(
+                host=self.host,
+                port=self.port,
+                dbname=self.dbname,
+                user=self.user,
+                password=self.password,
+            )
+        except Exception:
+            self.use_sqlite = True
+            db_file = os.path.join(_load_dir, "trading_bot_local.db")
+            self._sqlite_conn = SQLiteConnectionAdapter(db_file)
+            return self._sqlite_conn
 
     def _return_connection(self, conn):
+        if self.use_sqlite:
+            return
         if self._pool and conn:
             self._pool.putconn(conn)
 
@@ -223,7 +296,14 @@ class DatabaseManager:
             conn = self._get_connection()
             with conn.cursor() as cursor:
                 cursor.execute(query, (level, message, worker_id))
-                ts = cursor.fetchone()[0]
+                row = cursor.fetchone()
+                import datetime
+                if isinstance(row, (tuple, list)) and len(row) > 0:
+                    ts = row[0]
+                elif isinstance(row, dict) and "timestamp" in row:
+                    ts = row["timestamp"]
+                else:
+                    ts = datetime.datetime.now()
                 conn.commit()
 
             for hook in self._log_hooks:
@@ -348,7 +428,12 @@ class DatabaseManager:
                         leg_id,
                     ),
                 )
-                trade_id = cursor.fetchone()[0]
+                row = cursor.fetchone()
+                if row:
+                    trade_id = row[0] if isinstance(row, (tuple, list)) else (row["id"] if isinstance(row, dict) and "id" in row else 1)
+                else:
+                    raw_cur = getattr(cursor, "cursor", cursor)
+                    trade_id = getattr(raw_cur, "lastrowid", 1) or 1
                 conn.commit()
                 return trade_id
         finally:
@@ -405,7 +490,12 @@ class DatabaseManager:
                         highest,
                     ),
                 )
-                pos_id = cursor.fetchone()[0]
+                row = cursor.fetchone()
+                if row:
+                    pos_id = row[0] if isinstance(row, (tuple, list)) else (row["id"] if isinstance(row, dict) and "id" in row else 1)
+                else:
+                    raw_cur = getattr(cursor, "cursor", cursor)
+                    pos_id = getattr(raw_cur, "lastrowid", 1) or 1
                 conn.commit()
                 return pos_id
         finally:

@@ -29,3 +29,6 @@ AGENTS.md
 .DS_Store
 scratch/
 *.png
+
+# Agents Local Skills
+.agents/

@@ -24,10 +24,17 @@ from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
 
 
+import time
+
+# Shared cache to prevent Cloudflare HTTP 429 rate limit across multiple worker feeders
+_last_sports_scan_time = 0.0
+_sports_scan_lock = asyncio.Lock()
+
+
 class LimitlessSportsFeeder(BaseFeeder):
     def __init__(self, symbol: str, event_queue: asyncio.Queue):
         super().__init__(symbol.upper(), event_queue)
-        self.poll_interval = float(os.getenv("SPORTS_POLL_INTERVAL", "1.0"))
+        self.poll_interval = float(os.getenv("SPORTS_POLL_INTERVAL", "3.0"))
         self.min_volume = float(os.getenv("SPORTS_MIN_VOLUME", "100"))
         self.task = None
 
@@ -72,21 +79,27 @@ class LimitlessSportsFeeder(BaseFeeder):
             await http_client.close()
 
     async def _scan_sports_markets(self):
-        try:
-            # Obtener mercados de la página general y categorías deportivas
-            resp = await self._page_fetcher.get_markets("2a91349c-3308-4234-afb7-0663e42968c1", {"limit": 50})
-            markets = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
+        global _last_sports_scan_time
+        now = time.time()
+        if now - _last_sports_scan_time < 2.5:
+            return
+        async with _sports_scan_lock:
+            _last_sports_scan_time = now
+            try:
+                # Obtener mercados de la página general y categorías deportivas
+                resp = await self._page_fetcher.get_markets("2a91349c-3308-4234-afb7-0663e42968c1", {"limit": 50})
+                markets = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
 
-            for m in markets:
-                slug = m.slug if hasattr(m, "slug") else (m.get("slug", "") if isinstance(m, dict) else "")
-                title = m.title if hasattr(m, "title") else (m.get("title", "") if isinstance(m, dict) else "")
-                if not slug:
-                    continue
+                for m in markets:
+                    slug = m.slug if hasattr(m, "slug") else (m.get("slug", "") if isinstance(m, dict) else "")
+                    title = m.title if hasattr(m, "title") else (m.get("title", "") if isinstance(m, dict) else "")
+                    if not slug:
+                        continue
 
-                await self._check_group_arb(slug, title)
+                    await self._check_group_arb(slug, title)
 
-        except Exception as e:
-            print(f"[Sports] Error escaneando eventos dinámicos: {e}")
+            except Exception as e:
+                print(f"[Sports] Error escaneando eventos dinámicos: {e}")
 
     async def _check_group_arb(self, group_slug, group_title):
         from src.strategy.cross_platform_tracker import cross_platform_tracker

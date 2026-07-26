@@ -158,7 +158,8 @@ class SportsArbitrageStrategy(BaseStrategy):
         if event_id in self._arb_groups:
             return None
         if self.db:
-            open_positions = self.db.get_open_positions(worker_id=self.worker_id)
+            # Query open positions globally (across all workers) to prevent duplicate entries on the same event
+            open_positions = self.db.get_open_positions(worker_id=None)
             for pos in open_positions:
                 if pos["symbol"].startswith(event_id + "_"):
                     return None
@@ -196,8 +197,8 @@ class SportsArbitrageStrategy(BaseStrategy):
                     }
                 )
 
-        # Expected guaranteed profit
-        expected_profit = 1.0 - total_cost if arb_type == "YES" else total_cost - 1.0
+        # Expected guaranteed profit per $1.00 base unit
+        expected_profit = (1.0 - total_cost) if arb_type == "YES" else ((len(outcomes) - 1.0) - total_cost)
         if expected_profit <= 0:
             return None
 

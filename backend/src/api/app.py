@@ -141,21 +141,20 @@ async def get_status(worker_id: str = "worker_1"):
         # Formatear balance
         balances = {item["asset"]: float(item["free_balance"]) for item in portfolio}
 
-        # Obtener último precio registrado en la estrategia
         last_price = 0.0
-        if len(worker.strategy.prices_df) > 0:
+        if hasattr(worker, "strategy") and worker.strategy and len(worker.strategy.prices_df) > 0:
             last_price = float(worker.strategy.prices_df.iloc[-1]["price"])
+        elif getattr(worker, "last_price", 0.0) > 0:
+            last_price = worker.last_price
+        elif getattr(worker, "last_ask", 0.0) > 0:
+            last_price = worker.last_ask
         else:
-            # Intentar usar el precio del último trade en la base de datos como fallback realista
             try:
                 last_trades = db.get_trades(limit=1, worker_id=worker_id)
                 if last_trades:
                     last_price = float(last_trades[0]["price"])
             except Exception:
                 pass
-
-            if last_price <= 0:
-                pass  # Don't inject fake prices — frontend handles 0 as "no data"
 
         # Calcular indicadores en tiempo real
         indicators = {"ema_short": 0.0, "ema_long": 0.0, "rsi": 0.0}
