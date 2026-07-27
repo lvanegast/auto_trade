@@ -10,25 +10,29 @@ from typing import Tuple, Dict, Any
 
 class ExecutionFrictionGuard:
     def __init__(self):
+        # Fees based on official Limitless documentation (July 2026):
+        # - Maker (limit orders): 0% commission, 0 slippage
+        # - Taker (market orders): 0.40%-3.00% dynamic curve based on price
+        # - Gas: Paid by Limitless (off-chain matching), minimal for traders
         self.friction_table: Dict[str, Dict[str, float]] = {
             "limitless_sports": {
-                "commission_pct": 0.00,
-                "gas_fee_usd": 0.02,
-                "slippage_pct": 0.002,
+                "commission_pct": 0.00,  # Maker = 0%, Taker = 0.40%-3.00%
+                "gas_fee_usd": 0.005,    # Minimal on-chain settlement cost
+                "slippage_pct": 0.00,    # Maker = 0%, Taker varies
             },
             "limitless": {
-                "commission_pct": 0.00,
-                "gas_fee_usd": 0.02,
-                "slippage_pct": 0.002,
+                "commission_pct": 0.00,  # Maker = 0%, Taker = 0.40%-3.00%
+                "gas_fee_usd": 0.005,    # Minimal on-chain settlement cost
+                "slippage_pct": 0.00,    # Maker = 0%, Taker varies
             },
             "polymarket": {
-                "commission_pct": 0.00,
-                "gas_fee_usd": 0.03,
+                "commission_pct": 0.00,  # Maker = 0%, Taker ~1.80%
+                "gas_fee_usd": 0.005,    # Polygon gas, minimal
                 "slippage_pct": 0.003,
             },
             "kalshi": {
-                "commission_pct": 0.007,
-                "gas_fee_usd": 0.00,
+                "commission_pct": 0.007,  # 0.70% taker fee
+                "gas_fee_usd": 0.00,     # CEX, no gas
                 "slippage_pct": 0.0015,
             },
             "alpaca": {
@@ -96,9 +100,23 @@ class ExecutionFrictionGuard:
         leg1_friction = self.calculate_friction(leg1_feeder, position_size_usd, execution_role)
         leg2_friction = self.calculate_friction(leg2_feeder, position_size_usd, execution_role)
 
-        total_friction_usd = (
-            leg1_friction["total_friction_usd"] + leg2_friction["total_friction_usd"]
-        )
+        # For 1xN intra-platform arb (same feeder for both legs),
+        # only charge gas ONCE since it's a single logical operation
+        same_platform = (leg1_feeder == leg2_feeder)
+        
+        if same_platform:
+            # Same platform: charge leg1 friction + leg2 commission/slippage (no double gas)
+            total_friction_usd = (
+                leg1_friction["total_friction_usd"] + 
+                leg2_friction["commission_cost_usd"] + 
+                leg2_friction["slippage_cost_usd"]
+            )
+        else:
+            # Cross-platform: charge full friction for both legs
+            total_friction_usd = (
+                leg1_friction["total_friction_usd"] + leg2_friction["total_friction_usd"]
+            )
+        
         total_friction_pct = (
             total_friction_usd / position_size_usd if position_size_usd > 0 else 0.0
         )
@@ -111,9 +129,10 @@ class ExecutionFrictionGuard:
             "leg1_fee_per_asset": leg1_friction["commission_cost_usd"],
             "leg2_fee_per_asset": leg2_friction["commission_cost_usd"],
             "leg1_gas": leg1_friction["gas_cost_usd"],
-            "leg2_gas": leg2_friction["gas_cost_usd"],
+            "leg2_gas": leg2_friction["gas_cost_usd"] if not same_platform else 0.0,
             "leg1_slippage": leg1_friction["slippage_cost_usd"],
             "leg2_slippage": leg2_friction["slippage_cost_usd"],
+            "same_platform": same_platform,
         }
 
     def validate_arbitrage_profitability(

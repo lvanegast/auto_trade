@@ -44,8 +44,7 @@ class PolymarketSpotArbStrategy(BaseStrategy):
         else:
             self.expiration_time = expiration_time
 
-        self.last_position = None
-        self._position_id = None
+        self.active_positions = {}
         self.event_id = "btc_price_spot_arbitrage"
 
         self.teorical_probability = 0.50
@@ -84,6 +83,23 @@ class PolymarketSpotArbStrategy(BaseStrategy):
         if spot_price <= 0:
             return None
 
+        # Dynamically set strike and expiration if provided in event
+        if getattr(event, "strike_price", None) is not None:
+            self.strike_price = event.strike_price
+        if getattr(event, "expiration_timestamp", None) is not None:
+            self.expiration_time = datetime.datetime.fromtimestamp(event.expiration_timestamp, datetime.timezone.utc)
+
+        # Clean up expired contracts from our local state tracking
+        contract_id = event.symbol
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        if contract_id in self.active_positions:
+            if now_utc > self.expiration_time:
+                del self.active_positions[contract_id]
+
+        # If we already have an active position for this contract, hold to expiry (do nothing)
+        if contract_id in self.active_positions:
+            return None
+
         self.teorical_probability = self.calculate_theoretical_probability(spot_price)
 
         ask_yes = event.ask
@@ -94,66 +110,37 @@ class PolymarketSpotArbStrategy(BaseStrategy):
 
         signal = None
 
-        if self.last_position is None:
-            if edge_buy_yes >= self.min_edge_pct:
-                self.edge = edge_buy_yes
-                kelly = (self.edge / max(ask_yes, 0.01)) * self.position_size_pct
-                self.kelly_recommendation = max(0.0, min(0.20, kelly))
+        if edge_buy_yes >= self.min_edge_pct:
+            self.edge = edge_buy_yes
+            kelly = (self.edge / max(ask_yes, 0.01)) * self.position_size_pct
+            self.kelly_recommendation = max(0.0, min(0.20, kelly))
 
-                self.last_position = "BUY"
-                self._position_id = int(datetime.datetime.now().timestamp())
+            self.active_positions[contract_id] = "BUY"
 
-                signal = SignalEvent(
-                    symbol=self.symbol,
-                    side="BUY",
-                    price=ask_yes,
-                    reason=f"Polymarket Spot-Arb: YES subvalorado @{ask_yes:.4f} vs Spot BTC ${spot_price:,.0f} (Teor: {self.teorical_probability:.2%})",
-                    amount=self.kelly_recommendation,
-                    position_id=self._position_id,
-                )
+            signal = SignalEvent(
+                symbol=contract_id,
+                side="BUY",
+                price=ask_yes,
+                reason=f"Polymarket Spot-Arb: YES subvalorado @{ask_yes:.4f} vs Spot BTC ${spot_price:,.0f} (Teor: {self.teorical_probability:.2%})",
+                amount=self.kelly_recommendation,
+                position_id=None,
+            )
 
-            elif edge_buy_no >= self.min_edge_pct:
-                self.edge = edge_buy_no
-                cost_no = 1.0 - bid_yes
-                kelly = (self.edge / max(cost_no, 0.01)) * self.position_size_pct
-                self.kelly_recommendation = max(0.0, min(0.20, kelly))
+        elif edge_buy_no >= self.min_edge_pct:
+            self.edge = edge_buy_no
+            cost_no = 1.0 - bid_yes
+            kelly = (self.edge / max(cost_no, 0.01)) * self.position_size_pct
+            self.kelly_recommendation = max(0.0, min(0.20, kelly))
 
-                self.last_position = "SELL"
-                self._position_id = int(datetime.datetime.now().timestamp())
+            self.active_positions[contract_id] = "SELL"
 
-                signal = SignalEvent(
-                    symbol=self.symbol,
-                    side="SELL",
-                    price=bid_yes,
-                    reason=f"Polymarket Spot-Arb: NO subvalorado @{cost_no:.4f} vs Spot BTC ${spot_price:,.0f} (Teor: {1 - self.teorical_probability:.2%})",
-                    amount=self.kelly_recommendation,
-                    position_id=self._position_id,
-                )
-        else:
-            if self.last_position == "BUY" and edge_buy_yes < 0.01:
-                signal = SignalEvent(
-                    symbol=self.symbol,
-                    side="SELL",
-                    price=bid_yes,
-                    reason="Cierre de Arbitraje YES: Precios convergieron con Spot.",
-                    position_id=self._position_id,
-                )
-                self.last_position = None
-                self._position_id = None
-                self.edge = 0.0
-                self.kelly_recommendation = 0.0
-
-            elif self.last_position == "SELL" and edge_buy_no < 0.01:
-                signal = SignalEvent(
-                    symbol=self.symbol,
-                    side="BUY",
-                    price=ask_yes,
-                    reason="Cierre de Arbitraje NO: Precios convergieron con Spot.",
-                    position_id=self._position_id,
-                )
-                self.last_position = None
-                self._position_id = None
-                self.edge = 0.0
-                self.kelly_recommendation = 0.0
+            signal = SignalEvent(
+                symbol=contract_id,
+                side="SELL",
+                price=bid_yes,
+                reason=f"Polymarket Spot-Arb: NO subvalorado @{cost_no:.4f} vs Spot BTC ${spot_price:,.0f} (Teor: {1 - self.teorical_probability:.2%})",
+                amount=self.kelly_recommendation,
+                position_id=None,
+            )
 
         return signal

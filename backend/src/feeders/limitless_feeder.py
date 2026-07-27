@@ -105,14 +105,15 @@ class LimitlessFeeder(BaseFeeder):
             # If cache is valid, yield cached data directly to self.queue
             if now - _last_crypto_fetch_time < 5.0 and _crypto_cache:
                 for event_id, data in _crypto_cache.items():
-                    self.queue.put_nowait(
-                        PriceUpdateEvent(
-                            symbol=event_id,
-                            price=data["price"],
-                            bid=data["bid"],
-                            ask=data["ask"],
-                        )
+                    event = PriceUpdateEvent(
+                        symbol=event_id,
+                        price=data["price"],
+                        bid=data["bid"],
+                        ask=data["ask"],
                     )
+                    event.strike_price = data.get("strike_price")
+                    event.expiration_timestamp = data.get("expiration_timestamp")
+                    self.queue.put_nowait(event)
                 return
 
             try:
@@ -173,6 +174,18 @@ class LimitlessFeeder(BaseFeeder):
                         except Exception:
                             pass
 
+                        # Extract strike and expiration
+                        strike_price = None
+                        if hasattr(market, "metadata") and market.metadata and getattr(market.metadata, "open_price", None):
+                            try:
+                                strike_price = float(market.metadata.open_price)
+                            except Exception:
+                                pass
+                        
+                        expiration_timestamp = None
+                        if hasattr(market, "expiration_timestamp") and market.expiration_timestamp:
+                            expiration_timestamp = market.expiration_timestamp / 1000.0
+
                         # Emit the PriceUpdateEvent with real bid and ask
                         event_id = f"limitless_crypto_{slug}"
                         event = PriceUpdateEvent(
@@ -181,11 +194,16 @@ class LimitlessFeeder(BaseFeeder):
                             bid=bid,
                             ask=ask,
                         )
+                        event.strike_price = strike_price
+                        event.expiration_timestamp = expiration_timestamp
+                        
                         self.queue.put_nowait(event)
                         new_cache[event_id] = {
                             "price": yes_price,
                             "bid": bid,
                             "ask": ask,
+                            "strike_price": strike_price,
+                            "expiration_timestamp": expiration_timestamp,
                         }
                         active_count += 1
                         await asyncio.sleep(0.15)  # Pace queries to respect Cloudflare limits

@@ -101,28 +101,16 @@ class LimitlessSportsFeeder(BaseFeeder):
                     except Exception as pe:
                         print(f"[Sports Feeder] Error fetching page {page_id}: {pe}")
 
+                print(f"[Sports Feeder] Fetched {len(markets)} markets from {len(page_ids)} pages")
                 for m in markets:
                     slug = m.slug if hasattr(m, "slug") else (m.get("slug", "") if isinstance(m, dict) else "")
                     title = m.title if hasattr(m, "title") else (m.get("title", "") if isinstance(m, dict) else "")
                     if not slug:
                         continue
 
-                    # Filter out matches/contracts that started in the past
-                    try:
-                        parts = slug.split("-")
-                        ts_str = parts[-1]
-                        if ts_str.isdigit():
-                            ts_val = int(ts_str)
-                            # Convert milliseconds to seconds if 13 digits
-                            match_start_s = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
-                            # If current time is past start time
-                            if time.time() > match_start_s:
-                                continue  # Skip finished or active matches
-                    except Exception:
-                        pass
-
                     await self._check_group_arb(slug, title)
 
+                print(f"[Sports Feeder] Scan complete: {len(markets)} markets checked")
             except Exception as e:
                 print(f"[Sports] Error escaneando eventos dinámicos: {e}")
 
@@ -138,17 +126,21 @@ class LimitlessSportsFeeder(BaseFeeder):
         if len(subs) < 2:
             return
 
+        total_subs = len(subs)
         total_yes = 0
         outcomes = []
         has_liquidity = False
+        skipped_no_price = 0
 
         for sub in subs:
             prices = getattr(sub, "prices", None)
             if not prices or len(prices) == 0:
+                skipped_no_price += 1
                 continue
             try:
                 yes_price = float(prices[0])
             except (ValueError, TypeError):
+                skipped_no_price += 1
                 continue
 
             slug = sub.slug if hasattr(sub, "slug") else ""
@@ -168,9 +160,23 @@ class LimitlessSportsFeeder(BaseFeeder):
             )
 
         if not has_liquidity or len(outcomes) < 2:
+            print(f"[Sports Feeder] SKIP {group_title}: liquidity={has_liquidity}, outcomes={len(outcomes)}")
+            return
+
+        # CRITICAL: reject markets with missing outcomes — can't do 1xN arb
+        # if we don't have prices for ALL outcomes
+        if skipped_no_price > 0:
+            print(f"[Sports Feeder] SKIP {group_title}: {skipped_no_price}/{total_subs} outcomes missing prices — incomplete data")
             return
 
         edge = 1.0 - total_yes
+
+        # Sanity check: edges > 15% are almost certainly data errors or illiquid markets
+        if abs(edge) > 0.15:
+            print(f"[Sports Feeder] SKIP {group_title}: edge {edge:+.2%} exceeds 15% sanity limit — likely illiquid/stale")
+            return
+
+        print(f"[Sports Feeder] {group_title}: {len(outcomes)} outcomes, total_yes={total_yes:.4f}, edge={edge:+.4f}")
 
         event_id = f"limitless_sport_{group_slug}"
         primary_price = outcomes[0]["yes_price"]

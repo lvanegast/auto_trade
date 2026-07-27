@@ -255,53 +255,54 @@ class DatabaseManager:
                 conn.commit()
                 
                 # Cleanup orphan/past positions at startup
-                try:
-                    import time
-                    cursor.execute("SELECT id, symbol, entry_price FROM positions WHERE status = 'OPEN';")
-                    open_pos = cursor.fetchall()
-                    closed_count = 0
-                    for pid, sym, entry_price in open_pos:
-                        try:
-                            import re
-                            # Extract 10-13 digit timestamp anywhere in symbol
-                            numbers = re.findall(r'\d{10,13}', sym)
-                            if numbers:
-                                ts_val = int(numbers[0])
-                                match_start_s = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
-                                # If the match already started/ended in the real world
-                                if time.time() > match_start_s:
-                                    cursor.execute("""
-                                    UPDATE positions 
-                                    SET status = 'CLOSED', 
-                                        exit_time = CURRENT_TIMESTAMP, 
-                                        exit_price = %s, 
-                                        pnl = 0.0, 
-                                        pnl_pct = 0.0, 
-                                        exit_reason = 'Orphan: Match already played' 
-                                    WHERE id = %s;
-                                    """, (entry_price, pid))
-                                    closed_count += 1
-                        except Exception as e_inner:
-                            print(f"[DB Startup Cleanup] Error parsing position symbol {sym}: {e_inner}")
-                    
-                    # Also close generic stale positions older than 12 hours as fallback
-                    cursor.execute("""
-                    UPDATE positions 
-                    SET status = 'CLOSED', 
-                        exit_time = CURRENT_TIMESTAMP, 
-                        exit_price = entry_price, 
-                        pnl = 0.0, 
-                        pnl_pct = 0.0, 
-                        exit_reason = 'Orphan: Stale Timeout' 
-                    WHERE status = 'OPEN' AND entry_time < CURRENT_TIMESTAMP - INTERVAL '12 hours';
-                    """)
-                    
-                    conn.commit()
-                    if closed_count > 0:
-                        print(f"[DB] Auto-limpieza al inicio: Se cerraron {closed_count} posiciones de partidos ya finalizados.")
-                except Exception as ex:
-                    print(f"[DB] Error cleaning up orphan positions: {ex}")
-                    conn.rollback()
+                if os.getenv("DATABASE_CLEANUP_STARTUP") == "true":
+                    try:
+                        import time
+                        cursor.execute("SELECT id, symbol, entry_price FROM positions WHERE status = 'OPEN';")
+                        open_pos = cursor.fetchall()
+                        closed_count = 0
+                        for pid, sym, entry_price in open_pos:
+                            try:
+                                import re
+                                # Extract 10-13 digit timestamp anywhere in symbol
+                                numbers = re.findall(r'\d{10,13}', sym)
+                                if numbers:
+                                    ts_val = int(numbers[0])
+                                    match_start_s = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
+                                    # If the match already started/ended in the real world
+                                    if time.time() > match_start_s:
+                                        cursor.execute("""
+                                        UPDATE positions 
+                                        SET status = 'CLOSED', 
+                                            exit_time = CURRENT_TIMESTAMP, 
+                                            exit_price = %s, 
+                                            pnl = 0.0, 
+                                            pnl_pct = 0.0, 
+                                            exit_reason = 'Orphan: Match already played' 
+                                        WHERE id = %s;
+                                        """, (entry_price, pid))
+                                        closed_count += 1
+                            except Exception as e_inner:
+                                print(f"[DB Startup Cleanup] Error parsing position symbol {sym}: {e_inner}")
+                        
+                        # Also close generic stale positions older than 12 hours as fallback
+                        cursor.execute("""
+                        UPDATE positions 
+                        SET status = 'CLOSED', 
+                            exit_time = CURRENT_TIMESTAMP, 
+                            exit_price = entry_price, 
+                            pnl = 0.0, 
+                            pnl_pct = 0.0, 
+                            exit_reason = 'Orphan: Stale Timeout' 
+                        WHERE status = 'OPEN' AND entry_time < CURRENT_TIMESTAMP - INTERVAL '12 hours';
+                        """)
+                        
+                        conn.commit()
+                        if closed_count > 0:
+                            print(f"[DB] Auto-limpieza al inicio: Se cerraron {closed_count} posiciones de partidos ya finalizados.")
+                    except Exception as ex:
+                        print(f"[DB] Error cleaning up orphan positions: {ex}")
+                        conn.rollback()
 
                 print("[DB] Base de datos PostgreSQL inicializada con éxito.")
         except Exception as e:
@@ -560,7 +561,7 @@ class DatabaseManager:
         worker_id: str = None,
     ):
         query_get = (
-            "SELECT entry_price, side FROM positions WHERE id = %s AND status = 'OPEN';"
+            "SELECT entry_price, side, amount FROM positions WHERE id = %s AND status = 'OPEN';"
         )
         conn = None
         try:
@@ -573,13 +574,16 @@ class DatabaseManager:
 
                 entry_price = float(pos["entry_price"])
                 side = pos["side"]
+                amount = float(pos["amount"]) if pos.get("amount") else 1.0
 
                 if side == "BUY":
-                    pnl = exit_price - entry_price
-                    pnl_pct = (pnl / entry_price) * 100.0 if entry_price > 0 else 0.0
+                    pnl_per_unit = exit_price - entry_price
+                    pnl = pnl_per_unit * amount
+                    pnl_pct = ((exit_price - entry_price) / entry_price) * 100.0 if entry_price > 0 else 0.0
                 else:
-                    pnl = entry_price - exit_price
-                    pnl_pct = (pnl / entry_price) * 100.0 if entry_price > 0 else 0.0
+                    pnl_per_unit = entry_price - exit_price
+                    pnl = pnl_per_unit * amount
+                    pnl_pct = ((entry_price - exit_price) / entry_price) * 100.0 if entry_price > 0 else 0.0
 
                 query_close = """
                 UPDATE positions

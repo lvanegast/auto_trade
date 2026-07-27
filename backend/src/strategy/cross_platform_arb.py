@@ -216,8 +216,9 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
                     side="BUY",
                     price=real_ask,
                     reason=f"Intra-Arb: YES_ask={real_ask:.4f} NO_ask={no_ask:.4f} edge={intra_edge:.2%}",
-                    amount=0.5,
+                    amount=None,
                     position_id=getattr(self, "_position_id", None),
+                    position_size_usd=self.position_size_usd,
                 )
 
         if self.event_id:
@@ -668,7 +669,7 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
             side=side,
             price=price,
             reason=reason,
-            amount=self.position_size_pct,
+            amount=None,
             position_id=closed_position_id,
         )
 

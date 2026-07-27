@@ -137,6 +137,10 @@ class SportsArbitrageStrategy(BaseStrategy):
         if abs(self.edge) < self.min_edge_pct:
             return None
 
+        # Sanity: edges > 15% are data errors or illiquid markets — not real arb
+        if abs(self.edge) > 0.15:
+            return None
+
         # Filtro de Rentabilidad Neta Anti-Fricción
         from src.engine.friction_guard import friction_guard
         is_profitable, net_edge, reason_guard, friction_details = friction_guard.validate_arbitrage_profitability(
@@ -169,7 +173,7 @@ class SportsArbitrageStrategy(BaseStrategy):
         per_outcome_signals = []
 
         if arb_type == "YES":
-            # sum(YES) < 1.0 → buy all YES
+            # sum(YES) < 1.0 → buy all YES using limit orders (maker = 0% fee)
             for outcome in outcomes:
                 yes_price = outcome["yes_price"]
                 total_cost += yes_price
@@ -183,7 +187,7 @@ class SportsArbitrageStrategy(BaseStrategy):
                     }
                 )
         else:
-            # sum(YES) > 1.0 → buy all NO
+            # sum(YES) > 1.0 → buy all NO using limit orders (maker = 0% fee)
             for outcome in outcomes:
                 no_price = outcome["no_price"]
                 total_cost += no_price
@@ -203,8 +207,11 @@ class SportsArbitrageStrategy(BaseStrategy):
             return None
 
         # Validate balance
-        per_outcome_amount = self.position_size_usd / len(outcomes)
-        total_spend = per_outcome_amount * len(outcomes)
+        # CORRECT 1xN arb sizing: buy EQUAL SHARES per outcome, not equal USD
+        # total_cost = cost of 1 "set" (1 share of each outcome)
+        # num_sets = how many complete sets we can afford
+        num_sets = self.position_size_usd / total_cost
+        total_spend = num_sets * total_cost
 
         # 8. Record arb group
         self._arb_groups[event_id] = {
@@ -216,23 +223,26 @@ class SportsArbitrageStrategy(BaseStrategy):
             "title": title,
             "position_ids": [],
             "total_spend": total_spend,
+            "num_sets": num_sets,
         }
         self._pending_event_ids.add(event_id)
         self.total_opportunities += 1
 
-        # 9. Generate N sequential BUY signals
+        # 9. Generate N sequential BUY signals — each outcome gets proportional USD
         signals = []
         for i, sig_data in enumerate(per_outcome_signals):
-            outcome_amount = per_outcome_amount
             outcome_price = sig_data["price"]
+            outcome_amount = num_sets * outcome_price  # USD for THIS outcome
             token_label = sig_data["token"]
 
             reason = (
                 f"1x{len(outcomes)} {arb_type} Arb [{i + 1}/{len(outcomes)}]: "
                 f"{title} | {sig_data['title']} | "
                 f"{token_label} @{outcome_price:.4f} | "
+                f"Sets: {num_sets:.2f} | "
                 f"Total cost: ${total_cost:.4f} | "
-                f"Guaranteed profit: ${expected_profit:.4f}"
+                f"Guaranteed profit: ${expected_profit * num_sets:.4f} | "
+                f"LIMIT ORDER (maker=0% fee)"
             )
 
             signals.append(
@@ -241,8 +251,10 @@ class SportsArbitrageStrategy(BaseStrategy):
                     side="BUY",
                     price=outcome_price,
                     reason=reason,
-                    amount=outcome_amount,
+                    amount=None,
                     position_id=None,
+                    position_size_usd=outcome_amount,
+                    order_type="GTC",  # Good Till Cancelled = limit order = 0% fee
                 )
             )
 
@@ -250,9 +262,11 @@ class SportsArbitrageStrategy(BaseStrategy):
             self.db.log(
                 "INFO",
                 f"[Sports 1x{len(outcomes)} {arb_type}] {title} | "
-                f"Total cost: ${total_cost:.4f} | "
-                f"Guaranteed profit: ${expected_profit:.4f} | "
-                f"{len(outcomes)} outcomes x ${per_outcome_amount:.2f}",
+                f"Total cost/set: ${total_cost:.4f} | "
+                f"Sets: {num_sets:.2f} | "
+                f"Total spend: ${total_spend:.2f} | "
+                f"Guaranteed profit: ${expected_profit * num_sets:.4f} | "
+                f"{len(outcomes)} outcomes",
                 self.worker_id,
             )
 
@@ -320,30 +334,24 @@ class SportsArbitrageStrategy(BaseStrategy):
 
         arb_type = group["arb_type"]
         outcomes = group["outcomes"]
-        group["total_cost"]
-        group["expected_profit"]
-        group["title"]
+        num_sets = group.get("num_sets", 1.0)
 
         # Simulate resolution: first outcome pays $1.00, rest pay $0
         signals = []
-        per_outcome_amount = (
-            self.position_size_usd / len(outcomes)
-            if outcomes
-            else self.position_size_usd
-        )
-
         for i, outcome in enumerate(outcomes):
             if i == 0:
                 sell_price = 0.99
             else:
                 sell_price = 0.01
 
+            # Sell the same number of shares we bought (num_sets)
+            # Revenue = num_sets × sell_price per outcome
             signals.append(SignalEvent(
                 symbol=f"{event_id}_{outcome['slug']}",
                 side="SELL",
                 price=sell_price,
                 reason=f"1xN {arb_type} Arb exit: {reason}",
-                amount=per_outcome_amount,
+                amount=num_sets,
                 position_id=None,
             ))
 

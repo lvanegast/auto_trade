@@ -3,6 +3,7 @@ import os
 import requests
 import uuid
 import datetime
+import time
 
 # Load .env from project root before anything else
 from dotenv import load_dotenv as _ld
@@ -418,7 +419,7 @@ class TradingWorker:
                     ):
                         await self._sync_kalshi_portfolio()
                     elif self.feeder_type in ("limitless", "limitless_sports"):
-                        pass  # Limitless: on-chain, no sync needed in simulation
+                        await self._resolve_expired_positions_simulated()
                 except Exception as e:
                     print(f"[Sync Error] Error en sincronización periódica: {e}")
 
@@ -441,6 +442,97 @@ class TradingWorker:
             print(
                 f"[Worker {self.worker_id}] Tarea de sincronización periódica cancelada."
             )
+
+    async def _resolve_expired_positions_simulated(self):
+        if self.execution_type != "simulation":
+            return
+        
+        open_pos = self.db.get_open_positions(worker_id=self.worker_id) or []
+        if not open_pos:
+            return
+
+        import re
+        from limitless_sdk.api import HttpClient
+        from limitless_sdk.markets import MarketFetcher
+
+        client = None
+        market_fetcher = None
+
+        for p in open_pos:
+            if not p or not isinstance(p, dict):
+                continue
+            symbol = p.get("symbol", "")
+            pid = p.get("id")
+            entry_price = float(p.get("entry_price", 0.0))
+            amount = float(p.get("amount", 0.0))
+            side = p.get("side", "BUY")
+
+            # Extract Unix expiration timestamp
+            ts_matches = re.findall(r'\d{10,13}', symbol)
+            if not ts_matches:
+                continue
+
+            ts_val = int(ts_matches[0])
+            match_start_s = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
+
+            # Determine duration
+            duration = 900
+            if "5-min" in symbol:
+                duration = 300
+            elif "15-min" in symbol:
+                duration = 900
+            elif "hourly" in symbol:
+                duration = 3600
+            elif "daily" in symbol:
+                duration = 86400
+            elif "sport" in symbol or "esport" in symbol:
+                duration = 10800
+
+            # If the contract is in the past in the real world
+            if time.time() > match_start_s + duration:
+                # Lazy-load http client
+                if not client:
+                    client = HttpClient()
+                    market_fetcher = MarketFetcher(client)
+
+                # Extract market slug
+                slug = symbol.replace("limitless_crypto_", "").replace("limitless_sport_", "")
+
+                try:
+                    market = await market_fetcher.get_market(slug)
+                    if getattr(market, "status", None) == "RESOLVED" and getattr(market, "prices", None):
+                        yes_val = float(market.prices[0])
+                        no_val = float(market.prices[1])
+
+                        # YES won if YES price is 1.0; NO won if NO price is 1.0
+                        won = (side == "BUY" and yes_val == 1.0) or (side == "SELL" and no_val == 1.0)
+                        exit_price = 1.0 if won else 0.0
+                        payout = amount * exit_price
+
+                        # Close the position in DB with actual pnl
+                        self.db.close_position(pid, exit_price, exit_reason="Oracle Expiration Settlement", worker_id=self.worker_id)
+
+                        # Credit payout back to portfolio
+                        curr_usd = 0.0
+                        port = self.db.get_portfolio(worker_id=self.worker_id) or []
+                        for row in port:
+                            if row.get("asset", "").upper() == self.quote_asset.upper():
+                                curr_usd = float(row.get("free_balance", 0.0))
+                                break
+                        
+                        new_usd = curr_usd + payout
+                        self._update_db_portfolio(self.quote_asset, new_usd)
+                        
+                        self.db.log(
+                            "INFO",
+                            f"[Settlement] 🏁 Contrato {slug} RESUELTO. Payout: ${payout:.2f} USD (Resultado: {'GANADO' if won else 'PERDIDO'}). Nuevo saldo: ${new_usd:.2f} USD",
+                            self.worker_id
+                        )
+                except Exception as ex:
+                    print(f"[Settlement Error] Error resolving position {symbol}: {ex}")
+
+        if client:
+            await client.close()
 
     async def _event_loop(self):
         print(f"[Worker {self.worker_id}] Loop de eventos iniciado para {self.symbol}.")
@@ -568,19 +660,22 @@ class TradingWorker:
 
         price = max(signal.price, 0.001)
 
-        # Determinar cantidad a operar: priorizar signal.amount, fallback a 50% del balance
-        # Si signal.amount está entre 0 y 1 (exclusivo), se interpreta como % del balance
-        if getattr(signal, "amount", None) is not None:
+        # Determinar cantidad a operar:
+        # 1. position_size_usd → monto fijo en USD a invertir (calcula contratos automáticamente)
+        # 2. amount >= 1 → cantidad absoluta de contratos
+        # 3. 0 < amount < 1 → porcentaje del balance
+        # 4. Sin amount → 50% del balance (fallback)
+        requested_position_usd = getattr(signal, "position_size_usd", None)
+        requested_amount = None
+        requested_pct = None
+
+        if requested_position_usd is not None and requested_position_usd > 0:
+            pass  # ya tenemos requested_position_usd
+        elif getattr(signal, "amount", None) is not None:
             if 0 < signal.amount < 1:
-                pct = signal.amount
-                requested_amount = None
-                requested_pct = pct
+                requested_pct = signal.amount
             else:
                 requested_amount = signal.amount
-                requested_pct = None
-        else:
-            requested_amount = None
-            requested_pct = None
 
         # 1. EJECUCIÓN CON ALPACA (Acciones / Criptomonedas)
         if self.alpaca_client and self.feeder_type == "alpaca":
@@ -589,7 +684,10 @@ class TradingWorker:
 
             try:
                 if signal.side == "BUY":
-                    if requested_pct is not None:
+                    if requested_position_usd is not None:
+                        spend_amount = min(requested_position_usd, quote_balance)
+                        amount_to_buy = spend_amount / price
+                    elif requested_pct is not None:
                         spend_amount = quote_balance * requested_pct
                         amount_to_buy = spend_amount / price
                     elif requested_amount is not None:
@@ -621,7 +719,9 @@ class TradingWorker:
                         time_in_force=TimeInForce.GTC,
                     )
                 else:
-                    if requested_pct is not None:
+                    if requested_position_usd is not None:
+                        amount_to_sell = min(requested_position_usd / price, base_balance)
+                    elif requested_pct is not None:
                         amount_to_sell = base_balance * requested_pct
                     elif requested_amount is not None:
                         amount_to_sell = requested_amount
@@ -752,7 +852,10 @@ class TradingWorker:
             # Si hay llaves reales, ejecutamos orden firmada
             if self.kalshi_api_key_id and self.kalshi_private_key_path:
                 try:
-                    if requested_pct is not None:
+                    if requested_position_usd is not None:
+                        spend_amount = min(requested_position_usd, quote_balance)
+                        contracts_count = int(spend_amount / price)
+                    elif requested_pct is not None:
                         spend_amount = quote_balance * requested_pct
                         contracts_count = int(spend_amount / price)
                     elif requested_amount is not None:
@@ -848,7 +951,10 @@ class TradingWorker:
             else:
                 # Simulación local para Kalshi si no hay keys
                 if signal.side == "BUY":
-                    if requested_pct is not None:
+                    if requested_position_usd is not None:
+                        spend_amount = min(requested_position_usd, quote_balance)
+                        contracts_count = spend_amount / price
+                    elif requested_pct is not None:
                         spend_amount = quote_balance * requested_pct
                         contracts_count = spend_amount / price
                     elif requested_amount is not None:
@@ -889,6 +995,8 @@ class TradingWorker:
                         amount_to_sell = min(base_balance * requested_pct, base_balance)
                     elif requested_amount is not None:
                         amount_to_sell = min(requested_amount, base_balance)
+                    elif requested_position_usd is not None:
+                        amount_to_sell = min(requested_position_usd / price, base_balance)
                     else:
                         amount_to_sell = base_balance
                     revenue = amount_to_sell * price
@@ -916,7 +1024,10 @@ class TradingWorker:
 
         # 4. SIMULACIÓN LOCAL MOCK / FALLBACK GENERAL
         if signal.side == "BUY":
-            if requested_pct is not None:
+            if requested_position_usd is not None:
+                spend_amount = min(requested_position_usd, quote_balance)
+                amount_to_buy = spend_amount / price
+            elif requested_pct is not None:
                 spend_amount = quote_balance * requested_pct
                 amount_to_buy = spend_amount / price
             elif requested_amount is not None:
@@ -997,7 +1108,9 @@ class TradingWorker:
                 self.worker_id,
             )
         elif signal.side == "SELL":
-            if requested_pct is not None:
+            if requested_position_usd is not None:
+                amount_to_sell = min(requested_position_usd / price, base_balance)
+            elif requested_pct is not None:
                 amount_to_sell = min(base_balance * requested_pct, base_balance)
             elif requested_amount is not None:
                 amount_to_sell = min(requested_amount, base_balance)
@@ -1486,8 +1599,9 @@ class TradingEngine:
             # Perfil ARBITRAJE PURO INTRADÍA (100% Win-Rate por Cobertura & >2.0% ROI Neto)
             
             # Worker 1: Arbitraje de Opciones Binarias Crypto HFT (BTC-INTRADAY)
-            worker1 = TradingWorker("worker_1", "Crypto BTC HFT", "BTC-INTRADAY", "limitless", self.db)
-            worker1.strategy = CrossPlatformArbitrageStrategy("BTC-INTRADAY", feeder_type="limitless", min_edge_pct=0.015, position_size_pct=0.5, db=self.db, worker_id="worker_1")
+            from src.strategy.polymarket_spot_arb import PolymarketSpotArbStrategy
+            worker1 = TradingWorker("worker_1", "Crypto Spot-Arb HFT", "BTC-INTRADAY", "limitless", self.db)
+            worker1.strategy = PolymarketSpotArbStrategy("BTC-INTRADAY", min_edge_pct=0.015, position_size_pct=0.20, db=self.db, worker_id="worker_1")
             self.workers["worker_1"] = worker1
 
             # Worker 2: Arbitraje Cross-Platform Deportes (Limitless vs Polymarket)
@@ -1509,10 +1623,10 @@ class TradingEngine:
             worker5.strategy = LeadLagArbitrageStrategy("BTCUSDT", db=self.db, worker_id="worker_5")
             self.workers["worker_5"] = worker5
 
-            # Worker 6: Maker Arbitrage MM (Captura de Spread + Post-Only)
-            from src.strategy.maker_rewards_strategy import MakerLiquidityRewardsStrategy
-            worker6 = TradingWorker("worker_6", "Maker Arbitrage MM", "BTC-INTRADAY", "limitless", self.db)
-            worker6.strategy = MakerLiquidityRewardsStrategy("BTC-INTRADAY", db=self.db, worker_id="worker_6")
+            # Worker 6: Arbitraje Atómico Crypto (Multicall / Bundle)
+            from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
+            worker6 = TradingWorker("worker_6", "Crypto Atomic-Arb", "BTC-INTRADAY", "limitless", self.db)
+            worker6.strategy = AtomicCryptoArbStrategy("BTC-INTRADAY", min_profit_target=0.015, position_size_usd=10.0, db=self.db, worker_id="worker_6")
             self.workers["worker_6"] = worker6
 
         elif profile_mode == "crypto_hft_volatile":

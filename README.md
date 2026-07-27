@@ -165,6 +165,68 @@ docker logs -f trading_bot_backend
 
 ---
 
+## 📋 Documentación de Plataformas de Trading (Referencia API)
+
+### Limitless Exchange (Base L2 CLOB)
+
+| Campo | Descripción |
+| :--- | :--- |
+| **Modelo** | Binary contracts (YES/NO). Settlement: $1.00 (win) / $0.00 (lose). |
+| **Price** | 0.00 – 1.00 USD por share. |
+| **Order type** | CLOB limit orders, post-only preferred (0% fees). |
+| **Sizing** | `amount` = number of shares to buy. `spend_usd = amount × price`. |
+| **Settlement** | Automatic on event resolution. Winning side gets $1.00 × shares held. |
+| **Key API** | `limitless_sdk.api.HttpClient` → REST. On-chain settlement on Base L2. |
+| **Fee model** | Maker 0% (post-only), Taker varies. We use post-only exclusively. |
+| **Risk** | Pure arbitrage: buy all N outcomes at total cost < $1.00, guaranteed $1.00 payout. |
+
+### Kalshi (Event Contracts)
+
+| Campo | Descripción |
+| :--- | :--- |
+| **Modelo** | Binary event contracts. Settlement: $1.00 (yes) / $0.00 (no). |
+| **Price** | `yes_price` in cents (1–99). Equivalent to $0.01–$0.99. |
+| **Order type** | REST API with RSA-PSS signature authentication. |
+| **Sizing** | `count` = number of contracts. `spend_usd = count × price_in_dollars`. |
+| **Settlement** | Automatic on event expiry. YES holders get $1.00 × count. |
+| **Auth** | `KALSHI-ACCESS-KEY` + RSA-PSS signed `timestamp + method + path`. |
+| **Fee model** | No commission on demo. Production fees vary by market. |
+| **Endpoints** | `POST /portfolio/orders` (create), `GET /portfolio/positions` (sync). |
+
+### Polymarket (CLOB Prediction Markets)
+
+| Campo | Descripción |
+| :--- | :--- |
+| **Modelo** | Binary/multi-outcome event tokens. Settlement: $1.00 or $0.00 per token. |
+| **Price** | 0.00 – 1.00 USDC per share. |
+| **Order type** | CLOB limit orders via REST API (Polygon blockchain settlement). |
+| **Sizing** | `size` = USDC amount to spend. `amount_of_shares = size / price`. |
+| **Settlement** | Smart contract resolution on Polygon. USDC payout to token holders. |
+| **Fee model** | Maker rebates available, Taker fee varies. |
+| **Note** | Cross-platform arb vs Limitless: same binary model enables direct price comparison. |
+
+### Alpaca (Crypto/Stock Broker)
+
+| Campo | Descripción |
+| :--- | :--- |
+| **Modelo** | Traditional spot/fractional shares. |
+| **Order type** | Market orders via Python SDK (`alpaca-py`). |
+| **Sizing** | `qty` = number of shares/units. Fractional for crypto. |
+| **Settlement** | T+0 for crypto, T+1 for stocks. |
+| **Auth** | API key + secret (header-based). |
+| **Fee model** | $0 commission for crypto. |
+
+### Binance (Spot Oracle)
+
+| Campo | Descripción |
+| :--- | :--- |
+| **Modelo** | Spot reference price (not executed). Used as price oracle/lead-lag reference. |
+| **Feed** | WebSocket `@bookTicker` stream (real-time bid/ask). |
+| **Purpose** | Provides "true" market price for Lead-Lag arbitrage detection. |
+| **Note** | BinanceFeeder is NOT an execution venue — only a reference feed. |
+
+---
+
 ## 🛣️ Roadmap / Próximos Pasos (Futuros Cambios)
 
 - [ ] **Despliegue local 24/7 en Nvidia Jetson Nano (4GB) / Raspberry Pi:** Migración del bot a un servidor local de bajo consumo de energía una vez que las estrategias hayan sido validadas empíricamente en el entorno de pruebas.
