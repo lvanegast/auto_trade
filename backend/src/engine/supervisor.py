@@ -510,8 +510,12 @@ class TradingWorker:
                         yes_val = float(market.prices[0])
                         no_val = float(market.prices[1])
 
-                        # YES won if YES price is 1.0; NO won if NO price is 1.0
-                        won = (side == "BUY" and yes_val == 1.0) or (side == "SELL" and no_val == 1.0)
+                        # YES won if YES price is 1.0; NO won if NO price is 1.0 (checking if symbol is YES or NO outcome)
+                        is_no_outcome = symbol.endswith("_NO") or "no-" in symbol.lower()
+                        if is_no_outcome:
+                            won = (side == "BUY" and no_val == 1.0) or (side == "SELL" and yes_val == 1.0)
+                        else:
+                            won = (side == "BUY" and yes_val == 1.0) or (side == "SELL" and no_val == 1.0)
                         exit_price = 1.0 if won else 0.0
                         payout = amount * exit_price
 
@@ -1668,35 +1672,33 @@ class TradingEngine:
         profile_mode = os.getenv("WORKER_PROFILE_MODE", "pure_arbitrage").lower()
 
         if profile_mode == "pure_arbitrage":
-            # Perfil ARBITRAJE PURO INTRADÍA (100% Win-Rate por Cobertura & >2.0% ROI Neto)
-            
             # Cargar parámetros desde el entorno (.env)
-            sports_edge = float(os.getenv("SPORTS_ARB_EDGE_PCT", "0.015"))
+            sports_edge = float(os.getenv("SPORTS_ARB_EDGE_PCT", "0.03"))
             sports_size = float(os.getenv("SPORTS_POSITION_SIZE_USD", "2.0"))
-            crypto_edge = float(os.getenv("CRYPTO_ARB_EDGE_PCT", "0.015"))
-            crypto_size_pct = float(os.getenv("CRYPTO_POSITION_SIZE_PCT", "0.01"))
-            crypto_maker_edge = float(os.getenv("CRYPTO_MAKER_EDGE_PCT", "0.015"))
+            crypto_edge = float(os.getenv("CRYPTO_ARB_EDGE_PCT", "0.03"))
+            crypto_size_pct = float(os.getenv("CRYPTO_POSITION_SIZE_PCT", "0.015"))
+            crypto_maker_edge = float(os.getenv("CRYPTO_MAKER_EDGE_PCT", "0.05"))
             crypto_maker_size = float(os.getenv("CRYPTO_MAKER_POSITION_SIZE_USD", "10.0"))
 
-            # Worker 1: Arbitraje de Opciones Binarias Crypto HFT (BTC-INTRADAY)
-            from src.strategy.polymarket_spot_arb import PolymarketSpotArbStrategy
-            worker1 = TradingWorker("worker_1", "Crypto Spot-Arb HFT", "BTC-INTRADAY", "limitless", self.db)
-            worker1.strategy = PolymarketSpotArbStrategy("BTC-INTRADAY", min_edge_pct=crypto_edge, position_size_pct=crypto_size_pct, db=self.db, worker_id="worker_1")
+            # Worker 1: Bitcoin (BTC) - Intra-Plataforma Local (1xN) en Kalshi
+            from src.strategy.cross_platform_arb import CrossPlatformArbitrageStrategy
+            worker1 = TradingWorker("worker_1", "Kalshi BTC Arb", "KXBTCD", "kalshi", self.db)
+            worker1.strategy = CrossPlatformArbitrageStrategy("KXBTCD", feeder_type="kalshi", min_edge_pct=crypto_edge, position_size_usd=10.0, db=self.db, worker_id="worker_1")
             self.workers["worker_1"] = worker1
 
             # Worker 2: Arbitraje Cross-Platform Deportes (Limitless vs Polymarket)
             worker2 = TradingWorker("worker_2", "Cross-Platform Sports", "SPORTS", "limitless_sports", self.db)
-            worker2.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_2")
+            worker2.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_2", cross_platform=True)
             self.workers["worker_2"] = worker2
 
-            # Worker 3: Arbitraje Deportivo en Vivo (Partidos de 3 opciones)
+            # Worker 3: Arbitraje Deportivo 1xN (Partidos de 3 opciones en Limitless)
             worker3 = TradingWorker("worker_3", "Limitless Sports (3 Opciones)", "SPORTS", "limitless_sports", self.db)
-            worker3.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_3")
+            worker3.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_3", outcomes_count=3)
             self.workers["worker_3"] = worker3
 
-            # Worker 4: Arbitraje Deportivo 1xN (Opciones Binarias de 2 opciones)
+            # Worker 4: Arbitraje Deportivo 1xN (Opciones Binarias de 2 opciones en Limitless)
             worker4 = TradingWorker("worker_4", "Limitless Sports (2 Opciones)", "SPORTS", "limitless_sports", self.db)
-            worker4.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_4")
+            worker4.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_4", outcomes_count=2)
             self.workers["worker_4"] = worker4
 
             # Worker 5: Oráculo HFT de Referencia Binance Spot (0 Latency Feed)
@@ -1708,7 +1710,7 @@ class TradingEngine:
             worker5.strategy = OracleOnlyStrategy("BTCUSDT")
             self.workers["worker_5"] = worker5
 
-            # Worker 6: Arbitraje Atómico Crypto (Multicall / Bundle) -> Maker Rebalancing
+            # Worker 6: Arbitraje Atómico/Maker Market Making (Post-Only) en Limitless/Kalshi
             from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
             worker6 = TradingWorker("worker_6", "Crypto Atomic-Arb", "BTC-INTRADAY", "limitless", self.db)
             worker6.strategy = AtomicCryptoArbStrategy("BTC-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=crypto_maker_size, db=self.db, worker_id="worker_6")

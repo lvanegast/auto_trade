@@ -645,6 +645,7 @@ let activeWorkerId = "worker_1";
 let workersList = [];
 let openOrdersList = [];
 let lastPrice = 0.0;
+const symbolPrices = {};
 let quoteAsset = "USD";
 let baseAsset = "BTC";
 let isForexOrEvent = false;
@@ -1444,7 +1445,15 @@ function buildPositionCard(pos, isOpen) {
     const amount = parseFloat(pos.amount) || 0;
     const leadPrice = parseFloat(pos.entry_lead_price) || 0;
     const closePrice = parseFloat(pos.close_price) || 0;
-    const currentPrice = lastPrice || 0;
+    
+    const isPredictionMarket = pos.symbol.includes("sport") || 
+                               pos.symbol.includes("oracle") || 
+                               pos.symbol.includes("_YES") || 
+                               pos.symbol.includes("_NO") ||
+                               pos.symbol.includes("KXBTCD") ||
+                               pos.symbol.includes("FEDRATE");
+                               
+    const currentPrice = symbolPrices[pos.symbol] || (isPredictionMarket ? entry : (lastPrice || 0));
 
     let pnl = 0, pnlPct = 0;
     if (isOpen && currentPrice > 0 && entry > 0) {
@@ -1780,6 +1789,10 @@ async function fetchStatus() {
         quoteAsset = data.quote_asset || "USD";
         baseAsset = data.base_asset || "BTC";
         isForexOrEvent = quoteAsset === "USD" && baseAsset !== "BTC" && baseAsset !== "ETH";
+        isPredictionMarket = data.feeder_type === "kalshi" || 
+                             data.feeder_type === "polymarket" || 
+                             data.feeder_type === "limitless_sports" || 
+                             data.feeder_type === "limitless";
         
         // Renderizar las tarjetas visuales de activos del panel lateral
         renderSidebarAssetCards(data.feeder_type, data.symbol);
@@ -1802,6 +1815,9 @@ async function fetchStatus() {
         
         // Ticker Header
         lastPrice = data.last_price;
+        if (data.symbol) {
+            symbolPrices[data.symbol] = data.last_price;
+        }
         
         // Actualizar barra de probabilidad de evento si corresponde
         if (eventProbabilityContainer && probabilityYesBar && probabilityValueText) {
@@ -1842,9 +1858,16 @@ async function fetchStatus() {
         }
 
         // Smart lookup for quote and base balances
-        const findBalance = (portfolio, asset) => {
+        const findBalance = (portfolio, asset, isBase = false) => {
             if (!portfolio) return 0.0;
             if (portfolio[asset] !== undefined) return Number(portfolio[asset]) || 0.0;
+            if (isBase) {
+                const variations = [asset, asset.replace("-INTRADAY", ""), asset + "-INTRADAY"];
+                for (const key of variations) {
+                    if (portfolio[key] !== undefined) return Number(portfolio[key]) || 0.0;
+                }
+                return 0.0;
+            }
             for (const key of [asset, "USD", "USDT", "CASH", "USDC"]) {
                 if (portfolio[key] !== undefined) return Number(portfolio[key]) || 0.0;
             }
@@ -1909,8 +1932,8 @@ async function fetchStatus() {
         lastActiveSymbol = data.symbol;
 
         // Sincronizar balances del portafolio con búsqueda inteligente
-        availableQuote = findBalance(data.portfolio, quoteAsset);
-        availableBase = findBalance(data.portfolio, baseAsset);
+        availableQuote = findBalance(data.portfolio, quoteAsset, false);
+        availableBase = findBalance(data.portfolio, baseAsset, true);
 
         let lockedQuote = 0.0;
         let lockedBase = 0.0;

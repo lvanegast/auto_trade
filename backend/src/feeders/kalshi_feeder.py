@@ -13,10 +13,15 @@ def _resolve_kalshi_ticker(symbol: str, env: str) -> str:
         return s
     try:
         import requests
-        base_url = "https://external-api.kalshi.com" if env == "prod" else "https://demo-api.kalshi.co"
-        res = requests.get(f"{base_url}/trade-api/v2/markets?limit=10&status=open", timeout=3)
+        base_url = "https://external-api.kalshi.com" if env == "prod" else "https://demo-api.demo.kalshi.co"
+        res = requests.get(f"{base_url}/trade-api/v2/markets?limit=50&status=open", timeout=3)
         if res.status_code == 200:
             markets = res.json().get("markets", [])
+            # Search for a market whose ticker starts with our prefix
+            for m in markets:
+                t = m.get("ticker", "")
+                if t.startswith(s):
+                    return t
             if markets:
                 return markets[0].get("ticker", s)
     except Exception:
