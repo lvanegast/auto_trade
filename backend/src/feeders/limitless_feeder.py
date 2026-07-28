@@ -323,6 +323,20 @@ class LimitlessFeeder(BaseFeeder):
             bid = yes_price
             ask = yes_price
 
+        # Update tracker global
+        from src.strategy.market_pairs import get_pair_by_limitless_slug
+        pair = get_pair_by_limitless_slug(self.symbol.lower())
+        if pair:
+            from src.strategy.cross_platform_tracker import cross_platform_tracker
+            cross_platform_tracker.update_book(
+                event_id=pair["event_id"],
+                platform="limitless",
+                yes_bid=float(bid),
+                yes_ask=float(ask),
+                no_bid=round(1.0 - float(ask), 4),
+                no_ask=round(1.0 - float(bid), 4),
+            )
+
         event = PriceUpdateEvent(
             symbol=self.symbol,
             price=float(yes_price),
@@ -348,6 +362,20 @@ class LimitlessFeeder(BaseFeeder):
             await http_client.close()
         except Exception:
             pass
+
+        # Update tracker global
+        from src.strategy.market_pairs import get_pair_by_limitless_slug
+        pair = get_pair_by_limitless_slug(self.symbol.lower())
+        if pair:
+            from src.strategy.cross_platform_tracker import cross_platform_tracker
+            cross_platform_tracker.update_book(
+                event_id=pair["event_id"],
+                platform="limitless",
+                yes_bid=float(bid),
+                yes_ask=float(ask),
+                no_bid=round(1.0 - float(ask), 4),
+                no_ask=round(1.0 - float(bid), 4),
+            )
 
         event = PriceUpdateEvent(
             symbol=self.symbol,

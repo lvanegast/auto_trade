@@ -235,6 +235,9 @@ class DatabaseManager:
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS gas_usd NUMERIC(18, 8);",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS slippage_usd NUMERIC(18, 8);",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS latency_ms NUMERIC(10, 2);",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS queue_latency_ms NUMERIC(10, 2);",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS strategy_latency_ms NUMERIC(10, 2);",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS execution_latency_ms NUMERIC(10, 2);",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS net_pnl NUMERIC(18, 8);",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS leg_id VARCHAR(20);",
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_hedge_price NUMERIC(18, 8);",
@@ -438,6 +441,9 @@ class DatabaseManager:
         gas_usd: float = None,
         slippage_usd: float = None,
         latency_ms: float = None,
+        queue_latency_ms: float = None,
+        strategy_latency_ms: float = None,
+        execution_latency_ms: float = None,
         net_pnl: float = None,
         leg_id: str = None,
     ):
@@ -446,9 +452,10 @@ class DatabaseManager:
             symbol, side, price, amount, total, status, external_order_id,
             worker_id, position_id, requested_price, filled_price,
             requested_qty, filled_qty, fee_per_asset, gas_usd,
-            slippage_usd, latency_ms, net_pnl, leg_id
+            slippage_usd, latency_ms, queue_latency_ms, strategy_latency_ms,
+            execution_latency_ms, net_pnl, leg_id
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id;
         """
         conn = None
@@ -475,6 +482,9 @@ class DatabaseManager:
                         gas_usd,
                         slippage_usd,
                         latency_ms,
+                        queue_latency_ms,
+                        strategy_latency_ms,
+                        execution_latency_ms,
                         net_pnl,
                         leg_id,
                     ),
@@ -497,6 +507,47 @@ class DatabaseManager:
         else:
             query = "SELECT * FROM trades ORDER BY timestamp DESC LIMIT %s;"
             params = (limit,)
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, params)
+                return cursor.fetchall()
+        finally:
+            self._return_connection(conn)
+
+    def get_latency_stats(self, worker_id: str = None, hours: int = 24):
+        where = "WHERE latency_ms IS NOT NULL"
+        params = []
+        if worker_id:
+            where += " AND worker_id = %s"
+            params.append(worker_id)
+        where += " AND timestamp > NOW() - INTERVAL '%s hours'"
+        params.append(hours)
+
+        query = f"""
+            SELECT
+                worker_id,
+                COUNT(*) as total_trades,
+                ROUND(AVG(latency_ms)::numeric, 2) as avg_total_ms,
+                ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latency_ms)::numeric, 2) as p50_total_ms,
+                ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms)::numeric, 2) as p95_total_ms,
+                ROUND(MAX(latency_ms)::numeric, 2) as max_total_ms,
+                ROUND(AVG(queue_latency_ms)::numeric, 2) as avg_queue_ms,
+                ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY queue_latency_ms)::numeric, 2) as p50_queue_ms,
+                ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY queue_latency_ms)::numeric, 2) as p95_queue_ms,
+                ROUND(AVG(strategy_latency_ms)::numeric, 2) as avg_strategy_ms,
+                ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY strategy_latency_ms)::numeric, 2) as p50_strategy_ms,
+                ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY strategy_latency_ms)::numeric, 2) as p95_strategy_ms,
+                ROUND(AVG(execution_latency_ms)::numeric, 2) as avg_execution_ms,
+                ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY execution_latency_ms)::numeric, 2) as p50_execution_ms,
+                ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY execution_latency_ms)::numeric, 2) as p95_execution_ms,
+                ROUND(MIN(latency_ms)::numeric, 2) as min_total_ms
+            FROM trades
+            {where}
+            GROUP BY worker_id
+            ORDER BY worker_id;
+        """
         conn = None
         try:
             conn = self._get_connection()

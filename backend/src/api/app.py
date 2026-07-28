@@ -425,6 +425,44 @@ async def get_trades(limit: int = 50, worker_id: str = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/latency")
+async def get_latency_stats(worker_id: str = None, hours: int = 24):
+    """Retorna estadísticas de latencia de ejecución de órdenes (p50, p95, max por worker)."""
+    try:
+        stats = db.get_latency_stats(worker_id=worker_id, hours=hours)
+        formatted = []
+        for s in stats:
+            formatted.append({
+                "worker_id": s["worker_id"],
+                "total_trades": s["total_trades"],
+                "total": {
+                    "avg_ms": float(s["avg_total_ms"]) if s["avg_total_ms"] else None,
+                    "p50_ms": float(s["p50_total_ms"]) if s["p50_total_ms"] else None,
+                    "p95_ms": float(s["p95_total_ms"]) if s["p95_total_ms"] else None,
+                    "max_ms": float(s["max_total_ms"]) if s["max_total_ms"] else None,
+                    "min_ms": float(s["min_total_ms"]) if s["min_total_ms"] else None,
+                },
+                "queue": {
+                    "avg_ms": float(s["avg_queue_ms"]) if s["avg_queue_ms"] else None,
+                    "p50_ms": float(s["p50_queue_ms"]) if s["p50_queue_ms"] else None,
+                    "p95_ms": float(s["p95_queue_ms"]) if s["p95_queue_ms"] else None,
+                },
+                "strategy": {
+                    "avg_ms": float(s["avg_strategy_ms"]) if s["avg_strategy_ms"] else None,
+                    "p50_ms": float(s["p50_strategy_ms"]) if s["p50_strategy_ms"] else None,
+                    "p95_ms": float(s["p95_strategy_ms"]) if s["p95_strategy_ms"] else None,
+                },
+                "execution": {
+                    "avg_ms": float(s["avg_execution_ms"]) if s["avg_execution_ms"] else None,
+                    "p50_ms": float(s["p50_execution_ms"]) if s["p50_execution_ms"] else None,
+                    "p95_ms": float(s["p95_execution_ms"]) if s["p95_execution_ms"] else None,
+                },
+            })
+        return formatted
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/logs")
 async def get_logs(limit: int = 50, worker_id: str = None):
     """Retorna los últimos registros de logs."""

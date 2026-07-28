@@ -79,6 +79,11 @@ class PolymarketSpotArbStrategy(BaseStrategy):
     def on_price_update(self, event) -> SignalEvent | None:
         super().on_price_update(event)
 
+        # Filter: ensure this event matches the worker's base asset
+        base_asset = self.symbol.split("-")[0].lower()
+        if base_asset not in event.symbol.lower():
+            return None
+
         spot_price = BinanceTracker.latest_btc_price
         if spot_price <= 0:
             return None

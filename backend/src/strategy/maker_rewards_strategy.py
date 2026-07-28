@@ -91,7 +91,7 @@ class MakerLiquidityRewardsStrategy(BaseStrategy):
                     side="BUY",
                     price=maker_buy_price,
                     reason=reason,
-                    amount=0.5,
+                    position_size_usd=self.position_size_usd,
                     position_id=None
                 )
 

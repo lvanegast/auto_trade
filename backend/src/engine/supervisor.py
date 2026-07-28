@@ -497,6 +497,12 @@ class TradingWorker:
 
                 # Extract market slug
                 slug = symbol.replace("limitless_crypto_", "").replace("limitless_sport_", "")
+                # Strip outcome suffix (e.g. _YES, _NO or sports details) by truncating at the underscore after the first timestamp
+                ts_match = re.search(r'\d{10,13}', slug)
+                if ts_match:
+                    ts_end = ts_match.end()
+                    if ts_end < len(slug) and slug[ts_end] == '_':
+                        slug = slug[:ts_end]
 
                 try:
                     market = await market_fetcher.get_market(slug)
@@ -539,13 +545,16 @@ class TradingWorker:
         try:
             while self.is_running:
                 event = await self.queue.get()
+                _t_dequeue = time.time()
                 try:
                     if event.event_type == "PRICE_UPDATE":
                         if event.symbol and event.symbol != self.symbol:
                             self.symbol = event.symbol
                         self.last_bid = event.bid
                         self.last_ask = event.ask
+                        _t_strategy_start = time.time()
                         signal = self.strategy.on_price_update(event)
+                        _strategy_latency_ms = (time.time() - _t_strategy_start) * 1000
                         # Broadcast del precio a clientes WebSocket (no bloqueante)
                         if ws_server.has_clients(self.worker_id):
                             await ws_server.broadcast(
@@ -594,6 +603,11 @@ class TradingWorker:
                                 self.db.log("WARNING", f"[CIRCUIT BREAKER DETENIDO] Orden cancelada: {circuit_breaker.tripped_reason}", self.worker_id)
                                 continue
 
+                            # Attach latency metadata to signal for _execute_order
+                            _event_ts = event.timestamp.timestamp() if hasattr(event.timestamp, 'timestamp') else time.time()
+                            signal._queue_latency_ms = (_t_dequeue - _event_ts) * 1000
+                            signal._strategy_latency_ms = _strategy_latency_ms
+
                             # Execute this signal immediately
                             await self._execute_order(signal)
                             if ws_server.has_clients(self.worker_id):
@@ -613,6 +627,8 @@ class TradingWorker:
                             pending = getattr(self.strategy, "_pending_signals", [])
                             while pending:
                                 next_signal = pending.pop(0)
+                                next_signal._queue_latency_ms = signal._queue_latency_ms
+                                next_signal._strategy_latency_ms = 0.0
                                 await self._execute_order(next_signal)
                                 if ws_server.has_clients(self.worker_id):
                                     await ws_server.broadcast(
@@ -635,6 +651,7 @@ class TradingWorker:
             print(f"[Worker {self.worker_id}] Loop de eventos cancelado.")
 
     async def _execute_order(self, signal: SignalEvent):
+        _t_exec_start = time.time()
         self.db.log("INFO", f"Procesando señal: {signal}", self.worker_id)
 
         # SecurityGuard: pre-trade check (skip for SELL — closing positions should never be blocked)
@@ -764,6 +781,10 @@ class TradingWorker:
                     if hasattr(order.status, "value")
                     else str(order.status).upper()
                 )
+                _exec_ms = (time.time() - _t_exec_start) * 1000
+                _q_ms = getattr(signal, '_queue_latency_ms', None)
+                _s_ms = getattr(signal, '_strategy_latency_ms', None)
+                _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
                 self.db.save_trade(
                     symbol=self.symbol,
                     side=signal.side,
@@ -773,7 +794,10 @@ class TradingWorker:
                     status=order_status,
                     worker_id=self.worker_id,
                     position_id=getattr(signal, "position_id", None),
-                    trading_mode=self.trading_mode,
+                    latency_ms=_total_ms,
+                    queue_latency_ms=_q_ms,
+                    strategy_latency_ms=_s_ms,
+                    execution_latency_ms=_exec_ms,
                 )
                 await self._sync_alpaca_portfolio()
             except Exception as e:
@@ -825,6 +849,10 @@ class TradingWorker:
                     order_fill = res_data.get("orderFillTransaction", {})
                     trade_id = order_fill.get("id", "N/A")
 
+                    _exec_ms = (time.time() - _t_exec_start) * 1000
+                    _q_ms = getattr(signal, '_queue_latency_ms', None)
+                    _s_ms = getattr(signal, '_strategy_latency_ms', None)
+                    _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
                     self.db.save_trade(
                         symbol=self.symbol,
                         side=signal.side,
@@ -835,6 +863,10 @@ class TradingWorker:
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
+                        latency_ms=_total_ms,
+                        queue_latency_ms=_q_ms,
+                        strategy_latency_ms=_s_ms,
+                        execution_latency_ms=_exec_ms,
                     )
                     await self._sync_oanda_portfolio()
                 else:
@@ -925,6 +957,10 @@ class TradingWorker:
                     if response.status_code in [200, 201]:
                         res_json = response.json()
                         order_id = res_json.get("order", {}).get("order_id", "N/A")
+                        _exec_ms = (time.time() - _t_exec_start) * 1000
+                        _q_ms = getattr(signal, '_queue_latency_ms', None)
+                        _s_ms = getattr(signal, '_strategy_latency_ms', None)
+                        _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
                         self.db.save_trade(
                             symbol=self.symbol,
                             side=signal.side,
@@ -935,6 +971,10 @@ class TradingWorker:
                             status="COMPLETED",
                             worker_id=self.worker_id,
                             position_id=getattr(signal, "position_id", None),
+                            latency_ms=_total_ms,
+                            queue_latency_ms=_q_ms,
+                            strategy_latency_ms=_s_ms,
+                            execution_latency_ms=_exec_ms,
                         )
                         await self._sync_kalshi_portfolio()
                     else:
@@ -966,6 +1006,10 @@ class TradingWorker:
                     new_quote = quote_balance - spend_amount
                     new_base = base_balance + contracts_count
 
+                    _exec_ms = (time.time() - _t_exec_start) * 1000
+                    _q_ms = getattr(signal, '_queue_latency_ms', None)
+                    _s_ms = getattr(signal, '_strategy_latency_ms', None)
+                    _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
                     self.db.save_trade(
                         symbol=self.symbol,
                         side="BUY",
@@ -975,6 +1019,10 @@ class TradingWorker:
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
+                        latency_ms=_total_ms,
+                        queue_latency_ms=_q_ms,
+                        strategy_latency_ms=_s_ms,
+                        execution_latency_ms=_exec_ms,
                     )
                     self._update_db_portfolio(self.quote_asset, new_quote)
                     self._update_db_portfolio(self.base_asset, new_base)
@@ -1003,6 +1051,10 @@ class TradingWorker:
                     new_quote = quote_balance + revenue
                     new_base = base_balance - amount_to_sell
 
+                    _exec_ms = (time.time() - _t_exec_start) * 1000
+                    _q_ms = getattr(signal, '_queue_latency_ms', None)
+                    _s_ms = getattr(signal, '_strategy_latency_ms', None)
+                    _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
                     self.db.save_trade(
                         symbol=self.symbol,
                         side="SELL",
@@ -1012,6 +1064,10 @@ class TradingWorker:
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
+                        latency_ms=_total_ms,
+                        queue_latency_ms=_q_ms,
+                        strategy_latency_ms=_s_ms,
+                        execution_latency_ms=_exec_ms,
                     )
                     self._update_db_portfolio(self.quote_asset, new_quote)
                     self._update_db_portfolio(self.base_asset, new_base)
@@ -1068,6 +1124,10 @@ class TradingWorker:
             new_quote = quote_balance - spend_amount
             new_base = base_balance + amount_to_buy
 
+            _exec_ms = (time.time() - _t_exec_start) * 1000
+            _q_ms = getattr(signal, '_queue_latency_ms', None)
+            _s_ms = getattr(signal, '_strategy_latency_ms', None)
+            _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
             self.db.save_trade(
                 symbol=self.symbol,
                 side="BUY",
@@ -1077,6 +1137,10 @@ class TradingWorker:
                 status="COMPLETED",
                 worker_id=self.worker_id,
                 position_id=getattr(signal, "position_id", None),
+                latency_ms=_total_ms,
+                queue_latency_ms=_q_ms,
+                strategy_latency_ms=_s_ms,
+                execution_latency_ms=_exec_ms,
             )
             self._update_db_portfolio(self.quote_asset, new_quote)
             self._update_db_portfolio(self.base_asset, new_base)
@@ -1129,6 +1193,10 @@ class TradingWorker:
             new_quote = quote_balance + revenue
             new_base = base_balance - amount_to_sell
 
+            _exec_ms = (time.time() - _t_exec_start) * 1000
+            _q_ms = getattr(signal, '_queue_latency_ms', None)
+            _s_ms = getattr(signal, '_strategy_latency_ms', None)
+            _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
             self.db.save_trade(
                 symbol=self.symbol,
                 side="SELL",
@@ -1138,6 +1206,10 @@ class TradingWorker:
                 status="COMPLETED",
                 worker_id=self.worker_id,
                 position_id=getattr(signal, "position_id", None),
+                latency_ms=_total_ms,
+                queue_latency_ms=_q_ms,
+                strategy_latency_ms=_s_ms,
+                execution_latency_ms=_exec_ms,
             )
             self._update_db_portfolio(self.quote_asset, new_quote)
             self._update_db_portfolio(self.base_asset, new_base)
@@ -1598,35 +1670,48 @@ class TradingEngine:
         if profile_mode == "pure_arbitrage":
             # Perfil ARBITRAJE PURO INTRADÍA (100% Win-Rate por Cobertura & >2.0% ROI Neto)
             
+            # Cargar parámetros desde el entorno (.env)
+            sports_edge = float(os.getenv("SPORTS_ARB_EDGE_PCT", "0.015"))
+            sports_size = float(os.getenv("SPORTS_POSITION_SIZE_USD", "2.0"))
+            crypto_edge = float(os.getenv("CRYPTO_ARB_EDGE_PCT", "0.015"))
+            crypto_size_pct = float(os.getenv("CRYPTO_POSITION_SIZE_PCT", "0.01"))
+            crypto_maker_edge = float(os.getenv("CRYPTO_MAKER_EDGE_PCT", "0.015"))
+            crypto_maker_size = float(os.getenv("CRYPTO_MAKER_POSITION_SIZE_USD", "10.0"))
+
             # Worker 1: Arbitraje de Opciones Binarias Crypto HFT (BTC-INTRADAY)
             from src.strategy.polymarket_spot_arb import PolymarketSpotArbStrategy
             worker1 = TradingWorker("worker_1", "Crypto Spot-Arb HFT", "BTC-INTRADAY", "limitless", self.db)
-            worker1.strategy = PolymarketSpotArbStrategy("BTC-INTRADAY", min_edge_pct=0.015, position_size_pct=0.20, db=self.db, worker_id="worker_1")
+            worker1.strategy = PolymarketSpotArbStrategy("BTC-INTRADAY", min_edge_pct=crypto_edge, position_size_pct=crypto_size_pct, db=self.db, worker_id="worker_1")
             self.workers["worker_1"] = worker1
 
             # Worker 2: Arbitraje Cross-Platform Deportes (Limitless vs Polymarket)
             worker2 = TradingWorker("worker_2", "Cross-Platform Sports", "SPORTS", "limitless_sports", self.db)
-            worker2.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=0.015, position_size_usd=2.0, db=self.db, worker_id="worker_2")
+            worker2.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_2")
             self.workers["worker_2"] = worker2
 
             # Worker 3: Arbitraje Deportivo en Vivo (Partidos de 3 opciones)
-            self.workers["worker_3"] = TradingWorker("worker_3", "Limitless Sports (3 Opciones)", "SPORTS", "limitless_sports", self.db)
+            worker3 = TradingWorker("worker_3", "Limitless Sports (3 Opciones)", "SPORTS", "limitless_sports", self.db)
+            worker3.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_3")
+            self.workers["worker_3"] = worker3
 
             # Worker 4: Arbitraje Deportivo 1xN (Opciones Binarias de 2 opciones)
             worker4 = TradingWorker("worker_4", "Limitless Sports (2 Opciones)", "SPORTS", "limitless_sports", self.db)
-            worker4.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=0.015, position_size_usd=2.0, db=self.db, worker_id="worker_4")
+            worker4.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_4")
             self.workers["worker_4"] = worker4
 
             # Worker 5: Oráculo HFT de Referencia Binance Spot (0 Latency Feed)
-            from src.strategy.lead_lag_arbitrage import LeadLagArbitrageStrategy
+            from src.strategy.base import BaseStrategy
+            class OracleOnlyStrategy(BaseStrategy):
+                def evaluate_signal(self, event):
+                    return None
             worker5 = TradingWorker("worker_5", "Binance HFT Oracle", "BTCUSDT", "binance", self.db)
-            worker5.strategy = LeadLagArbitrageStrategy("BTCUSDT", db=self.db, worker_id="worker_5")
+            worker5.strategy = OracleOnlyStrategy("BTCUSDT")
             self.workers["worker_5"] = worker5
 
-            # Worker 6: Arbitraje Atómico Crypto (Multicall / Bundle)
+            # Worker 6: Arbitraje Atómico Crypto (Multicall / Bundle) -> Maker Rebalancing
             from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
             worker6 = TradingWorker("worker_6", "Crypto Atomic-Arb", "BTC-INTRADAY", "limitless", self.db)
-            worker6.strategy = AtomicCryptoArbStrategy("BTC-INTRADAY", min_profit_target=0.015, position_size_usd=10.0, db=self.db, worker_id="worker_6")
+            worker6.strategy = AtomicCryptoArbStrategy("BTC-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=crypto_maker_size, db=self.db, worker_id="worker_6")
             self.workers["worker_6"] = worker6
 
         elif profile_mode == "crypto_hft_volatile":

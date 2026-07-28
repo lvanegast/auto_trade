@@ -1,0 +1,143 @@
+import time
+import random
+from src.strategy.base import BaseStrategy
+from src.events import PriceUpdateEvent, SignalEvent
+
+
+class AtomicCryptoArbStrategy(BaseStrategy):
+    """
+    Atomic Multicall / Bundle Arbitrage Strategy.
+    Simulates atomic transaction bundling on Base L2 for prediction markets.
+    Applies limit order bids (Maker) for both YES and NO contracts to lock in
+    a combined cost strictly under $1.00 USD.
+    """
+
+    def __init__(
+        self,
+        symbol: str,
+        min_profit_target: float = 0.015,  # 1.5% profit target
+        position_size_usd: float = 10.0,
+        db=None,
+        worker_id: str = "worker_6",
+    ):
+        super().__init__(symbol)
+        self.min_profit_target = min_profit_target
+        self.position_size_usd = position_size_usd
+        self.db = db
+        self.worker_id = worker_id
+
+        self.last_position = None
+        self._position_id = None
+        self._last_signal_time = 0.0
+        self.cooldown_seconds = 4.0
+
+        self._pending_signals = []
+
+        # High-fidelity stats
+        self.total_bundles_sent = 0
+        self.successful_bundles = 0
+        self.reverted_bundles = 0
+        self.gas_burned_usd = 0.0
+
+        self.teorical_probability = 0.50
+        self.edge = 0.0
+        self.kelly_recommendation = 0.0
+
+    def evaluate_signal(self, event):
+        return None
+
+    def on_price_update(self, event: PriceUpdateEvent) -> SignalEvent | None:
+        super().on_price_update(event)
+
+        # Check pending queue first
+        if self._pending_signals:
+            return self._pending_signals.pop(0)
+
+        # Filter: ensure this event matches the worker's base asset
+        base_asset = self.symbol.split("-")[0].lower()
+        if base_asset not in event.symbol.lower():
+            return None
+
+        now = time.time()
+        if now - self._last_signal_time < self.cooldown_seconds:
+            return None
+
+        # Check orderbook availability
+        bid_yes = event.bid
+        ask_yes = event.ask
+        if bid_yes <= 0 or ask_yes <= 0:
+            return None
+
+        # Maker bids:
+        # Buy YES at the current bid_yes
+        my_bid_yes = bid_yes
+        # Buy NO at the current NO bid = (1.0 - YES_ask)
+        my_bid_no = round(1.0 - ask_yes, 4)
+
+        # The total cost of buying both via limit orders is my_bid_yes + my_bid_no
+        total_cost = round(my_bid_yes + my_bid_no, 4)
+        gross_profit = round(1.0 - total_cost, 4)
+
+        self.teorical_probability = (bid_yes + ask_yes) / 2.0
+        self.edge = gross_profit
+
+        # Does the gross margin meet our minimum profit target?
+        if gross_profit >= self.min_profit_target:
+            self.total_bundles_sent += 1
+            
+            # --- 1. SIMULATE LATENCY & SLIPPAGE ---
+            latency_revert = random.random() < 0.15  # 15% chance of slippage/revert
+            
+            if latency_revert:
+                self.reverted_bundles += 1
+                revert_gas = 0.001
+                self.gas_burned_usd += revert_gas
+                reason = f"[Atomic-Revert] ⛽ Maker bundle falló por frontrun. Gas quemado: ${revert_gas:.4f} | Suma: {total_cost:.4f}"
+                if self.db:
+                    self.db.log("WARNING", reason, self.worker_id)
+                return None
+            
+            # --- 2. SUCCESSFUL DUAL LIMIT ORDER FILL ---
+            self.successful_bundles += 1
+            self._last_signal_time = now
+
+            # Number of contracts to buy per leg to balance the payout:
+            # S = position_size_usd / total_cost
+            num_contracts = self.position_size_usd / max(total_cost, 0.01)
+            usd_leg_yes = round(num_contracts * my_bid_yes, 4)
+            usd_leg_no = round(num_contracts * my_bid_no, 4)
+
+            reason_yes = (
+                f"Atomic-Maker Arb [Leg 1/2]: YES @{my_bid_yes:.4f} | "
+                f"Costo Total: {total_cost:.4f} | Edge: {gross_profit:.2%} | Net Profit: ${gross_profit * num_contracts:.4f}"
+            )
+            reason_no = (
+                f"Atomic-Maker Arb [Leg 2/2]: NO @{my_bid_no:.4f} | "
+                f"Costo Total: {total_cost:.4f} | Edge: {gross_profit:.2%} | Net Profit: ${gross_profit * num_contracts:.4f}"
+            )
+
+            # Queue Leg 2 (NO)
+            leg2_signal = SignalEvent(
+                symbol=f"{event.symbol}_NO",
+                side="BUY",
+                price=my_bid_no,
+                reason=reason_no,
+                position_size_usd=usd_leg_no,
+                position_id=None
+            )
+            self._pending_signals.append(leg2_signal)
+
+            if self.db:
+                self.db.log("INFO", f"💎 Arbitraje Maker Detectado | YES Bid @{my_bid_yes:.4f} + NO Bid @{my_bid_no:.4f} = {total_cost:.4f} | Bundles: {self.successful_bundles}/{self.total_bundles_sent}", self.worker_id)
+
+            # Return Leg 1 (YES)
+            return SignalEvent(
+                symbol=f"{event.symbol}_YES",
+                side="BUY",
+                price=my_bid_yes,
+                reason=reason_yes,
+                position_size_usd=usd_leg_yes,
+                position_id=None
+            )
+
+        return None
