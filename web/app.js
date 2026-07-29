@@ -230,11 +230,11 @@ function handleWsEvent(event) {
             break;
 
         case "trade_update":
-            // Nuevo trade: refrescar tablas y agregar marcador en el gráfico
+            // Nuevo trade: refrescar tablas y agregar marcador en el gráfico (solo si el worker actual es el activo y no es el oráculo worker_5)
             fetchTrades();
             fetchStatus();
             fetchPositions();
-            if (data.price && data.side) {
+            if (data.price && data.side && activeWorkerId !== "worker_5" && event.worker_id === activeWorkerId) {
                 addTradeMarker(Math.floor(Date.now() / 1000), data.side, data.price);
             }
             break;

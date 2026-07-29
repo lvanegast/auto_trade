@@ -32,6 +32,7 @@ services:
       - ./backend/src:/app/src
       - .env:/app/.env
       - ./web:/app/web
+      - C:\Users\User\Downloads\kalshi_private_key.pem:/app/kalshi_private_key.pem
     depends_on:
       db_trading:
         condition: service_healthy

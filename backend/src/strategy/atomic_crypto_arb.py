@@ -68,14 +68,15 @@ class AtomicCryptoArbStrategy(BaseStrategy):
         if bid_yes <= 0 or ask_yes <= 0:
             return None
 
-        # Maker bids:
-        # Buy YES at the current bid_yes
-        my_bid_yes = bid_yes
-        # Buy NO at the current NO bid = (1.0 - YES_ask)
-        my_bid_no = round(1.0 - ask_yes, 4)
+        # Taker execution:
+        # Buy YES at the current ask_yes
+        my_ask_yes = ask_yes
+        # Buy NO at the current ask_no. On prediction platforms, ask_no is equivalent to (1.0 - bid_yes)
+        # because the bid of YES defines the ask of NO (buying NO is taking the YES bid).
+        my_ask_no = round(1.0 - bid_yes, 4)
 
-        # The total cost of buying both via limit orders is my_bid_yes + my_bid_no
-        total_cost = round(my_bid_yes + my_bid_no, 4)
+        # The total cost of buying both as Taker is my_ask_yes + my_ask_no
+        total_cost = round(my_ask_yes + my_ask_no, 4)
         gross_profit = round(1.0 - total_cost, 4)
 
         self.teorical_probability = (bid_yes + ask_yes) / 2.0
@@ -104,15 +105,15 @@ class AtomicCryptoArbStrategy(BaseStrategy):
             # Number of contracts to buy per leg to balance the payout:
             # S = position_size_usd / total_cost
             num_contracts = self.position_size_usd / max(total_cost, 0.01)
-            usd_leg_yes = round(num_contracts * my_bid_yes, 4)
-            usd_leg_no = round(num_contracts * my_bid_no, 4)
+            usd_leg_yes = round(num_contracts * my_ask_yes, 4)
+            usd_leg_no = round(num_contracts * my_ask_no, 4)
 
             reason_yes = (
-                f"Atomic-Maker Arb [Leg 1/2]: YES @{my_bid_yes:.4f} | "
+                f"Atomic-Taker Arb [Leg 1/2]: YES @{my_ask_yes:.4f} | "
                 f"Costo Total: {total_cost:.4f} | Edge: {gross_profit:.2%} | Net Profit: ${gross_profit * num_contracts:.4f}"
             )
             reason_no = (
-                f"Atomic-Maker Arb [Leg 2/2]: NO @{my_bid_no:.4f} | "
+                f"Atomic-Taker Arb [Leg 2/2]: NO @{my_ask_no:.4f} | "
                 f"Costo Total: {total_cost:.4f} | Edge: {gross_profit:.2%} | Net Profit: ${gross_profit * num_contracts:.4f}"
             )
 
@@ -120,7 +121,7 @@ class AtomicCryptoArbStrategy(BaseStrategy):
             leg2_signal = SignalEvent(
                 symbol=f"{event.symbol}_NO",
                 side="BUY",
-                price=my_bid_no,
+                price=my_ask_no,
                 reason=reason_no,
                 position_size_usd=usd_leg_no,
                 position_id=None
@@ -128,13 +129,13 @@ class AtomicCryptoArbStrategy(BaseStrategy):
             self._pending_signals.append(leg2_signal)
 
             if self.db:
-                self.db.log("INFO", f"💎 Arbitraje Maker Detectado | YES Bid @{my_bid_yes:.4f} + NO Bid @{my_bid_no:.4f} = {total_cost:.4f} | Bundles: {self.successful_bundles}/{self.total_bundles_sent}", self.worker_id)
+                self.db.log("INFO", f"💎 Arbitraje Taker Detectado | YES Ask @{my_ask_yes:.4f} + NO Ask @{my_ask_no:.4f} = {total_cost:.4f} | Bundles: {self.successful_bundles}/{self.total_bundles_sent}", self.worker_id)
 
             # Return Leg 1 (YES)
             return SignalEvent(
                 symbol=f"{event.symbol}_YES",
                 side="BUY",
-                price=my_bid_yes,
+                price=my_ask_yes,
                 reason=reason_yes,
                 position_size_usd=usd_leg_yes,
                 position_id=None
