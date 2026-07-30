@@ -1817,13 +1817,15 @@ class TradingEngine:
             self.workers["worker_4"] = worker4
 
             # Worker 5: Oráculo HFT de Referencia Binance Spot (0 Latency Feed)
-            from src.strategy.base import BaseStrategy
-            class OracleOnlyStrategy(BaseStrategy):
-                def evaluate_signal(self, event):
-                    return None
-            worker5 = TradingWorker("worker_5", "Binance HFT Oracle", "BTCUSDT", "binance", self.db)
-            worker5.strategy = OracleOnlyStrategy("BTCUSDT")
-            self.workers["worker_5"] = worker5
+            w5_enabled = os.getenv("WORKER5_ENABLED", "true").lower() == "true"
+            if w5_enabled:
+                from src.strategy.base import BaseStrategy
+                class OracleOnlyStrategy(BaseStrategy):
+                    def evaluate_signal(self, event):
+                        return None
+                worker5 = TradingWorker("worker_5", "Binance HFT Oracle", "BTCUSDT", "binance", self.db)
+                worker5.strategy = OracleOnlyStrategy("BTCUSDT")
+                self.workers["worker_5"] = worker5
 
             # Worker 6: Arbitraje Atómico/Maker Market Making (Post-Only) en Limitless/Kalshi
             w6_enabled = os.getenv("WORKER6_ENABLED", "true").lower() == "true"
