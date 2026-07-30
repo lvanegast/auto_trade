@@ -84,7 +84,7 @@ class LimitlessFeeder(BaseFeeder):
         try:
             while self.running:
                 try:
-                    if self.symbol == "BTC-INTRADAY":
+                    if self.symbol in ("BTC-INTRADAY", "ANY-INTRADAY"):
                         await self._fetch_crypto_intraday(market_fetcher, page_fetcher)
                     else:
                         await self._fetch_and_emit(market_fetcher)

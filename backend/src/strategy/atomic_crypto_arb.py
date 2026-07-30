@@ -53,10 +53,11 @@ class AtomicCryptoArbStrategy(BaseStrategy):
         if self._pending_signals:
             return self._pending_signals.pop(0)
 
-        # Filter: ensure this event matches the worker's base asset
-        base_asset = self.symbol.split("-")[0].lower()
-        if base_asset not in event.symbol.lower():
-            return None
+        # Filter: match base_asset unless configured for ANY-INTRADAY (which scans all same-day elements)
+        if self.symbol != "ANY-INTRADAY":
+            base_asset = self.symbol.split("-")[0].lower()
+            if base_asset not in event.symbol.lower():
+                return None
 
         now = time.time()
         
@@ -67,10 +68,9 @@ class AtomicCryptoArbStrategy(BaseStrategy):
         if now - self._last_signal_time < self.cooldown_seconds:
             return None
 
-        # Filter: Only enter markets of 5, 10, or 15 minutes duration
-        symbol_lower = event.symbol.lower()
-        is_short_term = "5-min" in symbol_lower or "15-min" in symbol_lower or "10-min" in symbol_lower
-        if not is_short_term:
+        # Filter: Only enter markets that expire on the SAME DAY (less than 24 hours / 86400 seconds)
+        exp_ts = getattr(event, "expiration_timestamp", None)
+        if exp_ts and (exp_ts - now > 86400):
             return None
 
         # Check orderbook availability

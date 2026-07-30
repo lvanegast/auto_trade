@@ -1793,12 +1793,12 @@ class TradingEngine:
             crypto_maker_edge = float(os.getenv("CRYPTO_MAKER_EDGE_PCT", "0.05"))
             crypto_maker_size = float(os.getenv("CRYPTO_MAKER_POSITION_SIZE_USD", "10.0"))
 
-            # Worker 1: Bitcoin (BTC) - Intra-Plataforma Local (1xN) en Kalshi
+            # Worker 1: Arbitraje Intraday General (Opciones de mismo día / rápida resolución)
             w1_enabled = os.getenv("WORKER1_ENABLED", "true").lower() == "true"
             if w1_enabled:
-                from src.strategy.cross_platform_arb import CrossPlatformArbitrageStrategy
-                worker1 = TradingWorker("worker_1", "Kalshi BTC Arb", "KXBTCD", "kalshi", self.db)
-                worker1.strategy = CrossPlatformArbitrageStrategy("KXBTCD", feeder_type="kalshi", min_edge_pct=crypto_edge, position_size_usd=10.0, db=self.db, worker_id="worker_1")
+                from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
+                worker1 = TradingWorker("worker_1", "Limitless Intraday General", "ANY-INTRADAY", "limitless", self.db)
+                worker1.strategy = AtomicCryptoArbStrategy("ANY-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=1.0, db=self.db, worker_id="worker_1")
                 self.workers["worker_1"] = worker1
 
             # Worker 2: Arbitraje Cross-Platform Deportes (Limitless vs Polymarket)

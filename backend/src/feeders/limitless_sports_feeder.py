@@ -108,25 +108,22 @@ class LimitlessSportsFeeder(BaseFeeder):
                     if not slug:
                         continue
 
-                    await self._check_group_arb(slug, title)
-                    # Introduce a small delay to avoid hitting Cloudflare 429 rate limit when querying multiple sub-markets sequentially
-                    await asyncio.sleep(0.25)
+                    # Extract sub-markets directly from item payload without secondary HTTP request
+                    subs = getattr(m, "markets", None) or (m.get("markets") if isinstance(m, dict) else None)
+                    if subs and isinstance(subs, list) and len(subs) >= 2:
+                        await self._process_group_arb(slug, title, subs)
+                    else:
+                        # Single / binary market directly in item
+                        prices = getattr(m, "prices", None) or (m.get("prices") if isinstance(m, dict) else None)
+                        if prices and len(prices) >= 2:
+                            await self._process_single_market(slug, title, prices)
 
                 print(f"[Sports Feeder] Scan complete: {len(markets)} markets checked")
             except Exception as e:
                 print(f"[Sports] Error escaneando eventos dinámicos: {e}")
 
-    async def _check_group_arb(self, group_slug, group_title):
+    async def _process_group_arb(self, group_slug, group_title, subs):
         from src.strategy.cross_platform_tracker import cross_platform_tracker
-
-        try:
-            market = await self._market_fetcher.get_market(group_slug)
-        except Exception:
-            return
-
-        subs = market.markets if hasattr(market, "markets") and market.markets else []
-        if len(subs) < 2:
-            return
 
         total_subs = len(subs)
         total_yes = 0
@@ -135,7 +132,7 @@ class LimitlessSportsFeeder(BaseFeeder):
         skipped_no_price = 0
 
         for sub in subs:
-            prices = getattr(sub, "prices", None)
+            prices = getattr(sub, "prices", None) if hasattr(sub, "prices") else (sub.get("prices") if isinstance(sub, dict) else None)
             if not prices or len(prices) == 0:
                 skipped_no_price += 1
                 continue
@@ -145,8 +142,8 @@ class LimitlessSportsFeeder(BaseFeeder):
                 skipped_no_price += 1
                 continue
 
-            slug = sub.slug if hasattr(sub, "slug") else ""
-            title = sub.title if hasattr(sub, "title") else ""
+            slug = getattr(sub, "slug", "") if hasattr(sub, "slug") else (sub.get("slug", "") if isinstance(sub, dict) else "")
+            title = getattr(sub, "title", "") if hasattr(sub, "title") else (sub.get("title", "") if isinstance(sub, dict) else "")
 
             if yes_price > 0.01 and yes_price < 0.99:
                 has_liquidity = True
@@ -161,24 +158,12 @@ class LimitlessSportsFeeder(BaseFeeder):
                 }
             )
 
-        if not has_liquidity or len(outcomes) < 2:
-            print(f"[Sports Feeder] SKIP {group_title}: liquidity={has_liquidity}, outcomes={len(outcomes)}")
-            return
-
-        # CRITICAL: reject markets with missing outcomes — can't do 1xN arb
-        # if we don't have prices for ALL outcomes
-        if skipped_no_price > 0:
-            print(f"[Sports Feeder] SKIP {group_title}: {skipped_no_price}/{total_subs} outcomes missing prices — incomplete data")
+        if not has_liquidity or len(outcomes) < 2 or skipped_no_price > 0:
             return
 
         edge = 1.0 - total_yes
-
-        # Sanity check: edges > 15% are almost certainly data errors or illiquid markets
         if abs(edge) > 0.15:
-            print(f"[Sports Feeder] SKIP {group_title}: edge {edge:+.2%} exceeds 15% sanity limit — likely illiquid/stale")
             return
-
-        print(f"[Sports Feeder] {group_title}: {len(outcomes)} outcomes, total_yes={total_yes:.4f}, edge={edge:+.4f}")
 
         event_id = f"limitless_sport_{group_slug}"
         primary_price = outcomes[0]["yes_price"]
@@ -191,9 +176,7 @@ class LimitlessSportsFeeder(BaseFeeder):
             ask=primary_price,
         )
 
-        # Pass edge data to the sports arb strategy (with full outcomes)
         from src.strategy.sports_arb import update_sports_edge
-
         update_sports_edge(
             event_id=event_id,
             total_yes=total_yes,
@@ -204,7 +187,6 @@ class LimitlessSportsFeeder(BaseFeeder):
             group_slug=group_slug,
         )
 
-        # Emitir actualización de precio regular para el worker (usando self.symbol para aislamiento estricto)
         event = PriceUpdateEvent(
             symbol=event_id,
             price=primary_price,
@@ -213,15 +195,48 @@ class LimitlessSportsFeeder(BaseFeeder):
         )
         await self.queue.put(event)
 
-        if edge > 0.02:
-            print(
-                f"[Sports ARB YES] {group_title} | "
-                f"Total YES={total_yes:.4f} | Edge={edge:+.2%} | "
-                f"{len(outcomes)} outcomes | BUY ALL YES"
-            )
-        elif edge < -0.02:
-            print(
-                f"[Sports ARB NO] {group_title} | "
-                f"Total YES={total_yes:.4f} | Overedge={edge:+.2%} | "
-                f"{len(outcomes)} outcomes | BUY ALL NO"
-            )
+    async def _process_single_market(self, slug, title, prices):
+        from src.strategy.cross_platform_tracker import cross_platform_tracker
+
+        try:
+            yes_price = float(prices[0])
+            no_price = float(prices[1])
+        except (ValueError, TypeError, IndexError):
+            return
+
+        total_yes = yes_price + no_price
+        edge = 1.0 - total_yes
+        if abs(edge) > 0.15:
+            return
+
+        event_id = f"limitless_sport_{slug}"
+        cross_platform_tracker.update_price(
+            event_id=event_id,
+            platform="limitless",
+            price=yes_price,
+            bid=yes_price,
+            ask=yes_price,
+        )
+
+        from src.strategy.sports_arb import update_sports_edge
+        outcomes = [
+            {"slug": f"{slug}_YES", "title": f"{title} (YES)", "yes_price": yes_price, "no_price": no_price},
+            {"slug": f"{slug}_NO", "title": f"{title} (NO)", "yes_price": no_price, "no_price": yes_price},
+        ]
+        update_sports_edge(
+            event_id=event_id,
+            total_yes=total_yes,
+            edge=edge,
+            outcomes_count=2,
+            title=title,
+            outcomes=outcomes,
+            group_slug=slug,
+        )
+
+        event = PriceUpdateEvent(
+            symbol=event_id,
+            price=yes_price,
+            ask=yes_price,
+            bid=yes_price,
+        )
+        await self.queue.put(event)
