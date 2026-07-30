@@ -18,7 +18,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Copiar el código fuente y el frontend
-COPY src/ ./src
+COPY backend/src/ ./src
 COPY web/ ./web
 COPY main.py ./
 
