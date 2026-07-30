@@ -82,7 +82,7 @@ class LimitlessSportsFeeder(BaseFeeder):
     async def _scan_sports_markets(self):
         global _last_sports_scan_time
         now = time.time()
-        if now - _last_sports_scan_time < 2.5:
+        if now - _last_sports_scan_time < 5.0:
             return
         async with _sports_scan_lock:
             _last_sports_scan_time = now

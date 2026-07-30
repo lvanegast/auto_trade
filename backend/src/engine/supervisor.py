@@ -10,9 +10,9 @@ from dotenv import load_dotenv as _ld
 _load_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 _ld(os.path.join(_load_dir, ".env"), override=True)
 
-# Forzar aceleración a 1.0 segundo para escaneo de Alta Frecuencia (HFT) en tiempo real
-os.environ["SPORTS_POLL_INTERVAL"] = "1.0"
-os.environ["ORACLE_POLL_INTERVAL"] = "1.0"
+# Forzar aceleración a 5.0 segundos para evitar Rate Limits de Cloudflare en la API de Limitless
+os.environ["SPORTS_POLL_INTERVAL"] = "5.0"
+os.environ["ORACLE_POLL_INTERVAL"] = "5.0"
 from src.database import DatabaseManager
 from src.events import SignalEvent
 from src.strategy.lead_lag_arbitrage import LeadLagArbitrageStrategy
