@@ -109,6 +109,8 @@ class LimitlessSportsFeeder(BaseFeeder):
                         continue
 
                     await self._check_group_arb(slug, title)
+                    # Introduce a small delay to avoid hitting Cloudflare 429 rate limit when querying multiple sub-markets sequentially
+                    await asyncio.sleep(0.25)
 
                 print(f"[Sports Feeder] Scan complete: {len(markets)} markets checked")
             except Exception as e:
