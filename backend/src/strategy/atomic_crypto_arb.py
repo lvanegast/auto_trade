@@ -59,7 +59,18 @@ class AtomicCryptoArbStrategy(BaseStrategy):
             return None
 
         now = time.time()
+        
+        # 10-minute safety cooldown check on previous revert / loss
+        if hasattr(self, "_revert_suspension_until") and now < self._revert_suspension_until:
+            return None
+            
         if now - self._last_signal_time < self.cooldown_seconds:
+            return None
+
+        # Filter: Only enter markets of 5, 10, or 15 minutes duration
+        symbol_lower = event.symbol.lower()
+        is_short_term = "5-min" in symbol_lower or "15-min" in symbol_lower or "10-min" in symbol_lower
+        if not is_short_term:
             return None
 
         # Check orderbook availability
@@ -86,14 +97,17 @@ class AtomicCryptoArbStrategy(BaseStrategy):
         if gross_profit >= self.min_profit_target:
             self.total_bundles_sent += 1
             
-            # --- 1. SIMULATE LATENCY & SLIPPAGE ---
+            # --- 1. SIMULATE LATENCY & SLIPPAGE / REVERT ---
+            # Represents execution slippage on-chain
             latency_revert = random.random() < 0.15  # 15% chance of slippage/revert
             
             if latency_revert:
                 self.reverted_bundles += 1
                 revert_gas = 0.001
                 self.gas_burned_usd += revert_gas
-                reason = f"[Atomic-Revert] ⛽ Maker bundle falló por frontrun. Gas quemado: ${revert_gas:.4f} | Suma: {total_cost:.4f}"
+                # Suspend strategy for 10 minutes to protect capital
+                self._revert_suspension_until = now + 600.0
+                reason = f"[Atomic-Revert] ⛽ Maker bundle falló por frontrun. Gas quemado: ${revert_gas:.4f} | Penalización: Suspendido por 10 min | Suma: {total_cost:.4f}"
                 if self.db:
                     self.db.log("WARNING", reason, self.worker_id)
                 return None

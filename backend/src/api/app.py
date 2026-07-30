@@ -137,6 +137,32 @@ async def get_status(worker_id: str = "worker_1"):
         worker = engine.workers[worker_id]
         is_running = worker.is_running
         portfolio = db.get_portfolio(worker_id=worker_id)
+        
+        # Real on-chain portfolio synchronization for Limitless / EVM workers when live execution is active
+        feeder_type = worker.feeder_type
+        execution_type = os.getenv("EXECUTION_TYPE", "simulation").lower()
+        private_key = os.getenv("LIMITLESS_PRIVATE_KEY")
+        
+        if feeder_type in ("limitless", "limitless_sports", "binary_arb", "maker_making") and execution_type != "simulation" and private_key:
+            try:
+                from web3 import Web3
+                from eth_account import Account
+                
+                wallet_address = Account.from_key(private_key).address
+                
+                # Fetch live USDC balance from blockchain using Web3
+                w3 = Web3(Web3.HTTPProvider('https://sepolia.base.org'))
+                abi = [ { 'constant': True, 'inputs': [{'name': '_owner', 'type': 'address'}], 'name': 'balanceOf', 'outputs': [{'name': 'balance', 'type': 'uint256'}], 'payable': False, 'stateMutability': 'view', 'type': 'function' } ]
+                # USDC Base Sepolia contract
+                usdc_contract = w3.eth.contract(address='0x036CbD53842c5426634e7929541eC2318f3dCF7e', abi=abi)
+                usdc_balance = float(usdc_contract.functions.balanceOf(wallet_address).call() / 10**6)
+                
+                # Update local DB portfolio cache
+                db.update_portfolio(worker.quote_asset, usdc_balance, 0.0, worker_id=worker_id)
+                # Reload portfolio
+                portfolio = db.get_portfolio(worker_id=worker_id)
+            except Exception as pe:
+                print(f"[On-Chain Sync Status Error] {pe}")
 
         # Formatear balance
         balances = {item["asset"]: float(item["free_balance"]) for item in portfolio}
