@@ -32,6 +32,10 @@ def update_sports_edge(
         "outcomes_count": outcomes_count,
         "title": title,
         "outcomes": outcomes or [],
+        "group_slug": group_slug,
+    }
+
+
 # Global set of claimed event_ids to prevent concurrent workers from trading the same event
 _globally_claimed_events: set = set()
 
