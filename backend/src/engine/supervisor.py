@@ -1166,12 +1166,13 @@ class TradingWorker:
                         
                         if signal.side == "BUY":
                             if not getattr(signal, "position_id", None):
+                                pos_amount = (spend_amount / price) if (price > 0 and spend_amount > 0) else (requested_position_usd if requested_position_usd else 1.0)
                                 position_id = self.db.save_position(
                                     self.worker_id,
                                     pos_symbol,
                                     "BUY",
                                     price,
-                                    spend_amount / price,
+                                    pos_amount,
                                 )
                                 if position_id and hasattr(self.strategy, "_arb_groups"):
                                     for gid, grp in self.strategy._arb_groups.items():
@@ -1264,12 +1265,13 @@ class TradingWorker:
 
             pos_symbol = getattr(signal, "symbol", self.symbol)
             if not getattr(signal, "position_id", None):
+                sim_pos_amount = amount_to_buy if amount_to_buy > 0 else (requested_position_usd if requested_position_usd else 1.0)
                 position_id = self.db.save_position(
                     self.worker_id,
                     pos_symbol,
                     "BUY",
                     price,
-                    amount_to_buy,
+                    sim_pos_amount,
                 )
                 if position_id and hasattr(self.strategy, "_arb_groups"):
                     for gid, grp in self.strategy._arb_groups.items():
