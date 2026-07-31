@@ -35,6 +35,7 @@ services:
       - /app/kalshi_private_key.pem:/app/kalshi_private_key.pem
     environment:
       - AUTO_START=true
+      - DB_HOST=db
 
 volumes:
   postgres_prod_data:
