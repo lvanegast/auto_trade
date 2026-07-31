@@ -692,39 +692,39 @@
                     <tbody>
                         <tr>
                             <td><strong>Worker 1</strong></td>
-                            <td>Bitcoin (BTC)</td>
-                            <td>Intra-Plataforma Local (1xN)</td>
-                            <td>Escanea Kalshi Demo buscando descalces rápidos donde Ask(YES) + Ask(NO) < $0.97 USD. Compra ambos lados y hace merge() en dólares.</td>
+                            <td>Intraday General</td>
+                            <td>Mismo Día (Intraday < 24h)</td>
+                            <td>Escanea cualquier opción binaria o evento en Limitless con cierre en el mismo día (mismo día / < 24h) para arbitraje $1 \times N$ a $1.00 USD.</td>
                         </tr>
                         <tr>
                             <td><strong>Worker 2</strong></td>
-                            <td>Deportes</td>
+                            <td>Deportes & eSports</td>
                             <td>Cross-Platform (Limitless ↔ Polymarket)</td>
-                            <td>Compara precios de partidos en vivo. Compra cada opción (Local/Visitante/Empate) en la plataforma donde cotice más barata para armar la canasta al menor costo.</td>
+                            <td>Compara precios de eventos deportivos y eSports en vivo. Compra cada opción en la plataforma donde cotice más barata para armar la canasta de $1.00 USD. Candado Global Activo.</td>
                         </tr>
                         <tr>
                             <td><strong>Worker 3</strong></td>
-                            <td>Deportes (3 Opciones)</td>
+                            <td>Eventos Multi-Opciones</td>
                             <td>Intra-Plataforma Local (1xN)</td>
-                            <td>Compra todos los resultados posibles (Local, Visitante, Empate) de un partido de fútbol en Limitless si suman < $0.97 USD.</td>
+                            <td>Compra todos los resultados de eventos de 3 o más opciones si suman < $0.98 USD. Protegido con Candado Global de Eventos en tiempo real.</td>
                         </tr>
                         <tr>
                             <td><strong>Worker 4</strong></td>
-                            <td>Deportes (2 Opciones)</td>
+                            <td>Eventos Binarios</td>
                             <td>Intra-Plataforma Local (1xN)</td>
-                            <td>Escanea eventos binarios deportivos (Over/Under) en Limitless para comprar YES + NO si la suma es < $0.97 USD.</td>
+                            <td>Escanea eventos binarios (2 opciones YES/NO) de cualquier categoría para comprar canasta completa si suma < $0.98 USD. Candado Global Activo.</td>
                         </tr>
                         <tr>
                             <td><strong>Worker 5</strong></td>
                             <td>Bitcoin (BTC/USD)</td>
-                            <td>Oráculo de Referencia HFT</td>
-                            <td>Monitorea el feed de milisegundos de Binance Spot para proveer el precio real del mercado que sirve de base para el cálculo de volatilidad y spreads.</td>
+                            <td>Oráculo Spot (Switch Desactivado en Server)</td>
+                            <td>Monitorea el feed HFT de Binance Spot. En servidores en la nube se desactiva con WORKER5_ENABLED=false para evitar bloqueos HTTP 451.</td>
                         </tr>
                         <tr>
                             <td><strong>Worker 6</strong></td>
-                            <td>Bitcoin / Ethereum</td>
-                            <td>Maker Market Making (Post-Only)</td>
-                            <td>Coloca ofertas de compra pasivas (Bids) para YES y NO a la vez en Limitless/Kalshi a precio combinado de $0.95 USD. Si minoristas venden a mercado, capturamos el spread.</td>
+                            <td>Bitcoin Intraday</td>
+                            <td>Cripto Intraday (5/15 min)</td>
+                            <td>Monitorea opciones binarias rápidas de Bitcoin (5 y 15 min) en Limitless. Micro-inversión de $1.00 USD y cooldown de 10 min por fallo.</td>
                         </tr>
                     </tbody>
                 </table>

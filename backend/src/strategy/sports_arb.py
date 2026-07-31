@@ -32,8 +32,8 @@ def update_sports_edge(
         "outcomes_count": outcomes_count,
         "title": title,
         "outcomes": outcomes or [],
-        "group_slug": group_slug,
-    }
+# Global set of claimed event_ids to prevent concurrent workers from trading the same event
+_globally_claimed_events: set = set()
 
 
 class SportsArbitrageStrategy(BaseStrategy):
@@ -105,8 +105,8 @@ class SportsArbitrageStrategy(BaseStrategy):
         if event_id in self._arb_groups:
             return self._evaluate_group_exit(event_id, event.price, now)
 
-        # 2b. Skip if we already have a pending entry for this event (prevent duplicates)
-        if event_id in self._pending_event_ids:
+        # 2b. Skip if we or another worker already claimed this event (prevent cross-worker duplicate entries)
+        if event_id in self._pending_event_ids or event_id in _globally_claimed_events:
             return None
 
         # 3. Cooldown check
@@ -244,6 +244,7 @@ class SportsArbitrageStrategy(BaseStrategy):
             "num_sets": num_sets,
         }
         self._pending_event_ids.add(event_id)
+        _globally_claimed_events.add(event_id)
         self.total_opportunities += 1
 
         # 10. Generate N sequential BUY signals — each outcome gets proportional USD
@@ -342,6 +343,7 @@ class SportsArbitrageStrategy(BaseStrategy):
             return None
 
         self._pending_event_ids.discard(event_id)
+        _globally_claimed_events.discard(event_id)
         self._last_exit_time[event_id] = _time.time()
 
         arb_type = group["arb_type"]

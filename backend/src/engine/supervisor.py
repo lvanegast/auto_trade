@@ -1090,8 +1090,8 @@ class TradingWorker:
             
             if api_key and api_secret and private_key and self.execution_type != "simulation":
                 try:
-                    from limitless_sdk import Client as LimitlessClient
-                    from limitless_sdk.models import HMACCredentials, Side as LimitlessSide, OrderType as LimitlessOrderType
+                    from limitless_sdk import Client as LimitlessClient, HMACCredentials
+                    from limitless_sdk.types import Side as LimitlessSide, OrderType as LimitlessOrderType
                     
                     # scale collateral to 6 decimals, default size determination
                     if requested_position_usd is not None:

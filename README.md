@@ -22,12 +22,12 @@ El sistema opera con 7 trabajadores (*workers*) independientes coordinados por `
 
 | Worker ID | Nombre del Worker | Plataforma / Feeder | Tipo de Arbitraje / Función |
 | :--- | :--- | :--- | :--- |
-| **Worker 1** | Crypto BTC HFT | Limitless / Kalshi | Arbitraje Spot-to-Prediction (Lead-Lag vs Binance). |
-| **Worker 2** | Cross-Platform Sports | Limitless vs Polymarket | Arbitraje Deportivo Cruzado 1xN (Mejores precios de canasta). |
-| **Worker 3** | Limitless Sports (3 Opciones) | Limitless Exchange (Base L2) | Arbitraje Deportivo $1 \times N$ (Fútbol, Local/Visitante/Empate). |
-| **Worker 4** | Limitless Sports (2 Opciones) | Limitless Exchange (Base L2) | Arbitraje Deportivo $1 \times N$ (Over/Under, Sí/No de 2 opciones). |
-| **Worker 5** | Binance HFT Oracle | Binance Spot (`BTCUSDT`) | Oráculo Spot de Referencia a 0 latencia (Reloj Atómico del Sistema). |
-| **Worker 6** | Maker Arbitrage MM | Limitless / Kalshi | Delta-Neutral Market Making (Post-Only, compra de YES + NO a < $0.95). |
+| **Worker 1** | Limitless Intraday General | Limitless Exchange (Base L2) | Arbitraje Same-Day ($1 \times N$ en opciones de cierre el mismo día <24h). |
+| **Worker 2** | Cross-Platform Sports | Limitless vs Polymarket | Arbitraje Deportivo y eSports Cruzado (Candado Global Activo). |
+| **Worker 3** | Eventos Multi-Opciones | Limitless Exchange (Base L2) | Arbitraje $1 \times N$ en canastas de 3 o más opciones (Fútbol/Elecciones). |
+| **Worker 4** | Eventos Binarios | Limitless Exchange (Base L2) | Arbitraje $1 \times N$ en opciones de 2 resultados (YES/NO, Over/Under). |
+| **Worker 5** | Binance HFT Oracle | Binance Spot (`BTCUSDT`) | Oráculo Spot de Referencia (Desactivable vía `WORKER5_ENABLED=false` en Cloud). |
+| **Worker 6** | Crypto Atomic-Arb | Limitless Exchange (Base L2) | Arbitraje de Opciones de Bitcoin Intraday (5 y 15 min, cooldown 10m por fallo). |
 
 ---
 
