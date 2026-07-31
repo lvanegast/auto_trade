@@ -91,6 +91,40 @@ function connectWebSocket(workerId) {
         wsResetTimer = null;
     }
 
+    // Direct Client-Side Binance WebSocket for BTC Ticker Streaming (Zero Server-Side Latency & 0% HTTP 451 Risk)
+    let binanceDirectWs = null;
+
+    function initDirectBinanceWs() {
+        if (binanceDirectWs) return;
+        try {
+            const url = "wss://stream.binance.com:9443/ws/btcusdt@ticker";
+            binanceDirectWs = new WebSocket(url);
+            binanceDirectWs.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    const price = parseFloat(data.c || data.p);
+                    if (price > 0 && (activeWorkerId === "worker_1" || activeWorkerId === "worker_6" || activeWorkerId === "worker_5")) {
+                        const nowSec = Math.floor(Date.now() / 1000);
+                        pushTick(price, nowSec);
+                        const elPrice = document.getElementById("header-price");
+                        if (elPrice && (lastPrice <= 0 || activeWorkerId === "worker_5")) {
+                            elPrice.textContent = `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                        }
+                    }
+                } catch (_) {}
+            };
+            binanceDirectWs.onclose = () => {
+                binanceDirectWs = null;
+                setTimeout(initDirectBinanceWs, 3000);
+            };
+            binanceDirectWs.onerror = () => {
+                if (binanceDirectWs) { try { binanceDirectWs.close(); } catch(_) {} binanceDirectWs = null; }
+            };
+        } catch (_) {}
+    }
+
+    initDirectBinanceWs();
+
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host || "localhost:8080";
     const url = `${protocol}//${host}/ws/${workerId}`;

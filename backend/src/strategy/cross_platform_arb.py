@@ -27,6 +27,7 @@ from src.strategy.market_pairs import (
     get_pair_by_limitless_slug,
 )
 from src.events import PriceUpdateEvent, SignalEvent
+from src.strategy.sports_arb import _globally_claimed_events
 
 
 class CrossPlatformArbitrageStrategy(BaseStrategy):
@@ -192,6 +193,10 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
 
         current_price = event.price
         self.teorical_probability = current_price
+
+        event_key = self.event_id or event.symbol
+        if event_key in _globally_claimed_events:
+            return None
 
         real_bid = getattr(event, "bid", 0.0)
         real_ask = getattr(event, "ask", 0.0)
