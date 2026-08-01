@@ -53,10 +53,27 @@ class PolymarketFeeder(BaseFeeder):
 
     def _fetch_book_sync(self):
         import urllib.request
+        import time
         url = f"https://clob.polymarket.com/book?token_id={self.token_id}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        
+        start_time = time.time()
         with urllib.request.urlopen(req, timeout=5) as response:
-            return json.loads(response.read().decode("utf-8"))
+            result = json.loads(response.read().decode("utf-8"))
+            latency_ms = (time.time() - start_time) * 1000
+            
+            # Registrar latencia real
+            from src.engine.latency_tracker import latency_tracker
+            latency_tracker._record(type('Measurement', (), {
+                'platform': 'polymarket',
+                'operation': 'get_orderbook',
+                'latency_ms': latency_ms,
+                'success': True,
+                'start_time': start_time,
+                'end_time': time.time(),
+            })())
+            
+            return result
 
     async def _fetch_book(self):
         return await asyncio.to_thread(self._fetch_book_sync)

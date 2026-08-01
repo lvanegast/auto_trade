@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import asyncio
 import os
+from dotenv import load_dotenv
+load_dotenv()
 from src.database import DatabaseManager
 from src.engine import TradingEngine
 from src.events import SignalEvent
@@ -150,17 +152,28 @@ async def get_status(worker_id: str = "worker_1"):
                 
                 wallet_address = Account.from_key(private_key).address
                 
-                # Fetch live USDC balance from blockchain using Web3
-                w3 = Web3(Web3.HTTPProvider('https://sepolia.base.org'))
-                abi = [ { 'constant': True, 'inputs': [{'name': '_owner', 'type': 'address'}], 'name': 'balanceOf', 'outputs': [{'name': 'balance', 'type': 'uint256'}], 'payable': False, 'stateMutability': 'view', 'type': 'function' } ]
-                # USDC Base Sepolia contract
-                usdc_contract = w3.eth.contract(address='0x036CbD53842c5426634e7929541eC2318f3dCF7e', abi=abi)
-                usdc_balance = float(usdc_contract.functions.balanceOf(wallet_address).call() / 10**6)
+                # Fetch live USDC balance from blockchain using Web3 with RPC fallback (EVM Base Mainnet)
+                rpc_urls = [
+                    'https://mainnet.base.org',
+                    'https://base-mainnet.public.blastapi.io',
+                    'https://rpc.ankr.com/base'
+                ]
+                w3 = None
+                for url in rpc_urls:
+                    try:
+                        provider = Web3(Web3.HTTPProvider(url, request_kwargs={'timeout': 5}))
+                        if provider.is_connected():
+                            w3 = provider
+                            break
+                    except Exception:
+                        pass
                 
-                # Update local DB portfolio cache
-                db.update_portfolio(worker.quote_asset, usdc_balance, 0.0, worker_id=worker_id)
-                # Reload portfolio
-                portfolio = db.get_portfolio(worker_id=worker_id)
+                if w3:
+                    abi = [ { 'constant': True, 'inputs': [{'name': '_owner', 'type': 'address'}], 'name': 'balanceOf', 'outputs': [{'name': 'balance', 'type': 'uint256'}], 'payable': False, 'stateMutability': 'view', 'type': 'function' } ]
+                    usdc_contract = w3.eth.contract(address='0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', abi=abi)
+                    usdc_balance = float(usdc_contract.functions.balanceOf(wallet_address).call() / 10**6)
+                    db.update_portfolio(worker.quote_asset, usdc_balance, 0.0, worker_id=worker_id)
+                    portfolio = db.get_portfolio(worker_id=worker_id)
             except Exception as pe:
                 print(f"[On-Chain Sync Status Error] {pe}")
 
@@ -485,6 +498,44 @@ async def get_latency_stats(worker_id: str = None, hours: int = 24):
                 },
             })
         return formatted
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/latency/realtime")
+async def get_realtime_latency():
+    """Retorna latencia REAL medida por los feeders (API calls a orderbooks)."""
+    try:
+        from src.engine.latency_tracker import latency_tracker
+        stats = latency_tracker.get_all_stats()
+        
+        # Formatear para el frontend
+        result = {}
+        for key, stat in stats.items():
+            platform, operation = key.split(":", 1)
+            if platform not in result:
+                result[platform] = {}
+            result[platform][operation] = {
+                "count": stat["count"],
+                "success_rate": round(stat["success_rate"] * 100, 1),
+                "p50_ms": round(stat["p50_ms"], 1),
+                "p95_ms": round(stat["p95_ms"], 1),
+                "p99_ms": round(stat["p99_ms"], 1),
+                "avg_ms": round(stat["avg_ms"], 1),
+                "min_ms": round(stat["min_ms"], 1),
+                "max_ms": round(stat["max_ms"], 1),
+            }
+        
+        # Agregar latencia reciente por plataforma
+        recent = {}
+        for platform in ["limitless", "kalshi", "polymarket"]:
+            recent[platform] = round(latency_tracker.get_recent_latency_ms(platform), 1)
+        
+        return {
+            "platforms": result,
+            "recent_ms": recent,
+            "total_measurements": sum(s["count"] for s in stats.values()),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

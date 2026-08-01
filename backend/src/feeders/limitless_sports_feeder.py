@@ -117,6 +117,9 @@ class LimitlessSportsFeeder(BaseFeeder):
                         prices = getattr(m, "prices", None) or (m.get("prices") if isinstance(m, dict) else None)
                         if prices and len(prices) >= 2:
                             await self._process_single_market(slug, title, prices)
+                    
+                    # Delay entre mercados para evitar rate limiting
+                    await asyncio.sleep(0.1)
 
                 print(f"[Sports Feeder] Scan complete: {len(markets)} markets checked")
             except Exception as e:

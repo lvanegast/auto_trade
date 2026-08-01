@@ -5,6 +5,7 @@ import json
 import time
 from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
+from src.engine.latency_tracker import latency_tracker
 
 
 def _resolve_kalshi_ticker(symbol: str, env: str) -> str:
@@ -178,7 +179,22 @@ class KalshiFeeder(BaseFeeder):
         while self.running:
             try:
                 headers = self._get_auth_headers("GET", f"/trade-api/v2/markets/{self.symbol}")
+                
+                # Medir latencia real de la llamada API
+                start_time = time.time()
                 res = await asyncio.to_thread(requests.get, url, headers=headers, timeout=5)
+                latency_ms = (time.time() - start_time) * 1000
+                
+                # Registrar latencia
+                from src.engine.latency_tracker import latency_tracker
+                latency_tracker._record(type('Measurement', (), {
+                    'platform': 'kalshi',
+                    'operation': 'get_market',
+                    'latency_ms': latency_ms,
+                    'success': res.status_code == 200,
+                    'start_time': start_time,
+                    'end_time': time.time(),
+                })())
                 
                 yes_bid, yes_ask = 0.50, 0.52
                 if res.status_code == 200:
@@ -186,14 +202,11 @@ class KalshiFeeder(BaseFeeder):
                     yes_bid = float(m.get("yes_bid", 50)) / 100.0 if m.get("yes_bid") else 0.50
                     yes_ask = float(m.get("yes_ask", 52)) / 100.0 if m.get("yes_ask") else 0.52
                 else:
-                    # Fallback to simulation: read counterparts price to simulate arbitrage
-                    from src.strategy.cross_platform_tracker import cross_platform_tracker
-                    l_book = cross_platform_tracker.get_book(event_id, "limitless")
-                    if l_book:
-                        yes_ask = max(0.01, round(l_book["yes_ask"] - 0.025, 4))
-                        yes_bid = max(0.01, round(yes_ask - 0.02, 4))
-                    else:
-                        yes_bid, yes_ask = 0.48, 0.50
+                    # API falló — NO fabricar precios falsos desde Limitless
+                    # Simplemente skip esta iteración y esperar al siguiente poll
+                    print(f"[Kalshi Feeder] API error {res.status_code} para {self.symbol} — sin datos reales")
+                    await asyncio.sleep(2.0)
+                    continue
                 
                 price = (yes_bid + yes_ask) / 2.0
                 

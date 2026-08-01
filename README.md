@@ -23,7 +23,7 @@ El sistema opera con 7 trabajadores (*workers*) independientes coordinados por `
 | Worker ID | Nombre del Worker | Plataforma / Feeder | Tipo de Arbitraje / Función |
 | :--- | :--- | :--- | :--- |
 | **Worker 1** | Limitless Intraday General | Limitless Exchange (Base L2) | Arbitraje Same-Day ($1 \times N$ en opciones de cierre el mismo día <24h). |
-| **Worker 2** | Cross-Platform Sports | Limitless vs Polymarket | Arbitraje Deportivo y eSports Cruzado (Candado Global Activo). |
+| **Worker 2** | Cross-Platform Sports | Limitless vs Kalshi | Arbitraje Deportivo y eSports Cruzado (Candado Global Activo). |
 | **Worker 3** | Eventos Multi-Opciones | Limitless Exchange (Base L2) | Arbitraje $1 \times N$ en canastas de 3 o más opciones (Fútbol/Elecciones). |
 | **Worker 4** | Eventos Binarios | Limitless Exchange (Base L2) | Arbitraje $1 \times N$ en opciones de 2 resultados (YES/NO, Over/Under). |
 | **Worker 5** | Binance HFT Oracle | Binance Spot (`BTCUSDT`) | Oráculo Spot de Referencia (Desactivable vía `WORKER5_ENABLED=false` en Cloud). |
@@ -162,6 +162,7 @@ docker logs -f trading_bot_backend
 | `KALSHI_PRIVATE_KEY_PATH` | Ruta a la clave privada RSA `.pem` | `C:\Users\User\Downloads\kalshi_private_key.pem` |
 | `SPORTS_POLL_INTERVAL` | Frecuencia de escaneo en segundos para Limitless Sports | `1.0` |
 | `AUTO_START` | Auto-inicio de workers al levantar el contenedor | `true` |
+| `LIMITLESS_USE_WEBSOCKET` | Usar WebSocket para crypto workers (evita polling) | `false` |
 
 ---
 
@@ -243,4 +244,4 @@ docker logs -f trading_bot_backend
 
 ---
 
-*Actualizado: Julio 2026 — auto_trade multi-worker Docker production deployment*
+*Actualizado: Agosto 2026 — auto_trade multi-worker Docker production deployment*

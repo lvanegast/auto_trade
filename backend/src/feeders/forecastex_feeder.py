@@ -56,28 +56,14 @@ class ForecastExFeeder(BaseFeeder):
         asyncio.create_task(self._poll_prices())
 
     async def _poll_prices(self):
-        # Módulo conector asíncrono con ib-async / IBKR API
-        while self.running:
-            try:
-                # Simular lectura o consulta via IBKR TWS Gateway API para el contrato ForecastEx
-                # En producción se conecta vía ib_async.IB()
-                price = 0.52
-                bid = 0.515
-                ask = 0.525
-
-                ForecastExTracker.update_price(self.symbol, price, bid, ask)
-
-                event = PriceUpdateEvent(
-                    symbol=f"FORECASTEX-{self.symbol}",
-                    price=price,
-                    bid=bid,
-                    ask=ask
-                )
-                await self.queue.put(event)
-            except Exception as e:
-                logger.warning(f"[Feeder ForecastEx IBKR] Reintento en {self.symbol}: {e}")
-
-            await asyncio.sleep(self.interval)
+        # ForecastEx/IBKR connector — NOT IMPLEMENTED
+        # This feeder requires ib_async library and a running TWS/Gateway instance
+        # It will NOT emit any prices until properly connected to IBKR
+        logger.error(
+            f"[Feeder ForecastEx IBKR] NO IMPLEMENTADO — este feeder requiere "
+            f"ib_async y TWS/Gateway corriendo. No se emitirán precios falsos."
+        )
+        self.running = False
 
     async def stop(self):
         """Detiene el feeder de ForecastEx."""

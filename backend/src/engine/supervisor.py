@@ -26,6 +26,7 @@ from src.feeders.binance_feeder import BinanceFeeder
 from src.feeders.polymarket_feeder import PolymarketFeeder
 from src.feeders.limitless_feeder import LimitlessFeeder
 from src.feeders.limitless_sports_feeder import LimitlessSportsFeeder
+from src.feeders.limitless_ws_feeder import LimitlessWebSocketFeeder
 from src.feeders.binary_arb_feeder import LimitlessOracleFeeder
 from src.strategy.sports_arb import SportsArbitrageStrategy
 from src.strategy.binary_arb_strategy import OracleMomentumStrategy
@@ -112,6 +113,8 @@ class TradingWorker:
             self.feeder = PolymarketFeeder(self.symbol, self.queue)
         elif self.feeder_type == "limitless":
             self.feeder = LimitlessFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "limitless_ws":
+            self.feeder = LimitlessWebSocketFeeder(self.symbol, self.queue)
         elif self.feeder_type == "limitless_sports":
             self.feeder = LimitlessSportsFeeder(self.symbol, self.queue)
         elif self.feeder_type == "binary_arb":
@@ -1108,23 +1111,78 @@ class TradingWorker:
                     ) as limitless_c:
                         
                         order_client = limitless_c.new_order_client(private_key)
+                        try:
+                            # Pre-warm cached user profile to prevent profile mismatch in SDK
+                            profile = await limitless_c.portfolio.get_current_profile()
+                            if profile and isinstance(profile, dict) and "id" in profile:
+                                from limitless_sdk.orders.client import UserData, OrderBuilder
+                                order_client._cached_user_data = UserData(
+                                    user_id=profile["id"],
+                                    fee_rate_bps=profile.get("rank", {}).get("feeRateBps", 300)
+                                )
+                                order_client._builder = OrderBuilder(
+                                    maker_address=order_client._wallet.address,
+                                    fee_rate_bps=order_client._cached_user_data.fee_rate_bps,
+                                    price_tick=0.001
+                                )
+                        except Exception:
+                            pass
+
+                        # Extract real Limitless market slug + token side (YES/NO) from pos_symbol.
+                        # Strategies encode the outcome differently:
+                        #   binary_arb:           "oracle_{slug}_{YES|NO}"
+                        #   atomic_crypto:        "limitless_crypto_{slug}_{YES|NO}"
+                        #   sports_arb:           "{platform}_{event_id}_{slug}"
+                        #   cross_platform 1xN:   "limitless_macro_{parent}_{outcome_slug}"
+                        #   cross_platform 2-leg: "{limitless_slug}" (side in signal.reason)
+                        #   negrisk/plain:        "{slug}"
+                        import re
                         pos_symbol = getattr(signal, "symbol", self.symbol)
-                        
-                        # Extract token_id: normally token_id is the symbol name or slug
-                        # In Limitless SDK: buy orders use token_id and market_slug
-                        # We resolve the token_id from the active symbol
-                        token_id = self.symbol
-                        market_slug = self.symbol
+                        raw = pos_symbol
+                        token = None
+                        upper = raw.upper()
+                        for suffix in ("_YES", "_NO"):
+                            if upper.endswith(suffix):
+                                token = suffix[1:]
+                                raw = raw[: -len(suffix)]
+                                break
+
+                        market_slug = raw
+                        if market_slug.startswith("oracle_"):
+                            market_slug = market_slug[len("oracle_"):]
+                        elif market_slug.startswith("limitless_crypto_"):
+                            market_slug = market_slug[len("limitless_crypto_"):]
+                        else:
+                            parts = market_slug.split("_")
+                            if len(parts) >= 3 and parts[0] in ("limitless", "kalshi", "polymarket"):
+                                market_slug = parts[-1]
+
+                        if token is None:
+                            reason = getattr(signal, "reason", "") or ""
+                            m = re.search(r"\b(YES|NO)\b", reason)
+                            if m:
+                                token = m.group(0).upper()
+                        token = token or "YES"
+
+                        # Resolve numeric token_id from the real market (the slug is NOT the token_id).
+                        market = await limitless_c.markets.get_market(market_slug)
+                        if token == "NO" and getattr(market, "tokens", None):
+                            token_id = market.tokens.no
+                        elif token == "YES" and getattr(market, "tokens", None):
+                            token_id = market.tokens.yes
+                        else:
+                            orderbook = await limitless_c.markets.get_orderbook(market_slug)
+                            token_id = orderbook.token_id
                         
                         self.db.log(
                             "INFO",
-                            f"Enviando orden a Limitless Testnet: {signal.side} {spend_amount:.2f} USDC en {market_slug}",
+                            f"Enviando orden a Limitless Mainnet: {signal.side} {token} {spend_amount:.2f} USDC en {market_slug} (token_id={token_id})",
                             self.worker_id,
                         )
                         
                         # We use FOK (Fill Or Kill) style execution for taker orders
-                        response = await order_client.create(
-                            token_id=token_id,
+                        response = await order_client.create_order(
+                            token_id=str(token_id),
                             side=LimitlessSide.BUY if signal.side == "BUY" else LimitlessSide.SELL,
                             order_type=LimitlessOrderType.FOK,
                             market_slug=market_slug,
@@ -1153,16 +1211,30 @@ class TradingWorker:
                             execution_latency_ms=_exec_ms,
                         )
                         
-                        # Sync portfolio values
+                        # Sync portfolio values (USDC lives on Base MAINNET, not Sepolia)
                         wallet_address = order_client.wallet_address
-                        # Get USDC token balance from contract using Web3
-                        from web3 import Web3
-                        w3 = Web3(Web3.HTTPProvider('https://sepolia.base.org'))
-                        abi = [ { 'constant': True, 'inputs': [{'name': '_owner', 'type': 'address'}], 'name': 'balanceOf', 'outputs': [{'name': 'balance', 'type': 'uint256'}], 'payable': False, 'stateMutability': 'view', 'type': 'function' } ]
-                        # USDC contract Base Sepolia
-                        usdc_contract = w3.eth.contract(address='0x036CbD53842c5426634e7929541eC2318f3dCF7e', abi=abi)
-                        usdc_balance = usdc_contract.functions.balanceOf(wallet_address).call() / 10**6
-                        self._update_db_portfolio(self.quote_asset, usdc_balance)
+                        try:
+                            from web3 import Web3
+                            abi = [ { 'constant': True, 'inputs': [{'name': '_owner', 'type': 'address'}], 'name': 'balanceOf', 'outputs': [{'name': 'balance', 'type': 'uint256'}], 'payable': False, 'stateMutability': 'view', 'type': 'function' } ]
+                            # USDC contract on Base mainnet
+                            usdc_address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+                            usdc_balance = 0.0
+                            for rpc_url in ('https://mainnet.base.org', 'https://base-mainnet.public.blastapi.io', 'https://rpc.ankr.com/base'):
+                                try:
+                                    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={'timeout': 5}))
+                                    if w3.is_connected():
+                                        usdc_contract = w3.eth.contract(address=usdc_address, abi=abi)
+                                        usdc_balance = usdc_contract.functions.balanceOf(wallet_address).call() / 10**6
+                                        break
+                                except Exception:
+                                    continue
+                            self._update_db_portfolio(self.quote_asset, usdc_balance)
+                        except Exception as be:
+                            self.db.log(
+                                "WARNING",
+                                f"No se pudo sincronizar balance USDC on-chain: {be}",
+                                self.worker_id,
+                            )
                         
                         if signal.side == "BUY":
                             if not getattr(signal, "position_id", None):
@@ -1192,9 +1264,10 @@ class TradingWorker:
                 except Exception as e:
                     self.db.log(
                         "ERROR",
-                        f"Fallo en ejecución on-chain Limitless: {e}. Revirtiendo a simulación virtual.",
+                        f"RECHAZADO: fallo en ejecución on-chain Limitless: {e}. No se crea posición simulada (Modo Estricto Real).",
                         self.worker_id,
                     )
+                    return
             
         # 5. SIMULACIÓN LOCAL MOCK / FALLBACK GENERAL
         if signal.side == "BUY":
@@ -1701,7 +1774,7 @@ class TradingWorker:
                 start_price = 100.0
 
             # Generar 120 velas de 1 minuto hacia atrás
-            now = datetime.datetime.now()
+            now = datetime.datetime.now(datetime.timezone.utc)
             rows = []
             current_price = start_price
             for i in range(120, 0, -1):
@@ -1771,7 +1844,7 @@ class TradingEngine:
                             {
                                 "level": level,
                                 "message": message,
-                                "timestamp": timestamp.isoformat(),
+                                "timestamp": timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp),
                                 "worker_id": worker_id,
                             },
                         ),
@@ -1794,12 +1867,16 @@ class TradingEngine:
             crypto_size_pct = float(os.getenv("CRYPTO_POSITION_SIZE_PCT", "0.015"))
             crypto_maker_edge = float(os.getenv("CRYPTO_MAKER_EDGE_PCT", "0.05"))
             crypto_maker_size = float(os.getenv("CRYPTO_MAKER_POSITION_SIZE_USD", "10.0"))
+            
+            # Determinar si usar WebSocket o polling
+            use_ws = os.getenv("LIMITLESS_USE_WEBSOCKET", "false").lower() == "true"
+            limitless_feeder_type = "limitless_ws" if use_ws else "limitless"
 
             # Worker 1: Arbitraje Intraday General (Opciones de mismo día / rápida resolución)
             w1_enabled = os.getenv("WORKER1_ENABLED", "true").lower() == "true"
             if w1_enabled:
                 from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
-                worker1 = TradingWorker("worker_1", "Limitless Intraday General", "ANY-INTRADAY", "limitless", self.db)
+                worker1 = TradingWorker("worker_1", "Limitless Intraday General", "ANY-INTRADAY", limitless_feeder_type, self.db)
                 worker1.strategy = AtomicCryptoArbStrategy("ANY-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=1.0, db=self.db, worker_id="worker_1")
                 self.workers["worker_1"] = worker1
 
@@ -1833,7 +1910,7 @@ class TradingEngine:
             w6_enabled = os.getenv("WORKER6_ENABLED", "true").lower() == "true"
             if w6_enabled:
                 from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
-                worker6 = TradingWorker("worker_6", "Crypto Atomic-Arb", "BTC-INTRADAY", "limitless", self.db)
+                worker6 = TradingWorker("worker_6", "Crypto Atomic-Arb", "BTC-INTRADAY", limitless_feeder_type, self.db)
                 worker6.strategy = AtomicCryptoArbStrategy("BTC-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=crypto_maker_size, db=self.db, worker_id="worker_6")
                 self.workers["worker_6"] = worker6
 

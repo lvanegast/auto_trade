@@ -7,8 +7,18 @@ class TradingEvent:
         # El timestamp pertenece al dato de mercado, no al navegador que lo
         # renderiza. Usar UTC evita mezclar horas locales/naive entre el
         # historial, el motor y los clientes WebSocket.
-        self.timestamp = timestamp or datetime.now(timezone.utc)
-        if self.timestamp.tzinfo is None:
+        if isinstance(timestamp, str):
+            try:
+                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                self.timestamp = dt
+            except Exception:
+                self.timestamp = datetime.now(timezone.utc)
+        elif isinstance(timestamp, (int, float)):
+            self.timestamp = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        else:
+            self.timestamp = timestamp or datetime.now(timezone.utc)
+        
+        if hasattr(self.timestamp, "tzinfo") and self.timestamp.tzinfo is None:
             self.timestamp = self.timestamp.replace(tzinfo=timezone.utc)
 
 

@@ -97,22 +97,10 @@ class AtomicCryptoArbStrategy(BaseStrategy):
         if gross_profit >= self.min_profit_target:
             self.total_bundles_sent += 1
             
-            # --- 1. SIMULATE LATENCY & SLIPPAGE / REVERT ---
-            # Represents execution slippage on-chain
-            latency_revert = random.random() < 0.15  # 15% chance of slippage/revert
+            # NO random revert injection — reverts happen on-chain if they occur
+            # The strategy should not artificially reduce win rate
             
-            if latency_revert:
-                self.reverted_bundles += 1
-                revert_gas = 0.001
-                self.gas_burned_usd += revert_gas
-                # Suspend strategy for 10 minutes to protect capital
-                self._revert_suspension_until = now + 600.0
-                reason = f"[Atomic-Revert] ⛽ Maker bundle falló por frontrun. Gas quemado: ${revert_gas:.4f} | Penalización: Suspendido por 10 min | Suma: {total_cost:.4f}"
-                if self.db:
-                    self.db.log("WARNING", reason, self.worker_id)
-                return None
-            
-            # --- 2. SUCCESSFUL DUAL LIMIT ORDER FILL ---
+            # --- SUCCESSFUL DUAL LIMIT ORDER FILL ---
             self.successful_bundles += 1
             self._last_signal_time = now
 

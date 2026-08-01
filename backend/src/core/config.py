@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     PORT: int = 8080
     HOST: str = "0.0.0.0"
     AUTO_START: bool = False
-    EXECUTION_TYPE: str = "simulation"  # "alpaca" o "simulation"
+    EXECUTION_TYPE: str = "limitless"  # "limitless", "alpaca", "kalshi" — NUNCA "simulation"
     TRADING_MODE: str = "paper"  # "paper" o "live"
 
     # Database Settings

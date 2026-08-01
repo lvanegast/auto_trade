@@ -7,7 +7,7 @@ Supports outcomes filtering and cross-platform best-price selection.
 
 import asyncio
 import os
-import hashlib
+
 import time as _time
 from src.strategy.base import BaseStrategy
 from src.events import PriceUpdateEvent, SignalEvent
@@ -132,19 +132,29 @@ class SportsArbitrageStrategy(BaseStrategy):
 
         title = edge_data.get("title", event_id)
 
-        # 5. Cross-platform best price calculation: Limitless vs Polymarket Sports
+        # 5. Cross-platform best price calculation: Limitless vs Polymarket/Kalshi
+        # ONLY uses real data from CrossPlatformTracker — never fabricated prices
         if self.cross_platform:
+            from src.strategy.cross_platform_tracker import cross_platform_tracker
             total_yes = 0.0
             best_outcomes = []
+            has_cross_data = False
+            
             for outcome in outcomes:
                 yes_price = outcome["yes_price"]
-                # Generate a stable cross-platform price for Polymarket (offset -1.5% to +1.5%)
-                h = int(hashlib.md5((outcome["slug"] + str(int(now / 60))).encode()).hexdigest(), 16)
-                offset = ((h % 30) - 15) / 1000.0
-                poly_price = round(max(0.01, min(0.99, yes_price + offset)), 4)
+                poly_book = cross_platform_tracker.get_book(event_id, "polymarket")
                 
-                best_price = yes_price if yes_price <= poly_price else poly_price
-                best_platform = "limitless" if yes_price <= poly_price else "polymarket"
+                if poly_book and poly_book.get("yes_ask"):
+                    # Use real Polymarket ask price (executable price)
+                    poly_price = poly_book["yes_ask"]
+                    has_cross_data = True
+                    best_price = yes_price if yes_price <= poly_price else poly_price
+                    best_platform = "limitless" if yes_price <= poly_price else "polymarket"
+                else:
+                    # No Polymarket data — use Limitless only (intra-platform)
+                    best_price = yes_price
+                    best_platform = "limitless"
+                
                 total_yes += best_price
                 best_outcomes.append({
                     "slug": outcome["slug"],
@@ -153,6 +163,11 @@ class SportsArbitrageStrategy(BaseStrategy):
                     "no_price": 1.0 - best_price,
                     "platform": best_platform
                 })
+            
+            # If no cross-platform data available, skip (don't trade on fabricated edges)
+            if not has_cross_data:
+                self.edge = 0.0
+                return None
             
             self.edge = round(1.0 - total_yes, 4)
             outcomes = best_outcomes
@@ -375,8 +390,16 @@ class SportsArbitrageStrategy(BaseStrategy):
                 else:
                     sell_price = outcome["yes_price"] if arb_type == "YES" else outcome.get("no_price", round(1.0 - outcome["yes_price"], 4))
             else:
-                # Final settlement: first outcome wins ($1.00), rest lose ($0)
-                sell_price = 0.99 if i == 0 else 0.01
+                # Settlement: use current market price, not fabricated resolution
+                # The actual resolution is unknown until the event settles
+                if slug in current_prices:
+                    if arb_type == "YES":
+                        sell_price = current_prices[slug]["yes_price"]
+                    else:
+                        sell_price = current_prices[slug].get("no_price", round(1.0 - current_prices[slug]["yes_price"], 4))
+                else:
+                    # No current price available — use entry price as estimate
+                    sell_price = outcome["yes_price"] if arb_type == "YES" else outcome.get("no_price", round(1.0 - outcome["yes_price"], 4))
 
             platform = outcome.get("platform", "limitless")
             symbol = f"{platform}_{event_id}_{slug}"

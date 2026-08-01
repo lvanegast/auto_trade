@@ -7,6 +7,9 @@ import sys
 # Agregar la raíz del backend al path de python
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend"))
 
+from dotenv import load_dotenv
+load_dotenv()
+
 def main():
     print("=================================================")
     print("   Iniciando Backend del Bot de Trading (8080)   ")

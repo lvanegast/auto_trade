@@ -11,6 +11,7 @@ import asyncio
 import os
 from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
+from src.engine.latency_tracker import latency_tracker
 
 
 # Shared macro edge data: feeder writes, cross-platform arb strategy reads
@@ -159,20 +160,67 @@ class LimitlessFeeder(BaseFeeder):
 
                     # Query the detailed market to get prices and order book
                     try:
-                        market = await market_fetcher.get_market(slug)
+                        async with latency_tracker.measure("limitless", "get_market") as m:
+                            market = await market_fetcher.get_market(slug)
+                            m.result = market
                         prices = market.prices if hasattr(market, "prices") else [0.5, 0.5]
                         yes_price = float(prices[0]) if prices else 0.5
 
                         # Query real orderbook to get bids/asks
                         bid, ask = yes_price, yes_price
                         try:
-                            orderbook = await market_fetcher.get_orderbook(slug)
+                            async with latency_tracker.measure("limitless", "get_orderbook") as m:
+                                orderbook = await market_fetcher.get_orderbook(slug)
+                                m.result = orderbook
                             bids = orderbook.bids if hasattr(orderbook, "bids") else []
                             asks = orderbook.asks if hasattr(orderbook, "asks") else []
-                            bid = bids[0].price if bids else yes_price
-                            ask = asks[0].price if asks else yes_price
-                        except Exception:
-                            pass
+                            
+                            if not bids and not asks:
+                                # Orderbook vacío = mercado sin liquidez
+                                latency_tracker._record(type('Measurement', (), {
+                                    'platform': 'limitless',
+                                    'operation': 'get_orderbook_no_liquidity',
+                                    'latency_ms': 0,
+                                    'success': False,
+                                    'start_time': time.time(),
+                                    'end_time': time.time(),
+                                })())
+                            else:
+                                bid = bids[0].price if bids else yes_price
+                                ask = asks[0].price if asks else yes_price
+                                
+                        except asyncio.TimeoutError:
+                            # Timeout = problema de red o Cloudflare
+                            latency_tracker._record(type('Measurement', (), {
+                                'platform': 'limitless',
+                                'operation': 'get_orderbook_timeout',
+                                'latency_ms': 5000,  # timeout = 5s
+                                'success': False,
+                                'start_time': time.time(),
+                                'end_time': time.time(),
+                            })())
+                        except Exception as e:
+                            error_str = str(e).lower()
+                            if "429" in error_str or "rate" in error_str:
+                                # Rate limited por Cloudflare
+                                latency_tracker._record(type('Measurement', (), {
+                                    'platform': 'limitless',
+                                    'operation': 'get_orderbook_rate_limited',
+                                    'latency_ms': 0,
+                                    'success': False,
+                                    'start_time': time.time(),
+                                    'end_time': time.time(),
+                                })())
+                            else:
+                                # Otro error
+                                latency_tracker._record(type('Measurement', (), {
+                                    'platform': 'limitless',
+                                    'operation': 'get_orderbook_error',
+                                    'latency_ms': 0,
+                                    'success': False,
+                                    'start_time': time.time(),
+                                    'end_time': time.time(),
+                                })())
 
                         # Extract strike and expiration
                         strike_price = None
@@ -206,9 +254,13 @@ class LimitlessFeeder(BaseFeeder):
                             "expiration_timestamp": expiration_timestamp,
                         }
                         active_count += 1
-                        await asyncio.sleep(0.15)  # Pace queries to respect Cloudflare limits
+                        # Delay más largo para evitar rate limiting de Cloudflare
+                        # 11 llamadas API por ciclo → ~300ms entre llamadas = ~3.3s total
+                        await asyncio.sleep(0.3)
                     except Exception as me:
                         print(f"[Feeder Limitless Crypto] Error fetching detail for {slug}: {me}")
+                        # Si hay error, esperar más antes del siguiente intento
+                        await asyncio.sleep(1.0)
                 
                 if new_cache:
                     _crypto_cache = new_cache
@@ -314,7 +366,9 @@ class LimitlessFeeder(BaseFeeder):
         actual_slug = slug
 
         try:
-            orderbook = await market_fetcher.get_orderbook(actual_slug)
+            async with latency_tracker.measure("limitless", "get_orderbook") as m:
+                orderbook = await market_fetcher.get_orderbook(actual_slug)
+                m.result = orderbook
             bids = orderbook.bids if hasattr(orderbook, "bids") else []
             asks = orderbook.asks if hasattr(orderbook, "asks") else []
             bid = bids[0].price if bids else yes_price
