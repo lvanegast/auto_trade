@@ -33,9 +33,13 @@ services:
       - .env:/app/.env
       - ./web:/app/web
       - C:\Users\User\Downloads\kalshi_private_key.pem:/app/kalshi_private_key.pem
+      - C:\Users\User\Downloads\arb.pem:/app/arb.pem
     depends_on:
       db_trading:
         condition: service_healthy
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
 
 volumes:
   pgdata_trading:

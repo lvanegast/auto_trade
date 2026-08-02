@@ -610,6 +610,8 @@ class DatabaseManager:
         exit_reason: str = "SIGNAL",
         exit_lead_price: float = None,
         worker_id: str = None,
+        pnl_override: float = None,
+        pnl_pct_override: float = None,
     ):
         query_get = (
             "SELECT entry_price, side, amount FROM positions WHERE id = %s AND status = 'OPEN';"
@@ -627,7 +629,11 @@ class DatabaseManager:
                 side = pos["side"]
                 amount = float(pos["amount"]) if pos.get("amount") else 1.0
 
-                if side == "BUY":
+                # Use override P&L if provided (for basket-level calculation)
+                if pnl_override is not None and pnl_pct_override is not None:
+                    pnl = pnl_override
+                    pnl_pct = pnl_pct_override
+                elif side == "BUY":
                     pnl_per_unit = exit_price - entry_price
                     pnl = pnl_per_unit * amount
                     pnl_pct = ((exit_price - entry_price) / entry_price) * 100.0 if entry_price > 0 else 0.0
@@ -669,6 +675,18 @@ class DatabaseManager:
     def get_open_position_by_worker(self, worker_id: str):
         positions = self.get_open_positions(worker_id=worker_id)
         return positions[0] if positions else None
+
+    def get_trades_by_position_id(self, position_id: int):
+        """Obtiene todos los trades asociados a una posición (canasta de arb)."""
+        query = "SELECT * FROM trades WHERE position_id = %s ORDER BY timestamp ASC;"
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, (position_id,))
+                return cursor.fetchall()
+        finally:
+            self._return_connection(conn)
 
     def save_position(
         self,

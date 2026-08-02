@@ -16,9 +16,9 @@
 
 ---
 
-## 🛡️ Estrategias de Arbitraje Activas (7 Workers en Paralelo)
+## 🛡️ Estrategias de Arbitraje Activas (6 Workers en Paralelo)
 
-El sistema opera con 7 trabajadores (*workers*) independientes coordinados por `TradingEngine`:
+El sistema opera con 6 trabajadores (*workers*) independientes coordinados por `TradingEngine`:
 
 | Worker ID | Nombre del Worker | Plataforma / Feeder | Tipo de Arbitraje / Función |
 | :--- | :--- | :--- | :--- |
@@ -162,7 +162,7 @@ docker logs -f trading_bot_backend
 | `KALSHI_PRIVATE_KEY_PATH` | Ruta a la clave privada RSA `.pem` | `C:\Users\User\Downloads\kalshi_private_key.pem` |
 | `SPORTS_POLL_INTERVAL` | Frecuencia de escaneo en segundos para Limitless Sports | `1.0` |
 | `AUTO_START` | Auto-inicio de workers al levantar el contenedor | `true` |
-| `LIMITLESS_USE_WEBSOCKET` | Usar WebSocket para crypto workers (evita polling) | `false` |
+| `LIMITLESS_USE_WEBSOCKET` | Usar WebSocket para crypto workers (evita polling) | `true` |
 
 ---
 

@@ -1,8 +1,10 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 import asyncio
 import os
+import datetime
 from dotenv import load_dotenv
 load_dotenv()
 from src.database import DatabaseManager
@@ -561,8 +563,25 @@ async def get_logs(limit: int = 50, worker_id: str = None):
 
 
 @app.post("/api/start")
-async def start_bot(worker_id: str = None):
-    """Inicia el bot de trading para un worker o para todos."""
+async def start_bot(request: Request, worker_id: str = None):
+    """Inicia el bot de trading para un worker o para todos.
+    
+    GUARDRAIL: Requiere header X-Confirm-Action: true para ejecutar.
+    Esto previene acciones accidentales o automáticas.
+    """
+    # GUARDRAIL: Verificar confirmación explícita
+    confirm = request.headers.get("X-Confirm-Action", "").lower()
+    if confirm != "true":
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Acción requiere confirmación explícita",
+                "message": "Agrega header X-Confirm-Action: true para ejecutar esta acción",
+                "action_requested": f"start worker {worker_id or 'all'}",
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
+        )
+    
     if worker_id:
         if worker_id not in engine.workers:
             raise HTTPException(
@@ -579,8 +598,32 @@ async def start_bot(worker_id: str = None):
 
 
 @app.post("/api/stop")
-async def stop_bot(worker_id: str = None):
-    """Detiene el bot de trading para un worker o para todos."""
+async def stop_bot(request: Request, worker_id: str = None):
+    """Detiene el bot de trading para un worker o para todos.
+    
+    GUARDRAIL: Requiere header X-Confirm-Action: true para ejecutar.
+    Esto previene acciones accidentales o automáticas.
+    
+    ACCIONES AUTOMÁTICAS:
+    - Cancela todas las órdenes pendientes en Limitless
+    - Reporta posiciones abiertas (NO las cierra automáticamente)
+    
+    ACCIONES QUE REQUIEREN CONFIRMACIÓN:
+    - Cerrar posiciones abiertas (decisión con impacto en P&L)
+    """
+    # GUARDRAIL: Verificar confirmación explícita
+    confirm = request.headers.get("X-Confirm-Action", "").lower()
+    if confirm != "true":
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Acción requiere confirmación explícita",
+                "message": "Agrega header X-Confirm-Action: true para ejecutar esta acción",
+                "action_requested": f"stop worker {worker_id or 'all'}",
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
+        )
+    
     if worker_id:
         if worker_id not in engine.workers:
             raise HTTPException(
@@ -589,16 +632,43 @@ async def stop_bot(worker_id: str = None):
         worker = engine.workers[worker_id]
         if not worker.is_running:
             return {"message": f"El worker {worker_id} ya está apagado."}
-        await engine.stop(worker_id)
-        return {"message": f"Worker {worker_id} detenido exitosamente."}
+        result = await engine.stop(worker_id)
+        return {
+            "message": f"Worker {worker_id} detenido exitosamente.",
+            "orders_cancelled": result.get("orders_cancelled", 0),
+            "open_positions": result.get("open_positions", 0),
+            "open_positions_details": result.get("open_positions_details", []),
+        }
     else:
-        await engine.stop()
-        return {"message": "Todos los workers detenidos exitosamente."}
+        result = await engine.stop()
+        return {
+            "message": "Todos los workers detenidos exitosamente.",
+            "orders_cancelled": result.get("orders_cancelled", 0),
+            "open_positions": result.get("open_positions", 0),
+            "open_positions_details": result.get("open_positions_details", []),
+        }
 
 
 @app.post("/api/order")
-async def place_manual_order(body: dict):
-    """Envía una orden de compra o venta manual para un worker."""
+async def place_manual_order(request: Request, body: dict):
+    """Envía una orden de compra o venta manual para un worker.
+    
+    GUARDRAIL: Requiere header X-Confirm-Action: true para ejecutar.
+    Esto previene acciones accidentales o automáticas.
+    """
+    # GUARDRAIL: Verificar confirmación explícita
+    confirm = request.headers.get("X-Confirm-Action", "").lower()
+    if confirm != "true":
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Acción requiere confirmación explícita",
+                "message": "Agrega header X-Confirm-Action: true para ejecutar esta acción",
+                "action_requested": f"place order for worker {body.get('worker_id', 'worker_1')}",
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
+        )
+    
     worker_id = body.get("worker_id", "worker_1")
     side = body.get("side", "BUY").upper()
     qty = body.get("qty") or body.get("amount")

@@ -87,6 +87,8 @@ class LimitlessSportsFeeder(BaseFeeder):
         async with _sports_scan_lock:
             _last_sports_scan_time = now
             try:
+                from src.engine.latency_tracker import latency_tracker
+                
                 page_ids = [
                     "2a91349c-3308-4234-afb7-0663e42968c1",  # Sport
                     "f2a04a4e-580a-4cd1-bcc9-c23ed9ff8916",  # Esports
@@ -95,7 +97,11 @@ class LimitlessSportsFeeder(BaseFeeder):
                 markets = []
                 for page_id in page_ids:
                     try:
-                        resp = await self._page_fetcher.get_markets(page_id, {"limit": 30})
+                        # Medir latencia real de la llamada API
+                        async with latency_tracker.measure("limitless_sports", "get_markets") as m:
+                            resp = await self._page_fetcher.get_markets(page_id, {"limit": 30})
+                            m.result = resp
+                        
                         page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
                         markets.extend(page_m)
                     except Exception as pe:
@@ -131,8 +137,8 @@ class LimitlessSportsFeeder(BaseFeeder):
         total_subs = len(subs)
         total_yes = 0
         outcomes = []
-        has_liquidity = False
         skipped_no_price = 0
+        skipped_no_liquidity = 0
 
         for sub in subs:
             prices = getattr(sub, "prices", None) if hasattr(sub, "prices") else (sub.get("prices") if isinstance(sub, dict) else None)
@@ -148,8 +154,29 @@ class LimitlessSportsFeeder(BaseFeeder):
             slug = getattr(sub, "slug", "") if hasattr(sub, "slug") else (sub.get("slug", "") if isinstance(sub, dict) else "")
             title = getattr(sub, "title", "") if hasattr(sub, "title") else (sub.get("title", "") if isinstance(sub, dict) else "")
 
-            if yes_price > 0.01 and yes_price < 0.99:
-                has_liquidity = True
+            # Check real liquidity via orderbook
+            # If bids == 0 AND asks == 0, this sub-market has no real liquidity
+            has_real_liquidity = False
+            try:
+                from limitless_sdk.markets import MarketFetcher
+                from limitless_sdk.api import HttpClient
+                
+                async with HttpClient() as http:
+                    fetcher = MarketFetcher(http)
+                    ob = await fetcher.get_orderbook(slug)
+                    bids = ob.bids if hasattr(ob, 'bids') else []
+                    asks = ob.asks if hasattr(ob, 'asks') else []
+                    
+                    if len(bids) > 0 and len(asks) > 0:
+                        has_real_liquidity = True
+                    else:
+                        skipped_no_liquidity += 1
+            except Exception:
+                # If we can't fetch orderbook, assume no liquidity
+                skipped_no_liquidity += 1
+
+            if not has_real_liquidity:
+                continue
 
             total_yes += yes_price
             outcomes.append(
@@ -161,7 +188,11 @@ class LimitlessSportsFeeder(BaseFeeder):
                 }
             )
 
-        if not has_liquidity or len(outcomes) < 2 or skipped_no_price > 0:
+        # If ANY sub-market had no real liquidity, discard the entire GROUP
+        if skipped_no_liquidity > 0:
+            return
+
+        if len(outcomes) < 2 or skipped_no_price > 0:
             return
 
         edge = 1.0 - total_yes
@@ -206,6 +237,22 @@ class LimitlessSportsFeeder(BaseFeeder):
             no_price = float(prices[1])
         except (ValueError, TypeError, IndexError):
             return
+
+        # Check real liquidity via orderbook
+        try:
+            from limitless_sdk.markets import MarketFetcher
+            from limitless_sdk.api import HttpClient
+            
+            async with HttpClient() as http:
+                fetcher = MarketFetcher(http)
+                ob = await fetcher.get_orderbook(slug)
+                bids = ob.bids if hasattr(ob, 'bids') else []
+                asks = ob.asks if hasattr(ob, 'asks') else []
+                
+                if len(bids) == 0 or len(asks) == 0:
+                    return  # No real liquidity
+        except Exception:
+            return  # Can't verify liquidity, skip
 
         total_yes = yes_price + no_price
         edge = 1.0 - total_yes
