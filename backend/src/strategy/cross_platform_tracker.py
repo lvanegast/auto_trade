@@ -10,6 +10,7 @@ Cambios vs. versión anterior:
 """
 
 import time
+import os
 from typing import Optional
 
 
@@ -98,9 +99,13 @@ class CrossPlatformTracker:
         bid: float = None,
         ask: float = None,
     ):
-        """Compatibilidad con código existente. Mapea bid/ask a yes_bid/yes_ask."""
-        yes_bid = bid if bid is not None else price
-        yes_ask = ask if ask is not None else price
+        """Store an executable book; midpoint-only updates are rejected."""
+        if bid is None or ask is None or bid >= ask:
+            raise ValueError(
+                "update_price requires a real orderbook bid/ask; midpoint-only updates are rejected"
+            )
+        yes_bid = bid
+        yes_ask = ask
         self.update_book(
             event_id=event_id,
             platform=platform,
@@ -130,7 +135,7 @@ class CrossPlatformTracker:
         self,
         event_id: str,
         min_edge_pct: float = 0.02,
-        max_staleness_ms: float = 500.0,
+        max_staleness_ms: Optional[float] = None,
     ) -> Optional[dict]:
         """
         Calcula arbitraje usando precios EJECUTABLES (ask para comprar).
@@ -150,6 +155,8 @@ class CrossPlatformTracker:
             return None
 
         now = time.time()
+        if max_staleness_ms is None:
+            max_staleness_ms = float(os.getenv("CROSS_ARB_MAX_STALENESS_MS", "5000"))
         k_age_ms = (now - kalshi["ts_local"]) * 1000
         l_age_ms = (now - limitless["ts_local"]) * 1000
 

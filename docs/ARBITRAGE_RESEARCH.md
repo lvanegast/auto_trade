@@ -83,18 +83,17 @@
 
 ---
 
-### Paper 5: Ghost Fills in Polymarket (Shen et al., Jun 2026)
+### Paper 5: Markets Are Not Random, They Are Hard to Predict (Noguer i Alonso, Jun 2026)
 **arXiv:2606.08209** | [PDF](https://arxiv.org/pdf/2606.08209)
 
 **Key findings:**
-- Polymarket's hybrid architecture (off-chain matching, on-chain settlement) creates **Ghost Fills**
-- Orders matched off-chain can **fail during on-chain settlement**
-- 4 attack vectors: nonce bump, balance drain, allowance revoke, proxy trap
-- **1,952,440 reverted** match-order transactions found
-- Attackers earned at least **$1.49M in profit**
-- During peak hours, **24.3% of all filled orders reverted**
+- Markets are not ontically random — they are causal systems that are hard to predict
+- Positive signals need not be scalable due to capacity constraints
+- The P-Q wedge relates to stochastic-discount-factor geometry
+- Alpha decay occurs as private bits migrate into the market budget
+- Crowding is mutual compressibility of signals
 
-**Implication for our project:** If we ever use Polymarket, we must implement **on-chain settlement verification** before considering a fill complete. This is a critical risk for any Polymarket-based strategy.
+**Implication for our project:** Arbitrage opportunities decay as more participants discover them. Speed of execution matters — opportunities that exist now may not exist in minutes.
 
 ---
 

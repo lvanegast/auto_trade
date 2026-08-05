@@ -203,6 +203,24 @@ class DatabaseManager:
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             """,
+            """
+            CREATE TABLE IF NOT EXISTS edge_snapshots (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                platform_a VARCHAR(50) NOT NULL,
+                platform_b VARCHAR(50) NOT NULL,
+                event_id VARCHAR(500) NOT NULL,
+                event_title VARCHAR(500) NOT NULL,
+                edge_pct NUMERIC(10, 4) NOT NULL DEFAULT 0,
+                gross_edge_pct NUMERIC(10, 4) NOT NULL DEFAULT 0,
+                platform_a_yes_ask NUMERIC(10, 4),
+                platform_b_no_ask NUMERIC(10, 4),
+                platform_a_depth NUMERIC(18, 4),
+                platform_b_depth NUMERIC(18, 4),
+                liquidity_verified BOOLEAN NOT NULL DEFAULT FALSE,
+                viable BOOLEAN NOT NULL DEFAULT FALSE
+            );
+            """,
         ]
 
         migrations = [
@@ -365,6 +383,37 @@ class DatabaseManager:
                     hook(level, message, worker_id, ts)
                 except Exception as ex:
                     print(f"[DB] Error en log hook: {ex}")
+        finally:
+            self._return_connection(conn)
+
+    def record_edge_snapshot(self, snapshot: dict):
+        """Persist an observation without creating a trade or position."""
+        query = """
+            INSERT INTO edge_snapshots
+            (platform_a, platform_b, event_id, event_title, edge_pct,
+             gross_edge_pct, platform_a_yes_ask, platform_b_no_ask,
+             platform_a_depth, platform_b_depth, liquidity_verified, viable)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(query, (
+                    snapshot.get("platform_a", "limitless"),
+                    snapshot.get("platform_b", "kalshi"),
+                    snapshot.get("event_id", ""),
+                    snapshot.get("event_title", ""),
+                    snapshot.get("net_edge_pct", 0.0),
+                    snapshot.get("gross_edge_pct", 0.0),
+                    snapshot.get("platform_a_yes_ask", 0.0),
+                    snapshot.get("platform_b_no_ask", 0.0),
+                    snapshot.get("platform_a_depth", 0.0),
+                    snapshot.get("platform_b_depth", 0.0),
+                    snapshot.get("liquidity_verified", False),
+                    snapshot.get("viable", False),
+                ))
+                conn.commit()
         finally:
             self._return_connection(conn)
 

@@ -83,6 +83,7 @@ class ResolutionSniperStrategy(BaseStrategy):
         self._pending_signals = []
         # Track claimed events
         self._pending_event_ids = set()
+        self._last_observation_time = {}
 
         # Stats
         self.teorical_probability = 0.50
@@ -130,6 +131,9 @@ class ResolutionSniperStrategy(BaseStrategy):
 
         # 7. Calculate edge
         self.edge = round(1.0 - yes_price, 4)
+        if now - self._last_observation_time.get(event_id, 0) < self.cooldown_seconds:
+            return None
+        self._last_observation_time[event_id] = now
         self.total_opportunities += 1
 
         # 8. Log opportunity
@@ -142,54 +146,17 @@ class ResolutionSniperStrategy(BaseStrategy):
                 self.worker_id,
             )
 
-        # 9. Generate BUY signal
-        # Calculate number of contracts
-        num_contracts = self.position_size_usd / yes_price
-        total_spend = num_contracts * yes_price
-
-        # Record position
-        self._active_positions[event_id] = {
-            "entry_time": now,
-            "buy_price": yes_price,
-            "num_contracts": num_contracts,
-            "total_spend": total_spend,
-            "title": title,
-            "slug": sniper_data.get("slug", event_id),
-        }
-        self._pending_event_ids.add(event_id)
-        self.total_positions_taken += 1
-
-        # Create signal
-        symbol = f"limitless_{event_id}"
-        reason = (
-            f"Resolution Sniper: {title} | "
-            f"YES @ {yes_price:.4f} | "
-            f"Contracts: {num_contracts:.2f} | "
-            f"Spend: ${total_spend:.2f} | "
-            f"Expected payout: ${num_contracts:.2f} | "
-            f"Edge: ${self.edge * num_contracts:.4f} ({self.edge*100:.1f}%)"
-        )
-
         if self.db:
             self.db.log(
                 "INFO",
-                f"[Resolution Sniper] BUY: {title} | "
+                f"[Resolution Sniper] OBSERVATION ONLY: {title} | "
                 f"YES @ {yes_price:.4f} | "
-                f"{num_contracts:.2f} contracts | "
-                f"${total_spend:.2f} → ${num_contracts:.2f} on resolution",
+                f"Hypothetical edge: {self.edge*100:.1f}% | No order generated",
                 self.worker_id,
             )
 
-        return SignalEvent(
-            symbol=symbol,
-            side="BUY",
-            price=yes_price,
-            reason=reason,
-            amount=num_contracts,
-            position_id=None,
-            position_size_usd=total_spend,
-            order_type="GTC",
-        )
+        # Deliberately no SignalEvent: this strategy is structurally read-only.
+        return None
 
     def _check_resolution(self, event_id: str, current_price: float, now: float) -> SignalEvent | None:
         """Check if position has resolved (price dropped to 0 or jumped to 1.0)."""

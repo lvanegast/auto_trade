@@ -105,7 +105,8 @@ class LimitlessSportsFeeder(BaseFeeder):
                         page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
                         markets.extend(page_m)
                     except Exception as pe:
-                        print(f"[Sports Feeder] Error fetching page {page_id}: {pe}")
+                        if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
+                            print(f"[Sports Feeder] Error fetching page {page_id}: {pe}")
 
                 print(f"[Sports Feeder] Fetched {len(markets)} markets from {len(page_ids)} pages")
                 for m in markets:
@@ -133,6 +134,7 @@ class LimitlessSportsFeeder(BaseFeeder):
 
     async def _process_group_arb(self, group_slug, group_title, subs):
         from src.strategy.cross_platform_tracker import cross_platform_tracker
+        from src.limitless_price_cache import async_get_limitless_executable_price
 
         total_subs = len(subs)
         total_yes = 0
@@ -145,14 +147,17 @@ class LimitlessSportsFeeder(BaseFeeder):
             if not prices or len(prices) == 0:
                 skipped_no_price += 1
                 continue
+            slug = getattr(sub, "slug", "") if hasattr(sub, "slug") else (sub.get("slug", "") if isinstance(sub, dict) else "")
+            title = getattr(sub, "title", "") if hasattr(sub, "title") else (sub.get("title", "") if isinstance(sub, dict) else "")
             try:
-                yes_price = float(prices[0])
+                book = await async_get_limitless_executable_price(slug)
+                if not book:
+                    skipped_no_liquidity += 1
+                    continue
+                yes_price = book["yes_ask"]
             except (ValueError, TypeError):
                 skipped_no_price += 1
                 continue
-
-            slug = getattr(sub, "slug", "") if hasattr(sub, "slug") else (sub.get("slug", "") if isinstance(sub, dict) else "")
-            title = getattr(sub, "title", "") if hasattr(sub, "title") else (sub.get("title", "") if isinstance(sub, dict) else "")
 
             # Check real liquidity via orderbook
             # If bids == 0 AND asks == 0, this sub-market has no real liquidity
@@ -202,13 +207,20 @@ class LimitlessSportsFeeder(BaseFeeder):
         event_id = f"limitless_sport_{group_slug}"
         primary_price = outcomes[0]["yes_price"]
 
-        cross_platform_tracker.update_price(
-            event_id=event_id,
-            platform="limitless",
-            price=primary_price,
-            bid=primary_price,
-            ask=primary_price,
-        )
+        # Group data is still published to the tracker only when every outcome
+        # has a real executable book. Individual outcome books remain distinct.
+        for outcome in outcomes:
+            book = await async_get_limitless_executable_price(outcome["slug"])
+            if not book:
+                return
+            cross_platform_tracker.update_book(
+                event_id=f"{event_id}__{outcome['slug']}",
+                platform="limitless",
+                yes_bid=book["yes_bid"],
+                yes_ask=book["yes_ask"],
+                bid_depth=book["bid_size"],
+                ask_depth=book["ask_size"],
+            )
 
         from src.strategy.sports_arb import update_sports_edge
         update_sports_edge(
@@ -231,10 +243,14 @@ class LimitlessSportsFeeder(BaseFeeder):
 
     async def _process_single_market(self, slug, title, prices):
         from src.strategy.cross_platform_tracker import cross_platform_tracker
+        from src.limitless_price_cache import async_get_limitless_executable_price
 
         try:
-            yes_price = float(prices[0])
-            no_price = float(prices[1])
+            book = await async_get_limitless_executable_price(slug)
+            if not book:
+                return
+            yes_price = book["yes_ask"]
+            no_price = book["no_ask"]
         except (ValueError, TypeError, IndexError):
             return
 
@@ -260,12 +276,13 @@ class LimitlessSportsFeeder(BaseFeeder):
             return
 
         event_id = f"limitless_sport_{slug}"
-        cross_platform_tracker.update_price(
+        cross_platform_tracker.update_book(
             event_id=event_id,
             platform="limitless",
-            price=yes_price,
-            bid=yes_price,
-            ask=yes_price,
+            yes_bid=book["yes_bid"],
+            yes_ask=book["yes_ask"],
+            bid_depth=book["bid_size"],
+            ask_depth=book["ask_size"],
         )
 
         from src.strategy.sports_arb import update_sports_edge

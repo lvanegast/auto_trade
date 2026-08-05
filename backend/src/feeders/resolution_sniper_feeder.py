@@ -92,7 +92,8 @@ class ResolutionSniperFeeder(BaseFeeder):
                         page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
                         markets.extend(page_m)
                     except Exception as pe:
-                        print(f"[Resolution Sniper] Error fetching page {page_id}: {pe}")
+                        if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
+                            print(f"[Resolution Sniper] Error fetching page {page_id}: {pe}")
 
                 snipers_found = 0
                 for m in markets:

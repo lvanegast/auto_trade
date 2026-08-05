@@ -55,6 +55,7 @@ class SportsArbitrageStrategy(BaseStrategy):
         worker_id: str = "worker_3",
         outcomes_count: int = None,
         cross_platform: bool = False,
+        observation_only: bool = False,
     ):
         super().__init__(symbol)
         self.feeder_type = feeder_type
@@ -79,6 +80,7 @@ class SportsArbitrageStrategy(BaseStrategy):
         self.worker_id = worker_id
         self.outcomes_count = outcomes_count
         self.cross_platform = cross_platform
+        self.observation_only = observation_only
 
         # Active arb groups: {event_id: {entry_time, total_cost, expected_profit, arb_type, position_ids: []}}
         self._arb_groups = {}
@@ -133,27 +135,45 @@ class SportsArbitrageStrategy(BaseStrategy):
         title = edge_data.get("title", event_id)
 
         # 5. Cross-platform best price calculation: Limitless vs Polymarket/Kalshi
-        # ONLY uses real data from CrossPlatformTracker — never fabricated prices
+        # Uses REAL executable prices from orderbooks, not midpoints
         if self.cross_platform:
             from src.strategy.cross_platform_tracker import cross_platform_tracker
+            from src.limitless_price_cache import get_limitless_executable_price
             total_yes = 0.0
             best_outcomes = []
             has_cross_data = False
             
             for outcome in outcomes:
-                yes_price = outcome["yes_price"]
+                # Get REAL Limitless price from orderbook
+                ll_slug = outcome.get("slug", "")
+                ll_ob = get_limitless_executable_price(ll_slug)
+
+                # Fail closed: a listing midpoint is never an executable price.
+                if not ll_ob:
+                    self.edge = 0.0
+                    return None
+
+                ll_yes_ask = ll_ob["yes_ask"]
+                ll_yes_bid = ll_ob["yes_bid"]
+
                 poly_book = cross_platform_tracker.get_book(event_id, "polymarket")
+                kalshi_book = cross_platform_tracker.get_book(event_id, "kalshi")
                 
+                # Check Polymarket
                 if poly_book and poly_book.get("yes_ask"):
-                    # Use real Polymarket ask price (executable price)
                     poly_price = poly_book["yes_ask"]
                     has_cross_data = True
-                    best_price = yes_price if yes_price <= poly_price else poly_price
-                    best_platform = "limitless" if yes_price <= poly_price else "polymarket"
+                    best_price = ll_yes_ask if ll_yes_ask <= poly_price else poly_price
+                    best_platform = "limitless" if ll_yes_ask <= poly_price else "polymarket"
+                # Check Kalshi
+                elif kalshi_book and kalshi_book.get("yes_ask"):
+                    kalshi_price = kalshi_book["yes_ask"]
+                    has_cross_data = True
+                    best_price = ll_yes_ask if ll_yes_ask <= kalshi_price else kalshi_price
+                    best_platform = "limitless" if ll_yes_ask <= kalshi_price else "kalshi"
                 else:
-                    # No Polymarket data — use Limitless only (intra-platform)
-                    best_price = yes_price
-                    best_platform = "limitless"
+                    # No cross-platform data — skip (don't trade on fabricated edges)
+                    continue
                 
                 total_yes += best_price
                 best_outcomes.append({
@@ -161,10 +181,12 @@ class SportsArbitrageStrategy(BaseStrategy):
                     "title": outcome["title"],
                     "yes_price": best_price,
                     "no_price": 1.0 - best_price,
-                    "platform": best_platform
+                    "platform": best_platform,
+                    "limitless_bid": ll_yes_bid,
+                    "limitless_ask": ll_yes_ask,
                 })
             
-            # If no cross-platform data available, skip (don't trade on fabricated edges)
+            # If no cross-platform data available, skip
             if not has_cross_data:
                 self.edge = 0.0
                 return None
@@ -242,6 +264,31 @@ class SportsArbitrageStrategy(BaseStrategy):
                         "platform": outcome.get("platform", "limitless")
                     }
                 )
+
+        if self.observation_only:
+            from src.engine.friction_guard import friction_guard
+            is_profitable, net_edge, _, _ = friction_guard.validate_arbitrage_profitability(
+                "limitless", "kalshi", abs(self.edge), self.position_size_usd
+            )
+            if self.db:
+                self.db.record_edge_snapshot({
+                    "event_id": event_id,
+                    "event_title": title,
+                    "gross_edge_pct": self.edge * 100,
+                    "net_edge_pct": net_edge * 100,
+                    "platform_a_yes_ask": total_cost,
+                    "platform_b_no_ask": 0.0,
+                    "liquidity_verified": True,
+                    "viable": is_profitable,
+                })
+                self.db.log(
+                    "INFO",
+                    f"[Cross-Platform Observation] {title} | "
+                    f"Gross: {self.edge:.2%} | Net: {net_edge:.2%} | "
+                    "No order generated",
+                    self.worker_id,
+                )
+            return None
 
         expected_profit = (1.0 - total_cost) if arb_type == "YES" else ((len(outcomes) - 1.0) - total_cost)
         if expected_profit <= 0:

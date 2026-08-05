@@ -120,6 +120,9 @@ class TradingWorker:
         elif self.feeder_type == "resolution_sniper":
             from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
             self.feeder = ResolutionSniperFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "multi_platform":
+            from src.feeders.multi_platform_feeder import MultiPlatformFeeder
+            self.feeder = MultiPlatformFeeder(self.symbol, self.queue)
         elif self.feeder_type == "binary_arb":
             self.feeder = LimitlessOracleFeeder(self.symbol, self.queue)
         elif self.feeder_type == "maker_making":
@@ -405,20 +408,22 @@ class TradingWorker:
                         fetcher = MarketFetcher(http)
 
                         # Cancel all orders for current market
-                        try:
-                            market = await fetcher.get_market(self.symbol)
-                            if market:
-                                from limitless_sdk.orders import OrderClient
-                                from eth_account import Account
-                                private_key = os.getenv("LIMITLESS_PRIVATE_KEY")
-                                if private_key:
-                                    wallet = Account.from_key(private_key)
-                                    order_client = OrderClient(http_client=http, wallet=wallet, market_fetcher=fetcher)
-                                    result = await order_client.cancel_all(self.symbol)
-                                    orders_cancelled = 1  # cancel_all returns void, assume success
-                                    self.db.log("INFO", f"[KillSwitch] Órdenes canceladas en {self.symbol}", self.worker_id)
-                        except Exception as e:
-                            self.db.log("WARNING", f"[KillSwitch] Error cancelando órdenes: {e}", self.worker_id)
+                        # Skip if symbol is not a valid market slug (e.g., "SPORTS", "BTCUSDT")
+                        if self.symbol and not self.symbol.isupper():
+                            try:
+                                market = await fetcher.get_market(self.symbol)
+                                if market:
+                                    from limitless_sdk.orders import OrderClient
+                                    from eth_account import Account
+                                    private_key = os.getenv("LIMITLESS_PRIVATE_KEY")
+                                    if private_key:
+                                        wallet = Account.from_key(private_key)
+                                        order_client = OrderClient(http_client=http, wallet=wallet, market_fetcher=fetcher)
+                                        result = await order_client.cancel_all(self.symbol)
+                                        orders_cancelled = 1  # cancel_all returns void, assume success
+                                        self.db.log("INFO", f"[KillSwitch] Órdenes canceladas en {self.symbol}", self.worker_id)
+                            except Exception as e:
+                                self.db.log("WARNING", f"[KillSwitch] Error cancelando órdenes: {e}", self.worker_id)
             except Exception as e:
                 self.db.log("WARNING", f"[KillSwitch] Error al conectar con Limitless: {e}", self.worker_id)
 
@@ -964,6 +969,13 @@ class TradingWorker:
             print(f"[Worker {self.worker_id}] Loop de eventos cancelado.")
 
     async def _execute_order(self, signal: SignalEvent):
+        if self.worker_id == "worker_2":
+            self.db.log(
+                "WARNING",
+                "[ObservationOnly] Worker 2 no puede ejecutar órdenes; señal rechazada.",
+                self.worker_id,
+            )
+            return
         _t_exec_start = time.time()
         self.db.log("INFO", f"Procesando señal: {signal}", self.worker_id)
 
@@ -2101,7 +2113,7 @@ class TradingWorker:
                     f"Pre-carga Binance completada. {len(rows)} velas reales cargadas.",
                     self.worker_id,
                 )
-            elif self.feeder_type in ("limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal", "maker_making"):
+            elif self.feeder_type in ("limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal", "maker_making", "multi_platform", "resolution_sniper"):
                 self.db.log(
                     "INFO",
                     f"{self.feeder_type}: omitiendo historial sintético (esperando datos reales del feeder)...",
@@ -2275,18 +2287,16 @@ class TradingEngine:
                 worker1.strategy = AtomicCryptoArbStrategy("ANY-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=1.0, db=self.db, worker_id="worker_1")
                 self.workers["worker_1"] = worker1
 
-            # Worker 2: Arbitraje Cross-Platform Deportes (Limitless vs Polymarket)
-            # DISABLED: Cross-platform execution not implemented (no Polymarket SDK integration)
-            # All signals were being routed to Limitless only — not real cross-platform arb.
-            # See: execution_engine.py:286 "Ejecución real de cross-platform arbitrage no implementada"
-            # TODO: Integrate polymarket-client SDK and implement dual-leg execution before re-enabling
+            # Worker 2: Arbitraje Cross-Platform Deportes (Limitless vs Polymarket vs Kalshi)
             w2_enabled = os.getenv("WORKER2_ENABLED", "false").lower() == "true"
             if w2_enabled:
-                print("[ENGINE WARNING] ⚠️  Worker 2 (Cross-Platform) is enabled but execution is NOT implemented.")
-                print("[ENGINE WARNING] Signals will be routed to Limitless only — this is NOT real arbitrage.")
-                print("[ENGINE WARNING] Set WORKER2_ENABLED=false to suppress this warning.")
-                worker2 = TradingWorker("worker_2", "Cross-Platform Sports", "SPORTS", "limitless_sports", self.db)
-                worker2.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_2", cross_platform=True)
+                worker2_type = os.getenv("WORKER2_FEEDER_TYPE", "multi_platform")
+                worker2 = TradingWorker("worker_2", "Cross-Platform Sports", "SPORTS", worker2_type, self.db)
+                worker2.strategy = SportsArbitrageStrategy(
+                    "SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size,
+                    db=self.db, worker_id="worker_2", cross_platform=True,
+                    observation_only=True,
+                )
                 self.workers["worker_2"] = worker2
 
             # Worker 3: Arbitraje Deportivo 1xN (Partidos de 3 opciones en Limitless)
