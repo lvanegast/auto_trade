@@ -85,8 +85,12 @@ class LimitlessFeeder(BaseFeeder):
         try:
             while self.running:
                 try:
-                    if self.symbol in ("BTC-INTRADAY", "ANY-INTRADAY"):
+                    if self.symbol in ("BTC-INTRADAY", "ANY-INTRADAY", "BTC-PERP"):
                         await self._fetch_crypto_intraday(market_fetcher, page_fetcher)
+                    elif self.symbol in ("SPORTS", "EVERYTHING", "ALL"):
+                        # Category-level symbols are handled by dedicated feeders (LimitlessSportsFeeder)
+                        await asyncio.sleep(self.poll_interval)
+                        continue
                     else:
                         await self._fetch_and_emit(market_fetcher)
                 except asyncio.CancelledError:

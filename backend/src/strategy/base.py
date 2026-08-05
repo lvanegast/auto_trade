@@ -37,20 +37,16 @@ class BaseStrategy(ABC):
         signal = None
 
         if self.prices_df.empty:
-            # Primera barra: la agregamos y no evaluamos señal (falta historial)
-            new_row = pd.DataFrame(
-                [
-                    {
-                        "timestamp": bar_time,
-                        "open": event.price,
-                        "high": event.price,
-                        "low": event.price,
-                        "close": event.price,
-                        "price": event.price,
-                    }
-                ]
+            self.prices_df = pd.DataFrame(
+                {
+                    "timestamp": [bar_time],
+                    "open": [event.price],
+                    "high": [event.price],
+                    "low": [event.price],
+                    "close": [event.price],
+                    "price": [event.price],
+                }
             )
-            self.prices_df = pd.concat([self.prices_df, new_row], ignore_index=True)
         else:
             # Eliminar tzinfo para comparaciones limpias si es necesario (naive)
             if bar_time.tzinfo is not None:
