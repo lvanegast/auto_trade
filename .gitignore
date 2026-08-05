@@ -12,6 +12,9 @@ env/
 
 # Config & Credentials
 .env
+_env
+*.pem
+*.key
 config.json
 *.db
 *.sqlite

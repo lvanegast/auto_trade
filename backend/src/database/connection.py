@@ -207,6 +207,7 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS edge_snapshots (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                worker_id VARCHAR(50) NOT NULL DEFAULT 'worker_2',
                 platform_a VARCHAR(50) NOT NULL,
                 platform_b VARCHAR(50) NOT NULL,
                 event_id VARCHAR(500) NOT NULL,
@@ -858,5 +859,70 @@ class DatabaseManager:
                 "total_fees": 0.0,
                 "avg_duration_sec": 180.0
             }
+        finally:
+            self._return_connection(conn)
+
+    def save_edge_snapshot(
+        self,
+        worker_id: str,
+        platform_a: str,
+        platform_b: str,
+        event_id: str,
+        event_title: str,
+        edge_pct: float,
+        gross_edge_pct: float = 0.0,
+        platform_a_yes_ask: float = None,
+        platform_b_no_ask: float = None,
+        platform_a_depth: float = None,
+        platform_b_depth: float = None,
+        liquidity_verified: bool = False,
+        viable: bool = False,
+    ):
+        query = """
+            INSERT INTO edge_snapshots (
+                worker_id, platform_a, platform_b, event_id, event_title,
+                edge_pct, gross_edge_pct, platform_a_yes_ask, platform_b_no_ask,
+                platform_a_depth, platform_b_depth, liquidity_verified, viable
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        """
+        params = (
+            worker_id, platform_a, platform_b, event_id, event_title,
+            edge_pct, gross_edge_pct, platform_a_yes_ask, platform_b_no_ask,
+            platform_a_depth, platform_b_depth, liquidity_verified, viable
+        )
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(query, params)
+                if not self.use_sqlite:
+                    conn.commit()
+        except Exception as e:
+            if conn and not self.use_sqlite:
+                conn.rollback()
+            print(f"[DB ERROR] Error guardando edge_snapshot: {e}")
+        finally:
+            self._return_connection(conn)
+
+    def get_edge_snapshots(self, worker_id: str = None, limit: int = 100, viable_only: bool = False):
+        query = "SELECT * FROM edge_snapshots WHERE 1=1"
+        params = []
+        if worker_id:
+            query += " AND worker_id = %s"
+            params.append(worker_id)
+        if viable_only:
+            query += " AND viable = TRUE"
+        query += " ORDER BY id DESC LIMIT %s;"
+        params.append(limit)
+
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, tuple(params))
+                return cursor.fetchall()
+        except Exception as e:
+            print(f"[DB ERROR] Error obteniendo edge_snapshots: {e}")
+            return []
         finally:
             self._return_connection(conn)

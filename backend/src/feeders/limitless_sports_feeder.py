@@ -89,26 +89,22 @@ class LimitlessSportsFeeder(BaseFeeder):
             try:
                 from src.engine.latency_tracker import latency_tracker
                 
-                page_ids = [
-                    "2a91349c-3308-4234-afb7-0663e42968c1",  # Sport
-                    "f2a04a4e-580a-4cd1-bcc9-c23ed9ff8916",  # Esports
-                ]
-                
-                markets = []
-                for page_id in page_ids:
-                    try:
-                        # Medir latencia real de la llamada API
-                        async with latency_tracker.measure("limitless_sports", "get_markets") as m:
-                            resp = await self._page_fetcher.get_markets(page_id, {"limit": 30})
-                            m.result = resp
-                        
-                        page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
-                        markets.extend(page_m)
-                    except Exception as pe:
-                        if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
-                            print(f"[Sports Feeder] Error fetching page {page_id}: {pe}")
+                from limitless_sdk.markets import MarketFetcher
+                from limitless_sdk.api import HttpClient
 
-                print(f"[Sports Feeder] Fetched {len(markets)} markets from {len(page_ids)} pages")
+                markets = []
+                try:
+                    async with HttpClient() as http:
+                        fetcher = MarketFetcher(http)
+                        async with latency_tracker.measure("limitless_sports", "get_active_markets") as m:
+                            resp = await fetcher.get_active_markets()
+                            m.result = resp
+                        markets = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
+                except Exception as pe:
+                    if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
+                        print(f"[Sports Feeder] Error fetching active markets: {pe}")
+
+                print(f"[Sports Feeder] Fetched {len(markets)} active markets dynamically")
                 for m in markets:
                     slug = m.slug if hasattr(m, "slug") else (m.get("slug", "") if isinstance(m, dict) else "")
                     title = m.title if hasattr(m, "title") else (m.get("title", "") if isinstance(m, dict) else "")
@@ -232,6 +228,26 @@ class LimitlessSportsFeeder(BaseFeeder):
             outcomes=outcomes,
             group_slug=group_slug,
         )
+
+        try:
+            from src.api.app import db
+            db.save_edge_snapshot(
+                worker_id="worker_2",
+                platform_a="limitless",
+                platform_b="limitless",
+                event_id=event_id,
+                event_title=group_title,
+                edge_pct=edge,
+                gross_edge_pct=edge,
+                platform_a_yes_ask=primary_price,
+                platform_b_no_ask=1.0 - primary_price,
+                platform_a_depth=10.0,
+                platform_b_depth=10.0,
+                liquidity_verified=True,
+                viable=(edge >= 0.02)
+            )
+        except Exception:
+            pass
 
         event = PriceUpdateEvent(
             symbol=event_id,

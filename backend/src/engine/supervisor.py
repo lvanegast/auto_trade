@@ -969,10 +969,15 @@ class TradingWorker:
             print(f"[Worker {self.worker_id}] Loop de eventos cancelado.")
 
     async def _execute_order(self, signal: SignalEvent):
-        if self.worker_id == "worker_2":
+        # GUARDRAIL ABSOLUTO: Capital Protection Whitelist
+        # Any worker NOT explicitly listed in ALLOWED_REAL_WORKERS env var is blocked from real execution.
+        allowed_real_workers = [
+            w.strip() for w in os.getenv("ALLOWED_REAL_WORKERS", "").split(",") if w.strip()
+        ]
+        if self.worker_id not in allowed_real_workers:
             self.db.log(
                 "WARNING",
-                "[ObservationOnly] Worker 2 no puede ejecutar órdenes; señal rechazada.",
+                f"[CapitalProtection] Worker '{self.worker_id}' no está en ALLOWED_REAL_WORKERS. Ejecución on-chain BLOQUEADA (Modo Recolección de Datos).",
                 self.worker_id,
             )
             return
@@ -2284,7 +2289,7 @@ class TradingEngine:
             if w1_enabled:
                 from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
                 worker1 = TradingWorker("worker_1", "Limitless Intraday General", "ANY-INTRADAY", limitless_feeder_type, self.db)
-                worker1.strategy = AtomicCryptoArbStrategy("ANY-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=1.0, db=self.db, worker_id="worker_1")
+                worker1.strategy = AtomicCryptoArbStrategy("ANY-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=1.0, db=self.db, worker_id="worker_1", observation_only=True)
                 self.workers["worker_1"] = worker1
 
             # Worker 2: Arbitraje Cross-Platform Deportes (Limitless vs Polymarket vs Kalshi)
@@ -2303,14 +2308,14 @@ class TradingEngine:
             w3_enabled = os.getenv("WORKER3_ENABLED", "true").lower() == "true"
             if w3_enabled:
                 worker3 = TradingWorker("worker_3", "Limitless Sports (3 Opciones)", "SPORTS", "limitless_sports", self.db)
-                worker3.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_3", outcomes_count=3)
+                worker3.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_3", outcomes_count=3, observation_only=True)
                 self.workers["worker_3"] = worker3
 
             # Worker 4: Arbitraje Deportivo 1xN (Opciones Binarias de 2 opciones en Limitless)
             w4_enabled = os.getenv("WORKER4_ENABLED", "true").lower() == "true"
             if w4_enabled:
                 worker4 = TradingWorker("worker_4", "Limitless Sports (2 Opciones)", "SPORTS", "limitless_sports", self.db)
-                worker4.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_4", outcomes_count=2)
+                worker4.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_4", outcomes_count=2, observation_only=False)
                 self.workers["worker_4"] = worker4
 
             # Worker 5: Oráculo HFT de Referencia Binance Spot (0 Latency Feed)
@@ -2329,7 +2334,7 @@ class TradingEngine:
             if w6_enabled:
                 from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
                 worker6 = TradingWorker("worker_6", "Crypto Atomic-Arb", "BTC-INTRADAY", limitless_feeder_type, self.db)
-                worker6.strategy = AtomicCryptoArbStrategy("BTC-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=crypto_maker_size, db=self.db, worker_id="worker_6")
+                worker6.strategy = AtomicCryptoArbStrategy("BTC-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=crypto_maker_size, db=self.db, worker_id="worker_6", observation_only=True)
                 self.workers["worker_6"] = worker6
 
             # Worker 7: Resolution Sniper (Buy near-certain markets, hold to resolution)

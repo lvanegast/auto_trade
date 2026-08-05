@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 import asyncio
 import os
 import datetime
+import hmac
 from dotenv import load_dotenv
 load_dotenv()
 from src.database import DatabaseManager
@@ -22,6 +23,26 @@ app = FastAPI(
     title="Trading Bot API",
     description="API para el control y monitoreo del Bot de Trading",
 )
+
+_protected_mutations = {
+    "/api/start",
+    "/api/stop",
+    "/api/order",
+    "/api/order/cancel",
+    "/api/position/close",
+}
+
+
+@app.middleware("http")
+async def protect_remote_mutations(request: Request, call_next):
+    """Require a bearer token for state-changing control endpoints when configured."""
+    expected = os.getenv("API_AUTH_TOKEN", "")
+    if expected and request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path in _protected_mutations:
+        supplied = request.headers.get("authorization", "")
+        token = supplied.removeprefix("Bearer ").strip()
+        if not hmac.compare_digest(token, expected):
+            return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+    return await call_next(request)
 
 # Permitir CORS para desarrollo local de la UI
 app.add_middleware(
@@ -558,6 +579,63 @@ async def get_logs(limit: int = 50, worker_id: str = None):
                 }
             )
         return formatted_logs
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/snapshots")
+async def get_snapshots(worker_id: str = None, limit: int = 100, viable_only: bool = False):
+    """Retorna los últimos snapshots de oportunidades registradas por los workers."""
+    try:
+        snapshots = db.get_edge_snapshots(worker_id=worker_id, limit=limit, viable_only=viable_only)
+        formatted = []
+        for s in snapshots:
+            formatted.append(
+                {
+                    "id": s["id"],
+                    "timestamp": _format_utc_iso(s["timestamp"]) if s.get("timestamp") else None,
+                    "worker_id": s.get("worker_id", "worker_2"),
+                    "platform_a": s.get("platform_a"),
+                    "platform_b": s.get("platform_b"),
+                    "event_id": s.get("event_id"),
+                    "event_title": s.get("event_title"),
+                    "edge_pct": float(s.get("edge_pct") or 0.0),
+                    "gross_edge_pct": float(s.get("gross_edge_pct") or 0.0),
+                    "platform_a_yes_ask": float(s.get("platform_a_yes_ask") or 0.0) if s.get("platform_a_yes_ask") is not None else None,
+                    "platform_b_no_ask": float(s.get("platform_b_no_ask") or 0.0) if s.get("platform_b_no_ask") is not None else None,
+                    "liquidity_verified": bool(s.get("liquidity_verified")),
+                    "viable": bool(s.get("viable")),
+                }
+            )
+        return {"count": len(formatted), "snapshots": formatted}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/workers/evaluation")
+async def get_workers_evaluation():
+    """Retorna informe de evaluación de rendimiento y oportunidades escaneadas por cada worker."""
+    try:
+        evaluations = {}
+        for wid, worker in engine.workers.items():
+            snaps = db.get_edge_snapshots(worker_id=wid, limit=500)
+            trades = db.get_trades(worker_id=wid, limit=500)
+            
+            total_snaps = len(snaps)
+            viable_snaps = [s for s in snaps if s.get("viable")]
+            avg_edge = (sum(float(s.get("edge_pct") or 0.0) for s in snaps) / total_snaps) if total_snaps > 0 else 0.0
+            
+            evaluations[wid] = {
+                "worker_id": wid,
+                "name": worker.name,
+                "feeder_type": worker.feeder_type,
+                "is_running": worker.is_running,
+                "opportunities_scanned": total_snaps,
+                "viable_opportunities": len(viable_snaps),
+                "avg_edge_pct": round(avg_edge * 100, 2),
+                "total_executed_trades": len(trades),
+            }
+        return {"workers": evaluations}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

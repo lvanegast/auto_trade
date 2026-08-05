@@ -19,12 +19,14 @@ class AtomicCryptoArbStrategy(BaseStrategy):
         position_size_usd: float = 10.0,
         db=None,
         worker_id: str = "worker_6",
+        observation_only: bool = True,
     ):
         super().__init__(symbol)
         self.min_profit_target = min_profit_target
         self.position_size_usd = position_size_usd
         self.db = db
         self.worker_id = worker_id
+        self.observation_only = observation_only
 
         self.last_position = None
         self._position_id = None
@@ -93,8 +95,38 @@ class AtomicCryptoArbStrategy(BaseStrategy):
         self.teorical_probability = (bid_yes + ask_yes) / 2.0
         self.edge = gross_profit
 
+        # Record snapshot in database for evaluation
+        try:
+            if self.db:
+                self.db.save_edge_snapshot(
+                    worker_id=self.worker_id,
+                    platform_a="limitless",
+                    platform_b="limitless",
+                    event_id=f"limitless_crypto_{event.symbol}",
+                    event_title=event.symbol,
+                    edge_pct=gross_profit,
+                    gross_edge_pct=gross_profit,
+                    platform_a_yes_ask=my_ask_yes,
+                    platform_b_no_ask=my_ask_no,
+                    platform_a_depth=10.0,
+                    platform_b_depth=10.0,
+                    liquidity_verified=True,
+                    viable=(gross_profit >= self.min_profit_target)
+                )
+        except Exception:
+            pass
+
         # Does the gross margin meet our minimum profit target?
         if gross_profit >= self.min_profit_target:
+            if self.observation_only:
+                if self.db:
+                    self.db.log(
+                        "INFO",
+                        f"[Atomic Crypto Observation] {event.symbol} | Cost: {total_cost:.4f} | Gross Edge: {gross_profit:.2%} | No order generated",
+                        self.worker_id,
+                    )
+                return None
+
             self.total_bundles_sent += 1
             
             # NO random revert injection — reverts happen on-chain if they occur

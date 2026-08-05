@@ -11,10 +11,15 @@ COPY backend/pyproject.toml ./
 RUN uv sync --no-dev
 
 COPY backend/src/ ./src
+COPY backend/scripts/ ./scripts
 COPY backend/tests/ ./tests
 COPY backend/main.py ./
 COPY web/ ./web
+COPY backend/entrypoint.sh ./entrypoint.sh
+COPY backend/monitor-entrypoint.sh ./monitor-entrypoint.sh
+
+RUN chmod +x /app/entrypoint.sh /app/monitor-entrypoint.sh
 
 EXPOSE 8080
 
-CMD ["uv", "run", "main.py"]
+CMD ["/app/entrypoint.sh"]

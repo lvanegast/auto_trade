@@ -21,7 +21,7 @@ class MultiPlatformFeeder(BaseFeeder):
 
     def __init__(self, symbol: str, event_queue: asyncio.Queue):
         super().__init__(symbol.upper(), event_queue)
-        self.poll_interval = float(os.getenv("MULTI_PLATFORM_POLL_INTERVAL", "5.0"))
+        self.poll_interval = float(os.getenv("MULTI_PLATFORM_POLL_INTERVAL", "15.0"))
         self.task = None
 
         # Estado de conexiones
@@ -242,6 +242,7 @@ class MultiPlatformFeeder(BaseFeeder):
         while self.running:
             try:
                 # Ejecutar requests bloqueantes en un thread pool
+                cycle_updates = 0
                 result = await asyncio.to_thread(fetch_polymarket)
 
                 sports_keywords = ["NBA", "NFL", "NHL", "MLB", "Soccer", "Tennis", "UFC", "MMA", "NCAAB", "NCAAF"]
@@ -383,11 +384,12 @@ class MultiPlatformFeeder(BaseFeeder):
                                     ts_origin=_time.time(),
                                 )
                                 markets_updated += 1
+                                cycle_updates += 1
                                 # Debug: print first few updates
                                 if markets_updated <= 3:
                                     print(f"[MultiPlatform-Kalshi] DEBUG: Updated {event_id} yes_bid={yes_bid} yes_ask={yes_ask}")
 
-                print(f"[MultiPlatform-Kalshi] Updated {markets_updated} markets in tracker")
+                print(f"[MultiPlatform-Kalshi] Updated {cycle_updates} markets this cycle (total={markets_updated})")
 
             except asyncio.CancelledError:
                 break

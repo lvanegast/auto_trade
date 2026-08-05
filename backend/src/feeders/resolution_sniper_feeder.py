@@ -80,6 +80,7 @@ class ResolutionSniperFeeder(BaseFeeder):
                 page_ids = [
                     "2a91349c-3308-4234-afb7-0663e42968c1",  # Sport
                     "f2a04a4e-580a-4cd1-bcc9-c23ed9ff8916",  # Esports
+                    "5e76699e-8763-4c91-85de-3efeb064efec",  # Crypto
                 ]
 
                 markets = []
@@ -103,21 +104,14 @@ class ResolutionSniperFeeder(BaseFeeder):
                         continue
 
                     # Check for single/binary markets
-                    prices = getattr(m, "prices", None) or (m.get("prices") if isinstance(m, dict) else None)
-                    if prices and len(prices) >= 1:
-                        try:
-                            yes_price = float(prices[0])
-                        except (ValueError, TypeError):
-                            continue
-
-                        # Check if price is in sniper range
-                        if self.min_entry_price <= yes_price <= self.max_entry_price:
-                            # Verify liquidity
-                            has_liquidity = await self._check_liquidity(slug)
-                            if has_liquidity:
-                                snipers_found += 1
-                                print(f"[Resolution Sniper] Found: {title[:50]} YES={yes_price:.4f}")
-                                await self._emit_sniper_signal(slug, title, yes_price)
+                    from src.limitless_price_cache import async_get_limitless_executable_price
+                    book = await async_get_limitless_executable_price(slug)
+                    if book:
+                        yes_price = book["yes_ask"]
+                        if self.min_entry_price <= yes_price <= self.max_entry_price and book["ask_size"] > 0:
+                            snipers_found += 1
+                            print(f"[Resolution Sniper] Found: {title[:50]} YES_ASK={yes_price:.4f}")
+                            await self._emit_sniper_signal(slug, title, yes_price)
 
                     # Check sub-markets in groups
                     subs = getattr(m, "markets", None) or (m.get("markets") if isinstance(m, dict) else None)
@@ -127,19 +121,13 @@ class ResolutionSniperFeeder(BaseFeeder):
                             sub_title = getattr(sub, "title", "") if hasattr(sub, "title") else (sub.get("title", "") if isinstance(sub, dict) else "")
                             sub_prices = getattr(sub, "prices", None) if hasattr(sub, "prices") else (sub.get("prices") if isinstance(sub, dict) else None)
 
-                            if not sub_prices or len(sub_prices) == 0:
-                                continue
-
-                            try:
-                                sub_yes_price = float(sub_prices[0])
-                            except (ValueError, TypeError):
-                                continue
-
-                            if self.min_entry_price <= sub_yes_price <= self.max_entry_price:
-                                has_liquidity = await self._check_liquidity(sub_slug)
-                                if has_liquidity:
+                            from src.limitless_price_cache import async_get_limitless_executable_price
+                            sub_book = await async_get_limitless_executable_price(sub_slug)
+                            if sub_book:
+                                sub_yes_price = sub_book["yes_ask"]
+                                if self.min_entry_price <= sub_yes_price <= self.max_entry_price and sub_book["ask_size"] > 0:
                                     snipers_found += 1
-                                    print(f"[Resolution Sniper] Found: {sub_title[:50]} YES={sub_yes_price:.4f}")
+                                    print(f"[Resolution Sniper] Found: {sub_title[:50]} YES_ASK={sub_yes_price:.4f}")
                                     await self._emit_sniper_signal(sub_slug, sub_title, sub_yes_price)
 
                     # Delay between markets
