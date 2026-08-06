@@ -386,6 +386,20 @@ class SportsArbitrageStrategy(BaseStrategy):
                 f"{len(outcomes)} outcomes",
                 self.worker_id,
             )
+            # Telegram alert for 1xN arb opportunities (deduplicated)
+            from src.telegram_bot import telegram_bot
+            if telegram_bot.enabled and self.edge >= 0.02:
+                now_ts = time.time()
+                last_alert = getattr(self, '_last_telegram_alert', {}).get(event_id, 0)
+                if now_ts - last_alert > 3600:  # 1 hour cooldown
+                    profit_usd = expected_profit * num_sets
+                    telegram_bot.send_alert("opportunity",
+                        f"1x{len(outcomes)} {arb_type} Arb: {title}\n"
+                        f"Edge: {self.edge:.2%} | Profit: ${profit_usd:.4f}\n"
+                        f"Spend: ${total_spend:.2f} | Sets: {num_sets:.2f}")
+                    if not hasattr(self, '_last_telegram_alert'):
+                        self._last_telegram_alert = {}
+                    self._last_telegram_alert[event_id] = now_ts
 
         # Queue all but first
         if len(signals) > 1:

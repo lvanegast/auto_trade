@@ -245,26 +245,51 @@ class ResolutionSniperStrategy(BaseStrategy):
         num_contracts = position["num_contracts"]
         total_spend = position["total_spend"]
 
+        # Update tracking with resolution
+        if self.db:
+            opp_id = getattr(self, '_tracked_opportunities', {}).get(event_id)
+            if opp_id:
+                self.db.update_opportunity_resolution(
+                    opp_id, 
+                    "won" if outcome == "WON" else "lost",
+                    profit
+                )
+
         if self.db:
             if outcome == "WON":
                 self.db.log(
                     "INFO",
-                    f"[Resolution Sniper] ✅ WON: {title} | "
+                    f"[Resolution Sniper] WON: {title} | "
                     f"Bought @ {buy_price:.4f} | "
                     f"{num_contracts:.2f} contracts | "
                     f"Payout: ${payout:.2f} | "
                     f"Profit: ${profit:.4f} ({profit/total_spend*100:.1f}%)",
                     self.worker_id,
                 )
+                # Telegram alert for win
+                from src.telegram_bot import telegram_bot
+                if telegram_bot.enabled:
+                    telegram_bot.send_alert("profit", 
+                        f"Resolution Sniper WON: {title}\n"
+                        f"Bought @ {buy_price:.4f}\n"
+                        f"Payout: ${payout:.2f}\n"
+                        f"Profit: +${profit:.4f} (+{profit/total_spend*100:.1f}%)")
             else:
                 self.db.log(
                     "INFO",
-                    f"[Resolution Sniper] ❌ LOST: {title} | "
+                    f"[Resolution Sniper] LOST: {title} | "
                     f"Bought @ {buy_price:.4f} | "
                     f"{num_contracts:.2f} contracts | "
                     f"Loss: ${abs(profit):.2f}",
                     self.worker_id,
                 )
+                # Telegram alert for loss
+                from src.telegram_bot import telegram_bot
+                if telegram_bot.enabled:
+                    telegram_bot.send_alert("loss",
+                        f"Resolution Sniper LOST: {title}\n"
+                        f"Bought @ {buy_price:.4f}\n"
+                        f"Loss: -${abs(profit):.2f}")
 
     def evaluate_signal(self, event: PriceUpdateEvent) -> SignalEvent | None:
         return None
