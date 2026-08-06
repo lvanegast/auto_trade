@@ -111,9 +111,11 @@ class LimitlessSportsFeeder(BaseFeeder):
                     if not slug:
                         continue
 
-                    # FILTER: Only process sports markets (limitless_sport_ prefix)
-                    # Skip crypto markets (limitless_crypto_) and other non-sports
-                    if "crypto" in slug.lower() or "up-or-down" in slug.lower():
+                    # FILTER: Only process sports markets
+                    # Skip crypto markets by checking slug for crypto keywords
+                    crypto_keywords = ["crypto", "up-or-down", "btc", "eth", "xmr", "bnb", "sol", "hype", "sui", "above-dollar", "below-dollar", "price-range"]
+                    slug_lower = slug.lower()
+                    if any(kw in slug_lower for kw in crypto_keywords):
                         continue
 
                     # Extract sub-markets directly from item payload without secondary HTTP request
