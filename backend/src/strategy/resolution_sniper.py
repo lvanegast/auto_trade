@@ -145,6 +145,10 @@ class ResolutionSniperStrategy(BaseStrategy):
                 f"Position: ${self.position_size_usd:.2f}",
                 self.worker_id,
             )
+            # Telegram alert for sniper opportunities
+            from src.telegram_bot import telegram_bot
+            if telegram_bot.enabled and self.edge >= 0.02:
+                telegram_bot.send_opportunity(title, self.edge * 100, "Limitless", "Crypto")
 
         if self.db:
             self.db.log(

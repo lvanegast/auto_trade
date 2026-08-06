@@ -13,10 +13,16 @@ from src.engine import TradingEngine
 from src.events import SignalEvent
 from src.core.security import security_guard
 from src.websocket_server import ws_server, make_event
+from src.telegram_bot import telegram_bot
 
 # Inicializar Base de Datos
 db = DatabaseManager()
 security_guard.set_db(db)
+
+# Inicializar Telegram Bot
+from src.telegram_bot import telegram_bot
+if telegram_bot.enabled:
+    telegram_bot.send_alert("system", "Bot de AutoTrade iniciado en Railway")
 
 # Inicializar FastAPI
 app = FastAPI(
@@ -1516,6 +1522,79 @@ async def export_trades_csv(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=trades_export.csv"},
     )
+
+
+# ==================== TELEGRAM COMMANDS ====================
+
+@app.get("/api/telegram/status")
+async def telegram_status():
+    """Send worker status to Telegram."""
+    if not telegram_bot.enabled:
+        return {"error": "Telegram bot not configured"}
+    
+    workers = []
+    for wid, worker in engine.workers.items():
+        workers.append({
+            "name": worker.name,
+            "is_running": worker.is_running,
+            "symbol": worker.symbol,
+        })
+    
+    telegram_bot.send_worker_status(workers)
+    return {"status": "sent", "workers": len(workers)}
+
+
+@app.get("/api/telegram/balance")
+async def telegram_balance():
+    """Send balance to Telegram."""
+    if not telegram_bot.enabled:
+        return {"error": "Telegram bot not configured"}
+    
+    # For now, send placeholder
+    telegram_bot.send_balance({"limitless": 0, "kalshi": 0, "total": 0})
+    return {"status": "sent"}
+
+
+@app.get("/api/telegram/positions")
+async def telegram_positions():
+    """Send open positions to Telegram."""
+    if not telegram_bot.enabled:
+        return {"error": "Telegram bot not configured"}
+    
+    positions = db.get_open_positions(worker_id=None)
+    telegram_bot.send_positions(positions)
+    return {"status": "sent", "positions": len(positions)}
+
+
+@app.get("/api/telegram/report")
+async def telegram_report():
+    """Send daily report to Telegram."""
+    if not telegram_bot.enabled:
+        return {"error": "Telegram bot not configured"}
+    
+    # Get stats from database
+    stats = {
+        "opportunities": 0,
+        "trades": 0,
+        "pnl": 0,
+        "avg_edge": 0,
+        "active_workers": sum(1 for w in engine.workers.values() if w.is_running),
+        "total_workers": len(engine.workers),
+        "errors": 0,
+    }
+    
+    telegram_bot.send_daily_report(stats)
+    return {"status": "sent"}
+
+
+@app.get("/api/telegram/test")
+async def telegram_test():
+    """Send test message to Telegram."""
+    if not telegram_bot.enabled:
+        return {"error": "Telegram bot not configured"}
+    
+    result = telegram_bot.send_alert("info", "Test message from AutoTrade bot")
+    return {"status": "sent" if result else "failed"}
 
 
 # Servir archivos estáticos del frontend en la raíz (MUST BE LAST)

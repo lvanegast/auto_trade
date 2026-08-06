@@ -288,6 +288,10 @@ class SportsArbitrageStrategy(BaseStrategy):
                     "No order generated",
                     self.worker_id,
                 )
+                # Telegram alert for cross-platform opportunities
+                from src.telegram_bot import telegram_bot
+                if telegram_bot.enabled and net_edge >= 0.02:
+                    telegram_bot.send_opportunity(title, net_edge * 100, "Limitless", "Kalshi")
             return None
 
         expected_profit = (1.0 - total_cost) if arb_type == "YES" else ((len(outcomes) - 1.0) - total_cost)
