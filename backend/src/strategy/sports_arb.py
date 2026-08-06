@@ -10,11 +10,42 @@ import os
 import time
 
 import time as _time
+from collections import OrderedDict, deque
+from datetime import datetime, timedelta
+
 from src.strategy.base import BaseStrategy
 from src.events import PriceUpdateEvent, SignalEvent
 
 # Shared data store: feeder writes, strategy reads
-_sports_edge_data: dict = {}
+# Bounded caches (max 1000 recent events each)
+_sports_edge_data = OrderedDict()
+_globally_claimed_events = set()
+_last_exit_time = {}
+_last_telegram_alert = {}
+
+MAX_CACHE_SIZE = 1000
+MAX_EVENTS_CLAIMED = 2000
+
+
+def _cleanup_global_caches():
+    """Remove expired entries from global caches to prevent OOM."""
+    global _sports_edge_data, _last_exit_time, _last_telegram_alert
+
+    now = _time.time()
+
+    # Keep only last 1000 events in _sports_edge_data
+    while len(_sports_edge_data) > MAX_CACHE_SIZE:
+        _sports_edge_data.popitem(last=False)
+
+    # Remove exit times older than 1 hour
+    old_exits = [k for k, v in _last_exit_time.items() if now - v > 3600]
+    for k in old_exits:
+        _last_exit_time.pop(k, None)
+
+    # Remove telegram alerts older than 1 hour
+    old_alerts = [k for k, v in _last_telegram_alert.items() if now - v > 3600]
+    for k in old_alerts:
+        _last_telegram_alert.pop(k, None)
 
 
 def update_sports_edge(
@@ -35,10 +66,6 @@ def update_sports_edge(
         "outcomes": outcomes or [],
         "group_slug": group_slug,
     }
-
-
-# Global set of claimed event_ids to prevent concurrent workers from trading the same event
-_globally_claimed_events: set = set()
 
 
 class SportsArbitrageStrategy(BaseStrategy):
@@ -98,6 +125,13 @@ class SportsArbitrageStrategy(BaseStrategy):
 
     def on_price_update(self, event: PriceUpdateEvent) -> SignalEvent | None:
         super().on_price_update(event)
+
+        # Periodic cleanup of global caches (every ~100 updates)
+        if not hasattr(self, '_update_count'):
+            self._update_count = 0
+        self._update_count = (self._update_count + 1) % 100
+        if self._update_count == 0:
+            _cleanup_global_caches()
 
         self.teorical_probability = event.price
 
@@ -337,6 +371,10 @@ class SportsArbitrageStrategy(BaseStrategy):
             "total_spend": total_spend,
             "num_sets": num_sets,
         }
+        # If claimed events set is getting too large, clear old ones
+        if len(_globally_claimed_events) > MAX_EVENTS_CLAIMED:
+            _globally_claimed_events.clear()
+
         self._pending_event_ids.add(event_id)
         _globally_claimed_events.add(event_id)
         self.total_opportunities += 1
