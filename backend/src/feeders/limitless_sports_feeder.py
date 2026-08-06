@@ -134,10 +134,13 @@ class LimitlessSportsFeeder(BaseFeeder):
                             pass
 
                 print(f"[Sports Feeder] Fetched {len(markets)} active markets dynamically")
+                _stats = {"total": 0, "no_slug": 0, "crypto_filtered": 0, "group_arb": 0, "single_market": 0, "skipped": 0}
                 for m in markets:
+                    _stats["total"] += 1
                     slug = m.slug if hasattr(m, "slug") else (m.get("slug", "") if isinstance(m, dict) else "")
                     title = m.title if hasattr(m, "title") else (m.get("title", "") if isinstance(m, dict) else "")
                     if not slug:
+                        _stats["no_slug"] += 1
                         continue
 
                     # FILTER: Only process sports markets
@@ -145,22 +148,27 @@ class LimitlessSportsFeeder(BaseFeeder):
                     crypto_keywords = ["crypto", "up-or-down", "btc", "eth", "xmr", "bnb", "sol", "hype", "sui", "above-dollar", "below-dollar", "price-range"]
                     slug_lower = slug.lower()
                     if any(kw in slug_lower for kw in crypto_keywords):
+                        _stats["crypto_filtered"] += 1
                         continue
 
                     # Extract sub-markets directly from item payload without secondary HTTP request
                     subs = getattr(m, "markets", None) or (m.get("markets") if isinstance(m, dict) else None)
                     if subs and isinstance(subs, list) and len(subs) >= 2:
+                        _stats["group_arb"] += 1
                         await self._process_group_arb(slug, title, subs)
                     else:
                         # Single / binary market directly in item
                         prices = getattr(m, "prices", None) or (m.get("prices") if isinstance(m, dict) else None)
                         if prices and len(prices) >= 2:
+                            _stats["single_market"] += 1
                             await self._process_single_market(slug, title, prices)
+                        else:
+                            _stats["skipped"] += 1
                     
                     # Delay entre mercados para evitar rate limiting
                     await asyncio.sleep(0.1)
 
-                print(f"[Sports Feeder] Scan complete: {len(markets)} markets checked")
+                print(f"[Sports Feeder] Scan complete: {len(markets)} markets checked | stats: {_stats}")
                 try:
                     from src.api.app import db
                     db.log("INFO", f"[Sports Feeder] Scan complete: {len(markets)} markets checked", "worker_3")
