@@ -111,6 +111,11 @@ class LimitlessSportsFeeder(BaseFeeder):
                     if not slug:
                         continue
 
+                    # FILTER: Only process sports markets (limitless_sport_ prefix)
+                    # Skip crypto markets (limitless_crypto_) and other non-sports
+                    if "crypto" in slug.lower() or "up-or-down" in slug.lower():
+                        continue
+
                     # Extract sub-markets directly from item payload without secondary HTTP request
                     subs = getattr(m, "markets", None) or (m.get("markets") if isinstance(m, dict) else None)
                     if subs and isinstance(subs, list) and len(subs) >= 2:

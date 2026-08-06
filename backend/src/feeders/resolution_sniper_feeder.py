@@ -78,9 +78,7 @@ class ResolutionSniperFeeder(BaseFeeder):
                 from src.engine.latency_tracker import latency_tracker
 
                 page_ids = [
-                    "2a91349c-3308-4234-afb7-0663e42968c1",  # Sport
-                    "f2a04a4e-580a-4cd1-bcc9-c23ed9ff8916",  # Esports
-                    "5e76699e-8763-4c91-85de-3efeb064efec",  # Crypto
+                    "5e76699e-8763-4c91-85de-3efeb064efec",  # Crypto only
                 ]
 
                 markets = []
@@ -101,6 +99,11 @@ class ResolutionSniperFeeder(BaseFeeder):
                     slug = m.slug if hasattr(m, "slug") else (m.get("slug", "") if isinstance(m, dict) else "")
                     title = m.title if hasattr(m, "title") else (m.get("title", "") if isinstance(m, dict) else "")
                     if not slug:
+                        continue
+
+                    # FILTER: Only process crypto markets (limitless_crypto_ prefix)
+                    # Skip sports markets
+                    if "crypto" not in slug.lower() and "up-or-down" not in slug.lower():
                         continue
 
                     # Check for single/binary markets
