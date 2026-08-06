@@ -173,6 +173,15 @@ class ResolutionMonitor:
                     f"[ResolutionMonitor] Mercado resuelto: {market_slug} → {winning_outcome}",
                     self.worker_id,
                 )
+                try:
+                    from src.telegram_bot import telegram_bot
+                    if telegram_bot.enabled:
+                        telegram_bot.send_alert(
+                            "profit" if winning_outcome in ("YES", "NO") else "info",
+                            f"<b>Evento Resuelto</b>\n<b>Mercado:</b> {market_slug}\n<b>Resultado Ganador:</b> {winning_outcome}"
+                        )
+                except Exception:
+                    pass
                 
                 return resolved
                 
