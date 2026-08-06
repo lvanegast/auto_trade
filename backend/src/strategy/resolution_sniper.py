@@ -165,7 +165,7 @@ class ResolutionSniperStrategy(BaseStrategy):
             # Telegram alert for sniper opportunities (only once per event)
             from src.telegram_bot import telegram_bot
             if telegram_bot.enabled and self.edge >= 0.02:
-                now_ts = time.time()
+                now_ts = _time.time()
                 last_alert = getattr(self, '_last_telegram_alert', {}).get(event_id, 0)
                 if now_ts - last_alert > 3600:  # 1 hour cooldown
                     telegram_bot.send_opportunity(title, self.edge * 100, "Limitless", "Crypto")

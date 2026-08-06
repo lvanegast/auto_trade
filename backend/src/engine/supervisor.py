@@ -338,7 +338,15 @@ class TradingWorker:
         await self._warm_up_strategy()
 
         self.engine_task = asyncio.create_task(self._event_loop())
-        self.feeder_task = asyncio.create_task(self.feeder.start())
+        try:
+            self.feeder_task = asyncio.create_task(self.feeder.start())
+            # Add error callback to catch silent feeder crashes
+            def _feeder_done(t):
+                if t.exception():
+                    self.db.log("ERROR", f"Feeder task crashed: {t.exception()}", self.worker_id)
+            self.feeder_task.add_done_callback(_feeder_done)
+        except Exception as e:
+            self.db.log("ERROR", f"Failed to create feeder task: {e}", self.worker_id)
         self.sync_task = asyncio.create_task(self._periodic_sync())
 
         # Notificar a clientes WebSocket del cambio de estado

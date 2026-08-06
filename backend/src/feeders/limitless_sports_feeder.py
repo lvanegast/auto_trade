@@ -44,6 +44,11 @@ class LimitlessSportsFeeder(BaseFeeder):
         print(
             f"[Feeder Limitless Sports] Iniciando polling cada {self.poll_interval}s..."
         )
+        try:
+            from src.api.app import db
+            db.log("INFO", f"[Feeder Limitless Sports] Iniciando polling cada {self.poll_interval}s...", "worker_3")
+        except Exception:
+            pass
         self.task = asyncio.create_task(self._run_polling())
         while self.running:
             await asyncio.sleep(1)
@@ -63,9 +68,25 @@ class LimitlessSportsFeeder(BaseFeeder):
         from limitless_sdk.market_pages import MarketPageFetcher
         from limitless_sdk.markets import MarketFetcher
 
-        http_client = HttpClient()
-        self._page_fetcher = MarketPageFetcher(http_client)
-        self._market_fetcher = MarketFetcher(http_client)
+        print(f"[Feeder Limitless Sports] _run_polling() started")
+        try:
+            from src.api.app import db
+            db.log("INFO", "[Feeder Limitless Sports] _run_polling() started", "worker_3")
+        except Exception:
+            pass
+        try:
+            http_client = HttpClient()
+            self._page_fetcher = MarketPageFetcher(http_client)
+            self._market_fetcher = MarketFetcher(http_client)
+            print(f"[Feeder Limitless Sports] HttpClient initialized successfully")
+        except Exception as e:
+            print(f"[Feeder Limitless Sports] FATAL: HttpClient init failed: {e}")
+            try:
+                from src.api.app import db
+                db.log("ERROR", f"[Feeder Limitless Sports] FATAL: HttpClient init failed: {e}", "worker_3")
+            except Exception:
+                pass
+            return
 
         try:
             while self.running:
@@ -77,7 +98,10 @@ class LimitlessSportsFeeder(BaseFeeder):
                     print(f"[Feeder Limitless Sports] Error: {e}")
                 await asyncio.sleep(self.poll_interval)
         finally:
-            await http_client.close()
+            try:
+                await http_client.close()
+            except Exception:
+                pass
 
     async def _scan_sports_markets(self):
         global _last_sports_scan_time
@@ -103,6 +127,11 @@ class LimitlessSportsFeeder(BaseFeeder):
                 except Exception as pe:
                     if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
                         print(f"[Sports Feeder] Error fetching active markets: {pe}")
+                        try:
+                            from src.api.app import db
+                            db.log("ERROR", f"[Sports Feeder] Error fetching active markets: {pe}", "worker_3")
+                        except Exception:
+                            pass
 
                 print(f"[Sports Feeder] Fetched {len(markets)} active markets dynamically")
                 for m in markets:
@@ -132,8 +161,18 @@ class LimitlessSportsFeeder(BaseFeeder):
                     await asyncio.sleep(0.1)
 
                 print(f"[Sports Feeder] Scan complete: {len(markets)} markets checked")
+                try:
+                    from src.api.app import db
+                    db.log("INFO", f"[Sports Feeder] Scan complete: {len(markets)} markets checked", "worker_3")
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"[Sports] Error escaneando eventos dinámicos: {e}")
+                try:
+                    from src.api.app import db
+                    db.log("ERROR", f"[Sports] Error escaneando eventos dinámicos: {e}", "worker_3")
+                except Exception:
+                    pass
 
     async def _process_group_arb(self, group_slug, group_title, subs):
         from src.strategy.cross_platform_tracker import cross_platform_tracker
