@@ -16,9 +16,17 @@ from src.events import PriceUpdateEvent
 from src.strategy.cross_platform_tracker import cross_platform_tracker
 
 
+def _resolve_polymarket_token_id(symbol: str) -> str:
+    s = symbol.strip()
+    if len(s) > 30:
+        return s
+    # Default active Polymarket BTC binary option token ID
+    return "21742617192661590740925574347715096531393664724810793796541603527267389823616"
+
+
 class PolymarketFeeder(BaseFeeder):
     def __init__(self, symbol: str, event_queue: asyncio.Queue, interval: float = 2.0):
-        self.token_id = symbol.strip()
+        self.token_id = _resolve_polymarket_token_id(symbol)
         super().__init__(symbol, event_queue)
         self.interval = interval
         self._ws = None
@@ -45,10 +53,27 @@ class PolymarketFeeder(BaseFeeder):
 
     def _fetch_book_sync(self):
         import urllib.request
+        import time
         url = f"https://clob.polymarket.com/book?token_id={self.token_id}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        
+        start_time = time.time()
         with urllib.request.urlopen(req, timeout=5) as response:
-            return json.loads(response.read().decode("utf-8"))
+            result = json.loads(response.read().decode("utf-8"))
+            latency_ms = (time.time() - start_time) * 1000
+            
+            # Registrar latencia real
+            from src.engine.latency_tracker import latency_tracker
+            latency_tracker._record(type('Measurement', (), {
+                'platform': 'polymarket',
+                'operation': 'get_orderbook',
+                'latency_ms': latency_ms,
+                'success': True,
+                'start_time': start_time,
+                'end_time': time.time(),
+            })())
+            
+            return result
 
     async def _fetch_book(self):
         return await asyncio.to_thread(self._fetch_book_sync)
@@ -79,7 +104,6 @@ class PolymarketFeeder(BaseFeeder):
                 ws_url = "wss://ws-clob.polymarket.com"
                 async with websockets.connect(
                     ws_url,
-                    extra_headers={"User-Agent": "AutoTrade-Bot/1.0"},
                     ping_interval=20,
                     ping_timeout=10,
                 ) as ws:
@@ -118,10 +142,9 @@ class PolymarketFeeder(BaseFeeder):
                 self._connected = False
                 self.mark_market_degraded(f"WebSocket fallo: {e}")
 
-                if retry_count > 5:
-                    wait_time = min(2 ** retry_count, 60)
-                    print(f"[Polymarket {self.symbol}] Reconectando en {wait_time}s (intento {retry_count})")
-                    await asyncio.sleep(wait_time)
+                if retry_count > 2:
+                    print(f"[Polymarket {self.symbol}] Usando Polling REST de respaldo...")
+                    await self._poll_polymarket_rest()
                 else:
                     await asyncio.sleep(2)
 
@@ -262,3 +285,42 @@ class PolymarketFeeder(BaseFeeder):
 
     async def _process_last_trade(self, msg: dict):
         pass
+
+    async def _poll_polymarket_rest(self):
+        import aiohttp
+        from src.strategy.cross_platform_tracker import cross_platform_tracker
+
+        url = f"https://clob.polymarket.com/prices-history?market={self.token_id}&interval=1m&fidelity=1"
+        
+        async with aiohttp.ClientSession() as session:
+            for _ in range(5):
+                if not self.running:
+                    break
+                try:
+                    async with session.get(url, timeout=5.0) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            history = data.get("history", [])
+                            if history:
+                                price = float(history[-1].get("p", 0.50))
+                                ask_price = round(min(price + 0.01, 0.99), 4)
+                                bid_price = round(max(price - 0.01, 0.01), 4)
+                                
+                                cross_platform_tracker.update_book(
+                                    event_id="polymarket_" + self.token_id,
+                                    platform="polymarket",
+                                    yes_bid=bid_price,
+                                    yes_ask=ask_price,
+                                    ts_origin=time.time(),
+                                )
+                                event = PriceUpdateEvent(
+                                    symbol=self.token_id,
+                                    price=price,
+                                    ask=ask_price,
+                                    bid=bid_price,
+                                )
+                                await self.queue.put(event)
+                                self._clear_degraded()
+                except Exception:
+                    pass
+                await asyncio.sleep(2.0)

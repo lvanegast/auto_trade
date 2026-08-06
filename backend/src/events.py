@@ -7,8 +7,18 @@ class TradingEvent:
         # El timestamp pertenece al dato de mercado, no al navegador que lo
         # renderiza. Usar UTC evita mezclar horas locales/naive entre el
         # historial, el motor y los clientes WebSocket.
-        self.timestamp = timestamp or datetime.now(timezone.utc)
-        if self.timestamp.tzinfo is None:
+        if isinstance(timestamp, str):
+            try:
+                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                self.timestamp = dt
+            except Exception:
+                self.timestamp = datetime.now(timezone.utc)
+        elif isinstance(timestamp, (int, float)):
+            self.timestamp = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        else:
+            self.timestamp = timestamp or datetime.now(timezone.utc)
+        
+        if hasattr(self.timestamp, "tzinfo") and self.timestamp.tzinfo is None:
             self.timestamp = self.timestamp.replace(tzinfo=timezone.utc)
 
 
@@ -44,6 +54,8 @@ class SignalEvent(TradingEvent):
         reason: str = "",
         amount: float = None,
         position_id: int = None,
+        position_size_usd: float = None,
+        order_type: str = None,
     ):
         super().__init__("SIGNAL")
         self.symbol = symbol
@@ -52,10 +64,14 @@ class SignalEvent(TradingEvent):
         self.reason = reason
         self.amount = amount
         self.position_id = position_id
+        self.position_size_usd = position_size_usd
+        self.order_type = order_type  # 'GTC' for limit orders (maker=0% fee), None for market orders
 
     def __str__(self):
         amount_str = f" x {self.amount}" if self.amount is not None else ""
-        return f"[Signal] {self.symbol} -> {self.side}{amount_str} @ {self.price:.4f} (Reason: {self.reason})"
+        usd_str = f" (${self.position_size_usd:.2f})" if self.position_size_usd is not None else ""
+        order_str = f" [{self.order_type}]" if self.order_type else ""
+        return f"[Signal] {self.symbol} -> {self.side}{amount_str}{usd_str} @ {self.price:.4f}{order_str} (Reason: {self.reason})"
 
 
 class OrderEvent(TradingEvent):

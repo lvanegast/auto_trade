@@ -55,6 +55,7 @@
                     <span id="bot-status-text" class="status-lbl">Cargando...</span>
                 </div>
                 <div class="mode-badge" id="bot-mode">SIMULACIÓN</div>
+                <button id="info-strategies-btn" class="info-btn" title="Ver Estrategias de Workers">🛈</button>
             </div>
         </header>
 
@@ -670,8 +671,68 @@
 
         </div>
     </div>
-
+ 
+    <!-- MODAL DE ESTRATEGIAS ACTIVAS -->
+    <div id="strategies-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>💡 Estrategias de Arbitraje Activas</h3>
+                <button id="close-strategies-modal" class="close-modal-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <table class="strategies-table">
+                    <thead>
+                        <tr>
+                            <th>Worker</th>
+                            <th>Instrumento</th>
+                            <th>Arbitraje</th>
+                            <th>Lógica y Ejecución</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Worker 1</strong></td>
+                            <td>Intraday General</td>
+                            <td>Mismo Día (Intraday < 24h)</td>
+                            <td>Escanea cualquier opción binaria o evento en Limitless con cierre en el mismo día (mismo día / < 24h) para arbitraje $1 \times N$ a $1.00 USD.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Worker 2</strong></td>
+                            <td>Deportes & eSports</td>
+                            <td>Cross-Platform (Limitless ↔ Polymarket)</td>
+                            <td>Compara precios de eventos deportivos y eSports en vivo. Compra cada opción en la plataforma donde cotice más barata para armar la canasta de $1.00 USD. Candado Global Activo.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Worker 3</strong></td>
+                            <td>Eventos Multi-Opciones</td>
+                            <td>Intra-Plataforma Local (1xN)</td>
+                            <td>Compra todos los resultados de eventos de 3 o más opciones si suman < $0.98 USD. Protegido con Candado Global de Eventos en tiempo real.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Worker 4</strong></td>
+                            <td>Eventos Binarios</td>
+                            <td>Intra-Plataforma Local (1xN)</td>
+                            <td>Escanea eventos binarios (2 opciones YES/NO) de cualquier categoría para comprar canasta completa si suma < $0.98 USD. Candado Global Activo.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Worker 5</strong></td>
+                            <td>Bitcoin (BTC/USD)</td>
+                            <td>Oráculo Spot (Switch Desactivado en Server)</td>
+                            <td>Monitorea el feed HFT de Binance Spot. En servidores en la nube se desactiva con WORKER5_ENABLED=false para evitar bloqueos HTTP 451.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Worker 6</strong></td>
+                            <td>Bitcoin Intraday</td>
+                            <td>Cripto Intraday (5/15 min)</td>
+                            <td>Monitorea opciones binarias rápidas de Bitcoin (5 y 15 min) en Limitless. Micro-inversión de $1.00 USD y cooldown de 10 min por fallo.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+ 
     <script src="lightweight-charts.standalone.production.js"></script>
-    <script src="app.js?v=streaming-timestamps-1"></script>
+    <script src="app.js?v=pnl-guard-fix-3"></script>
 </body>
 </html>

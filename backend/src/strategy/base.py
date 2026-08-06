@@ -23,6 +23,7 @@ class BaseStrategy(ABC):
         if hasattr(event, "symbol") and event.symbol and self.symbol:
             # Si el evento no pertenece al símbolo de la estrategia ni es un par compatible, ignorarlo en el DataFrame
             is_valid = (event.symbol == self.symbol) or \
+                       (event.symbol == f"limitless_macro_{self.symbol.lower()}") or \
                        (self.symbol == "BTC/USD" and event.symbol in ["BTCUSDT", "BTC/USD"]) or \
                        (self.symbol in ["CORE-PCE-YOY-JUNE-2026-1784042260443", "SPORTS", "BTC/USD"] or "oracle_" in event.symbol or "SPORTS" in event.symbol)
             if not is_valid:
@@ -36,20 +37,16 @@ class BaseStrategy(ABC):
         signal = None
 
         if self.prices_df.empty:
-            # Primera barra: la agregamos y no evaluamos señal (falta historial)
-            new_row = pd.DataFrame(
-                [
-                    {
-                        "timestamp": bar_time,
-                        "open": event.price,
-                        "high": event.price,
-                        "low": event.price,
-                        "close": event.price,
-                        "price": event.price,
-                    }
-                ]
+            self.prices_df = pd.DataFrame(
+                {
+                    "timestamp": [bar_time],
+                    "open": [event.price],
+                    "high": [event.price],
+                    "low": [event.price],
+                    "close": [event.price],
+                    "price": [event.price],
+                }
             )
-            self.prices_df = pd.concat([self.prices_df, new_row], ignore_index=True)
         else:
             # Eliminar tzinfo para comparaciones limpias si es necesario (naive)
             if bar_time.tzinfo is not None:

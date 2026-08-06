@@ -1,23 +1,54 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 import asyncio
 import os
+import datetime
+import hmac
+from dotenv import load_dotenv
+load_dotenv()
 from src.database import DatabaseManager
 from src.engine import TradingEngine
 from src.events import SignalEvent
 from src.core.security import security_guard
 from src.websocket_server import ws_server, make_event
+from src.telegram_bot import telegram_bot
 
 # Inicializar Base de Datos
 db = DatabaseManager()
 security_guard.set_db(db)
+
+# Inicializar Telegram Bot
+from src.telegram_bot import telegram_bot
+if telegram_bot.enabled:
+    telegram_bot.send_alert("system", "Bot de AutoTrade iniciado en Railway")
 
 # Inicializar FastAPI
 app = FastAPI(
     title="Trading Bot API",
     description="API para el control y monitoreo del Bot de Trading",
 )
+
+_protected_mutations = {
+    "/api/start",
+    "/api/stop",
+    "/api/order",
+    "/api/order/cancel",
+    "/api/position/close",
+}
+
+
+@app.middleware("http")
+async def protect_remote_mutations(request: Request, call_next):
+    """Require a bearer token for state-changing control endpoints when configured."""
+    expected = os.getenv("API_AUTH_TOKEN", "")
+    if expected and request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path in _protected_mutations:
+        supplied = request.headers.get("authorization", "")
+        token = supplied.removeprefix("Bearer ").strip()
+        if not hmac.compare_digest(token, expected):
+            return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+    return await call_next(request)
 
 # Permitir CORS para desarrollo local de la UI
 app.add_middleware(
@@ -126,9 +157,11 @@ async def debug_tasks(worker_id: str = "worker_1"):
 
 
 @app.get("/api/status")
-async def get_status(worker_id: str = "worker_1"):
+async def get_status(worker_id: str = None):
     """Obtiene el estado actual de un worker específico, el portafolio, indicadores y precios."""
     try:
+        if not worker_id:
+            worker_id = "worker_1" if "worker_1" in engine.workers else (next(iter(engine.workers.keys())) if engine.workers else "worker_1")
         if worker_id not in engine.workers:
             raise HTTPException(
                 status_code=404, detail=f"Worker {worker_id} no encontrado"
@@ -137,25 +170,61 @@ async def get_status(worker_id: str = "worker_1"):
         worker = engine.workers[worker_id]
         is_running = worker.is_running
         portfolio = db.get_portfolio(worker_id=worker_id)
+        
+        # Real on-chain portfolio synchronization for Limitless / EVM workers when live execution is active
+        feeder_type = worker.feeder_type
+        execution_type = os.getenv("EXECUTION_TYPE", "simulation").lower()
+        private_key = os.getenv("LIMITLESS_PRIVATE_KEY")
+        
+        if feeder_type in ("limitless", "limitless_sports", "binary_arb", "maker_making") and execution_type != "simulation" and private_key:
+            try:
+                from web3 import Web3
+                from eth_account import Account
+                
+                wallet_address = Account.from_key(private_key).address
+                
+                # Fetch live USDC balance from blockchain using Web3 with RPC fallback (EVM Base Mainnet)
+                rpc_urls = [
+                    'https://mainnet.base.org',
+                    'https://base-mainnet.public.blastapi.io',
+                    'https://rpc.ankr.com/base'
+                ]
+                w3 = None
+                for url in rpc_urls:
+                    try:
+                        provider = Web3(Web3.HTTPProvider(url, request_kwargs={'timeout': 5}))
+                        if provider.is_connected():
+                            w3 = provider
+                            break
+                    except Exception:
+                        pass
+                
+                if w3:
+                    abi = [ { 'constant': True, 'inputs': [{'name': '_owner', 'type': 'address'}], 'name': 'balanceOf', 'outputs': [{'name': 'balance', 'type': 'uint256'}], 'payable': False, 'stateMutability': 'view', 'type': 'function' } ]
+                    usdc_contract = w3.eth.contract(address='0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', abi=abi)
+                    usdc_balance = float(usdc_contract.functions.balanceOf(wallet_address).call() / 10**6)
+                    db.update_portfolio(worker.quote_asset, usdc_balance, 0.0, worker_id=worker_id)
+                    portfolio = db.get_portfolio(worker_id=worker_id)
+            except Exception as pe:
+                print(f"[On-Chain Sync Status Error] {pe}")
 
         # Formatear balance
         balances = {item["asset"]: float(item["free_balance"]) for item in portfolio}
 
-        # Obtener último precio registrado en la estrategia
         last_price = 0.0
-        if len(worker.strategy.prices_df) > 0:
+        if hasattr(worker, "strategy") and worker.strategy and len(worker.strategy.prices_df) > 0:
             last_price = float(worker.strategy.prices_df.iloc[-1]["price"])
+        elif getattr(worker, "last_price", 0.0) > 0:
+            last_price = worker.last_price
+        elif getattr(worker, "last_ask", 0.0) > 0:
+            last_price = worker.last_ask
         else:
-            # Intentar usar el precio del último trade en la base de datos como fallback realista
             try:
                 last_trades = db.get_trades(limit=1, worker_id=worker_id)
                 if last_trades:
                     last_price = float(last_trades[0]["price"])
             except Exception:
                 pass
-
-            if last_price <= 0:
-                pass  # Don't inject fake prices — frontend handles 0 as "no data"
 
         # Calcular indicadores en tiempo real
         indicators = {"ema_short": 0.0, "ema_long": 0.0, "rsi": 0.0}
@@ -426,6 +495,82 @@ async def get_trades(limit: int = 50, worker_id: str = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/latency")
+async def get_latency_stats(worker_id: str = None, hours: int = 24):
+    """Retorna estadísticas de latencia de ejecución de órdenes (p50, p95, max por worker)."""
+    try:
+        stats = db.get_latency_stats(worker_id=worker_id, hours=hours)
+        formatted = []
+        for s in stats:
+            formatted.append({
+                "worker_id": s["worker_id"],
+                "total_trades": s["total_trades"],
+                "total": {
+                    "avg_ms": float(s["avg_total_ms"]) if s["avg_total_ms"] else None,
+                    "p50_ms": float(s["p50_total_ms"]) if s["p50_total_ms"] else None,
+                    "p95_ms": float(s["p95_total_ms"]) if s["p95_total_ms"] else None,
+                    "max_ms": float(s["max_total_ms"]) if s["max_total_ms"] else None,
+                    "min_ms": float(s["min_total_ms"]) if s["min_total_ms"] else None,
+                },
+                "queue": {
+                    "avg_ms": float(s["avg_queue_ms"]) if s["avg_queue_ms"] else None,
+                    "p50_ms": float(s["p50_queue_ms"]) if s["p50_queue_ms"] else None,
+                    "p95_ms": float(s["p95_queue_ms"]) if s["p95_queue_ms"] else None,
+                },
+                "strategy": {
+                    "avg_ms": float(s["avg_strategy_ms"]) if s["avg_strategy_ms"] else None,
+                    "p50_ms": float(s["p50_strategy_ms"]) if s["p50_strategy_ms"] else None,
+                    "p95_ms": float(s["p95_strategy_ms"]) if s["p95_strategy_ms"] else None,
+                },
+                "execution": {
+                    "avg_ms": float(s["avg_execution_ms"]) if s["avg_execution_ms"] else None,
+                    "p50_ms": float(s["p50_execution_ms"]) if s["p50_execution_ms"] else None,
+                    "p95_ms": float(s["p95_execution_ms"]) if s["p95_execution_ms"] else None,
+                },
+            })
+        return formatted
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/latency/realtime")
+async def get_realtime_latency():
+    """Retorna latencia REAL medida por los feeders (API calls a orderbooks)."""
+    try:
+        from src.engine.latency_tracker import latency_tracker
+        stats = latency_tracker.get_all_stats()
+        
+        # Formatear para el frontend
+        result = {}
+        for key, stat in stats.items():
+            platform, operation = key.split(":", 1)
+            if platform not in result:
+                result[platform] = {}
+            result[platform][operation] = {
+                "count": stat["count"],
+                "success_rate": round(stat["success_rate"] * 100, 1),
+                "p50_ms": round(stat["p50_ms"], 1),
+                "p95_ms": round(stat["p95_ms"], 1),
+                "p99_ms": round(stat["p99_ms"], 1),
+                "avg_ms": round(stat["avg_ms"], 1),
+                "min_ms": round(stat["min_ms"], 1),
+                "max_ms": round(stat["max_ms"], 1),
+            }
+        
+        # Agregar latencia reciente por plataforma
+        recent = {}
+        for platform in ["limitless", "kalshi", "polymarket"]:
+            recent[platform] = round(latency_tracker.get_recent_latency_ms(platform), 1)
+        
+        return {
+            "platforms": result,
+            "recent_ms": recent,
+            "total_measurements": sum(s["count"] for s in stats.values()),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/logs")
 async def get_logs(limit: int = 50, worker_id: str = None):
     """Retorna los últimos registros de logs."""
@@ -446,9 +591,83 @@ async def get_logs(limit: int = 50, worker_id: str = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/snapshots")
+async def get_snapshots(worker_id: str = None, limit: int = 100, viable_only: bool = False):
+    """Retorna los últimos snapshots de oportunidades registradas por los workers."""
+    try:
+        snapshots = db.get_edge_snapshots(worker_id=worker_id, limit=limit, viable_only=viable_only)
+        formatted = []
+        for s in snapshots:
+            formatted.append(
+                {
+                    "id": s["id"],
+                    "timestamp": _format_utc_iso(s["timestamp"]) if s.get("timestamp") else None,
+                    "worker_id": s.get("worker_id", "worker_2"),
+                    "platform_a": s.get("platform_a"),
+                    "platform_b": s.get("platform_b"),
+                    "event_id": s.get("event_id"),
+                    "event_title": s.get("event_title"),
+                    "edge_pct": float(s.get("edge_pct") or 0.0),
+                    "gross_edge_pct": float(s.get("gross_edge_pct") or 0.0),
+                    "platform_a_yes_ask": float(s.get("platform_a_yes_ask") or 0.0) if s.get("platform_a_yes_ask") is not None else None,
+                    "platform_b_no_ask": float(s.get("platform_b_no_ask") or 0.0) if s.get("platform_b_no_ask") is not None else None,
+                    "liquidity_verified": bool(s.get("liquidity_verified")),
+                    "viable": bool(s.get("viable")),
+                }
+            )
+        return {"count": len(formatted), "snapshots": formatted}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/workers/evaluation")
+async def get_workers_evaluation():
+    """Retorna informe de evaluación de rendimiento y oportunidades escaneadas por cada worker."""
+    try:
+        evaluations = {}
+        for wid, worker in engine.workers.items():
+            snaps = db.get_edge_snapshots(worker_id=wid, limit=500)
+            trades = db.get_trades(worker_id=wid, limit=500)
+            
+            total_snaps = len(snaps)
+            viable_snaps = [s for s in snaps if s.get("viable")]
+            avg_edge = (sum(float(s.get("edge_pct") or 0.0) for s in snaps) / total_snaps) if total_snaps > 0 else 0.0
+            
+            evaluations[wid] = {
+                "worker_id": wid,
+                "name": worker.name,
+                "feeder_type": worker.feeder_type,
+                "is_running": worker.is_running,
+                "opportunities_scanned": total_snaps,
+                "viable_opportunities": len(viable_snaps),
+                "avg_edge_pct": round(avg_edge * 100, 2),
+                "total_executed_trades": len(trades),
+            }
+        return {"workers": evaluations}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/start")
-async def start_bot(worker_id: str = None):
-    """Inicia el bot de trading para un worker o para todos."""
+async def start_bot(request: Request, worker_id: str = None):
+    """Inicia el bot de trading para un worker o para todos.
+    
+    GUARDRAIL: Requiere header X-Confirm-Action: true para ejecutar.
+    Esto previene acciones accidentales o automáticas.
+    """
+    # GUARDRAIL: Verificar confirmación explícita
+    confirm = request.headers.get("X-Confirm-Action", "").lower()
+    if confirm != "true":
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Acción requiere confirmación explícita",
+                "message": "Agrega header X-Confirm-Action: true para ejecutar esta acción",
+                "action_requested": f"start worker {worker_id or 'all'}",
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
+        )
+    
     if worker_id:
         if worker_id not in engine.workers:
             raise HTTPException(
@@ -465,8 +684,32 @@ async def start_bot(worker_id: str = None):
 
 
 @app.post("/api/stop")
-async def stop_bot(worker_id: str = None):
-    """Detiene el bot de trading para un worker o para todos."""
+async def stop_bot(request: Request, worker_id: str = None):
+    """Detiene el bot de trading para un worker o para todos.
+    
+    GUARDRAIL: Requiere header X-Confirm-Action: true para ejecutar.
+    Esto previene acciones accidentales o automáticas.
+    
+    ACCIONES AUTOMÁTICAS:
+    - Cancela todas las órdenes pendientes en Limitless
+    - Reporta posiciones abiertas (NO las cierra automáticamente)
+    
+    ACCIONES QUE REQUIEREN CONFIRMACIÓN:
+    - Cerrar posiciones abiertas (decisión con impacto en P&L)
+    """
+    # GUARDRAIL: Verificar confirmación explícita
+    confirm = request.headers.get("X-Confirm-Action", "").lower()
+    if confirm != "true":
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Acción requiere confirmación explícita",
+                "message": "Agrega header X-Confirm-Action: true para ejecutar esta acción",
+                "action_requested": f"stop worker {worker_id or 'all'}",
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
+        )
+    
     if worker_id:
         if worker_id not in engine.workers:
             raise HTTPException(
@@ -475,16 +718,43 @@ async def stop_bot(worker_id: str = None):
         worker = engine.workers[worker_id]
         if not worker.is_running:
             return {"message": f"El worker {worker_id} ya está apagado."}
-        await engine.stop(worker_id)
-        return {"message": f"Worker {worker_id} detenido exitosamente."}
+        result = await engine.stop(worker_id)
+        return {
+            "message": f"Worker {worker_id} detenido exitosamente.",
+            "orders_cancelled": result.get("orders_cancelled", 0),
+            "open_positions": result.get("open_positions", 0),
+            "open_positions_details": result.get("open_positions_details", []),
+        }
     else:
-        await engine.stop()
-        return {"message": "Todos los workers detenidos exitosamente."}
+        result = await engine.stop()
+        return {
+            "message": "Todos los workers detenidos exitosamente.",
+            "orders_cancelled": result.get("orders_cancelled", 0),
+            "open_positions": result.get("open_positions", 0),
+            "open_positions_details": result.get("open_positions_details", []),
+        }
 
 
 @app.post("/api/order")
-async def place_manual_order(body: dict):
-    """Envía una orden de compra o venta manual para un worker."""
+async def place_manual_order(request: Request, body: dict):
+    """Envía una orden de compra o venta manual para un worker.
+    
+    GUARDRAIL: Requiere header X-Confirm-Action: true para ejecutar.
+    Esto previene acciones accidentales o automáticas.
+    """
+    # GUARDRAIL: Verificar confirmación explícita
+    confirm = request.headers.get("X-Confirm-Action", "").lower()
+    if confirm != "true":
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Acción requiere confirmación explícita",
+                "message": "Agrega header X-Confirm-Action: true para ejecutar esta acción",
+                "action_requested": f"place order for worker {body.get('worker_id', 'worker_1')}",
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
+        )
+    
     worker_id = body.get("worker_id", "worker_1")
     side = body.get("side", "BUY").upper()
     qty = body.get("qty") or body.get("amount")
@@ -1254,6 +1524,106 @@ async def export_trades_csv(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=trades_export.csv"},
     )
+
+
+# ==================== TELEGRAM COMMANDS ====================
+
+@app.get("/api/telegram/status")
+async def telegram_status():
+    """Send worker status to Telegram."""
+    if not telegram_bot.enabled:
+        return {"error": "Telegram bot not configured"}
+    
+    workers = []
+    for wid, worker in engine.workers.items():
+        workers.append({
+            "name": worker.name,
+            "is_running": worker.is_running,
+            "symbol": worker.symbol,
+        })
+    
+    telegram_bot.send_worker_status(workers)
+    return {"status": "sent", "workers": len(workers)}
+
+
+@app.get("/api/telegram/balance")
+async def telegram_balance():
+    """Send balance to Telegram."""
+    if not telegram_bot.enabled:
+        return {"error": "Telegram bot not configured"}
+    
+    # For now, send placeholder
+    telegram_bot.send_balance({"limitless": 0, "kalshi": 0, "total": 0})
+    return {"status": "sent"}
+
+
+@app.get("/api/telegram/positions")
+async def telegram_positions():
+    """Send open positions to Telegram."""
+    if not telegram_bot.enabled:
+        return {"error": "Telegram bot not configured"}
+    
+    positions = db.get_open_positions(worker_id=None)
+    telegram_bot.send_positions(positions)
+    return {"status": "sent", "positions": len(positions)}
+
+
+@app.get("/api/telegram/report")
+async def telegram_report():
+    """Send daily report to Telegram."""
+    if not telegram_bot.enabled:
+        return {"error": "Telegram bot not configured"}
+    
+    # Get stats from database
+    stats = {
+        "opportunities": 0,
+        "trades": 0,
+        "pnl": 0,
+        "avg_edge": 0,
+        "active_workers": sum(1 for w in engine.workers.values() if w.is_running),
+        "total_workers": len(engine.workers),
+        "errors": 0,
+    }
+    
+    telegram_bot.send_daily_report(stats)
+    return {"status": "sent"}
+
+
+@app.get("/api/telegram/test")
+async def telegram_test():
+    """Send test message to Telegram."""
+    if not telegram_bot.enabled:
+        return {"error": "Telegram bot not configured"}
+    
+    result = telegram_bot.send_alert("info", "Test message from AutoTrade bot")
+    return {"status": "sent" if result else "failed"}
+
+
+@app.get("/api/opportunities/tracking")
+async def get_opportunity_tracking():
+    """Get all tracked opportunities with their resolution status."""
+    opportunities = db.get_pending_opportunities()
+    return {
+        "pending": len(opportunities),
+        "opportunities": [
+            {
+                "id": o[0],
+                "event_id": o[1],
+                "event_title": o[2],
+                "edge_pct": o[3],
+                "entry_price": o[4],
+                "timestamp": str(o[6]) if o[6] else None,
+            }
+            for o in opportunities
+        ]
+    }
+
+
+@app.post("/api/opportunities/{opp_id}/resolve")
+async def resolve_opportunity(opp_id: int, resolution: str, actual_profit: float = 0.0):
+    """Mark an opportunity as resolved (won/lost) with actual profit."""
+    db.update_opportunity_resolution(opp_id, resolution, actual_profit)
+    return {"status": "resolved", "id": opp_id, "resolution": resolution, "profit": actual_profit}
 
 
 # Servir archivos estáticos del frontend en la raíz (MUST BE LAST)

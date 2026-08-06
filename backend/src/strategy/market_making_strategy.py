@@ -31,7 +31,7 @@ class MarketMakingStrategy(BaseStrategy):
         min_spread_pct: float = 0.01,
         max_inventory: int = 5,
         inventory_skew_pct: float = 0.005,
-        cooldown_seconds: float = 10.0,
+        cooldown_seconds: float = 30.0,
         min_edge_pct: float = 0.005,
         db=None,
         worker_id: str = "worker_4",

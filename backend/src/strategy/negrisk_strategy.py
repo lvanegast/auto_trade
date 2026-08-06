@@ -78,14 +78,14 @@ class NegRiskMultiOutcomeStrategy(BaseStrategy):
         negrisk_edge = 1.0 - total_yes_cost
         self.edge = negrisk_edge
 
-        if negrisk_edge >= self.min_negrisk_edge_pct:
+        if abs(negrisk_edge) >= self.min_negrisk_edge_pct:
             from src.engine.friction_guard import friction_guard
             is_profitable, net_edge, _reason, _details = friction_guard.validate_arbitrage_profitability(
-                "limitless", "limitless", negrisk_edge, self.position_size_usd
+                "limitless", "limitless", abs(negrisk_edge), self.position_size_usd
             )
 
             if is_profitable:
-                expected_profit = negrisk_edge * self.position_size_usd
+                expected_profit = abs(negrisk_edge) * self.position_size_usd
                 title = edge_data.get("title", event.symbol)
 
                 self._arb_groups[event_id] = {
@@ -106,13 +106,18 @@ class NegRiskMultiOutcomeStrategy(BaseStrategy):
                         self.worker_id,
                     )
 
+                arb_type = "YES" if negrisk_edge > 0 else "NO"
                 for out in outcomes:
+                    if negrisk_edge > 0:
+                        token_price = out.get("yes_price", 0.10)
+                    else:
+                        token_price = out.get("no_price", round(1.0 - out.get("yes_price", 0.50), 6))
                     self._pending_signals.append(
                         SignalEvent(
                             symbol=out.get("slug", self.symbol),
                             side="BUY",
-                            price=out.get("yes_price", 0.10),
-                            reason=f"NegRisk Leg: {out.get('title')}",
+                            price=token_price,
+                            reason=f"NegRisk {arb_type} Leg: {out.get('title')}",
                             amount=self.position_size_usd / outcomes_count,
                             position_id=None,
                         )

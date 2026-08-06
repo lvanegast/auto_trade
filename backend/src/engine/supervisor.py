@@ -3,15 +3,16 @@ import os
 import requests
 import uuid
 import datetime
+import time
 
 # Load .env from project root before anything else
 from dotenv import load_dotenv as _ld
 _load_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 _ld(os.path.join(_load_dir, ".env"), override=True)
 
-# Forzar aceleración a 1.0 segundo para escaneo de Alta Frecuencia (HFT) en tiempo real
-os.environ["SPORTS_POLL_INTERVAL"] = "1.0"
-os.environ["ORACLE_POLL_INTERVAL"] = "1.0"
+# Forzar aceleración a 5.0 segundos para evitar Rate Limits de Cloudflare en la API de Limitless
+os.environ["SPORTS_POLL_INTERVAL"] = "5.0"
+os.environ["ORACLE_POLL_INTERVAL"] = "5.0"
 from src.database import DatabaseManager
 from src.events import SignalEvent
 from src.strategy.lead_lag_arbitrage import LeadLagArbitrageStrategy
@@ -25,6 +26,7 @@ from src.feeders.binance_feeder import BinanceFeeder
 from src.feeders.polymarket_feeder import PolymarketFeeder
 from src.feeders.limitless_feeder import LimitlessFeeder
 from src.feeders.limitless_sports_feeder import LimitlessSportsFeeder
+from src.feeders.limitless_ws_feeder import LimitlessWebSocketFeeder
 from src.feeders.binary_arb_feeder import LimitlessOracleFeeder
 from src.strategy.sports_arb import SportsArbitrageStrategy
 from src.strategy.binary_arb_strategy import OracleMomentumStrategy
@@ -87,7 +89,7 @@ class TradingWorker:
                 half_spread_pct=float(os.getenv("MM_HALF_SPREAD_PCT", "0.02")),
                 min_spread_pct=float(os.getenv("MM_MIN_SPREAD_PCT", "0.01")),
                 max_inventory=int(os.getenv("MM_MAX_INVENTORY", "5")),
-                cooldown_seconds=float(os.getenv("MM_COOLDOWN_SECONDS", "10.0")),
+                cooldown_seconds=float(os.getenv("MM_COOLDOWN_SECONDS", "30.0")),
                 min_edge_pct=float(os.getenv("MM_MIN_EDGE_PCT", "0.005")),
                 db=self.db,
                 worker_id=self.worker_id,
@@ -111,8 +113,16 @@ class TradingWorker:
             self.feeder = PolymarketFeeder(self.symbol, self.queue)
         elif self.feeder_type == "limitless":
             self.feeder = LimitlessFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "limitless_ws":
+            self.feeder = LimitlessWebSocketFeeder(self.symbol, self.queue)
         elif self.feeder_type == "limitless_sports":
             self.feeder = LimitlessSportsFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "resolution_sniper":
+            from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
+            self.feeder = ResolutionSniperFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "multi_platform":
+            from src.feeders.multi_platform_feeder import MultiPlatformFeeder
+            self.feeder = MultiPlatformFeeder(self.symbol, self.queue)
         elif self.feeder_type == "binary_arb":
             self.feeder = LimitlessOracleFeeder(self.symbol, self.queue)
         elif self.feeder_type == "maker_making":
@@ -348,7 +358,7 @@ class TradingWorker:
 
     async def stop(self):
         if not self.is_running:
-            return
+            return {"orders_cancelled": 0, "open_positions": 0, "details": []}
 
         self.is_running = False
         self.db.log("INFO", f"Deteniendo Worker '{self.name}'...", self.worker_id)
@@ -380,6 +390,65 @@ class TradingWorker:
         self.feeder_task = None
         self.engine_task = None
         self.sync_task = None
+
+        # Cancelar órdenes pendientes en Limitless
+        orders_cancelled = 0
+        if self.feeder_type in ("limitless", "limitless_sports", "limitless_ws"):
+            try:
+                from limitless_sdk.api import HttpClient
+                from limitless_sdk.markets import MarketFetcher
+                from limitless_sdk.types.api_tokens import HMACCredentials
+
+                api_key = os.getenv("LIMITLESS_API_KEY")
+                api_secret = os.getenv("LIMITLESS_API_SECRET")
+
+                if api_key and api_secret:
+                    async with HttpClient() as http:
+                        http.set_hmac_credentials(HMACCredentials(token_id=api_key, secret=api_secret))
+                        fetcher = MarketFetcher(http)
+
+                        # Cancel all orders for current market
+                        # Skip if symbol is not a valid market slug (e.g., "SPORTS", "BTCUSDT")
+                        if self.symbol and not self.symbol.isupper():
+                            try:
+                                market = await fetcher.get_market(self.symbol)
+                                if market:
+                                    from limitless_sdk.orders import OrderClient
+                                    from eth_account import Account
+                                    private_key = os.getenv("LIMITLESS_PRIVATE_KEY")
+                                    if private_key:
+                                        wallet = Account.from_key(private_key)
+                                        order_client = OrderClient(http_client=http, wallet=wallet, market_fetcher=fetcher)
+                                        result = await order_client.cancel_all(self.symbol)
+                                        orders_cancelled = 1  # cancel_all returns void, assume success
+                                        self.db.log("INFO", f"[KillSwitch] Órdenes canceladas en {self.symbol}", self.worker_id)
+                            except Exception as e:
+                                self.db.log("WARNING", f"[KillSwitch] Error cancelando órdenes: {e}", self.worker_id)
+            except Exception as e:
+                self.db.log("WARNING", f"[KillSwitch] Error al conectar con Limitless: {e}", self.worker_id)
+
+        # Contar posiciones abiertas
+        open_positions = []
+        try:
+            positions = self.db.get_open_positions(worker_id=self.worker_id)
+            open_positions = positions if positions else []
+        except:
+            pass
+
+        # Log CRITICAL si hay posiciones abiertas después de detener
+        if open_positions:
+            self.db.log(
+                "CRITICAL",
+                f"[KillSwitch] Worker '{self.name}' detenido con {len(open_positions)} posiciones abiertas. "
+                f"Requiere decisión manual para cerrar.",
+                self.worker_id,
+            )
+
+        return {
+            "orders_cancelled": orders_cancelled,
+            "open_positions": len(open_positions),
+            "open_positions_details": open_positions,
+        }
 
     async def _periodic_sync(self):
         print(f"[Worker {self.worker_id}] Tarea de sincronización periódica iniciada.")
@@ -418,7 +487,8 @@ class TradingWorker:
                     ):
                         await self._sync_kalshi_portfolio()
                     elif self.feeder_type in ("limitless", "limitless_sports"):
-                        pass  # Limitless: on-chain, no sync needed in simulation
+                        await self._resolve_expired_positions_simulated()
+                        await self._check_market_resolutions()
                 except Exception as e:
                     print(f"[Sync Error] Error en sincronización periódica: {e}")
 
@@ -442,16 +512,224 @@ class TradingWorker:
                 f"[Worker {self.worker_id}] Tarea de sincronización periódica cancelada."
             )
 
+    async def _resolve_expired_positions_simulated(self):
+        if self.execution_type != "simulation":
+            return
+        
+        open_pos = self.db.get_open_positions(worker_id=self.worker_id) or []
+        if not open_pos:
+            return
+
+        import re
+        from limitless_sdk.api import HttpClient
+        from limitless_sdk.markets import MarketFetcher
+
+        client = None
+        market_fetcher = None
+
+        for p in open_pos:
+            if not p or not isinstance(p, dict):
+                continue
+            symbol = p.get("symbol", "")
+            pid = p.get("id")
+            entry_price = float(p.get("entry_price", 0.0))
+            amount = float(p.get("amount", 0.0))
+            side = p.get("side", "BUY")
+
+            # Extract Unix expiration timestamp
+            ts_matches = re.findall(r'\d{10,13}', symbol)
+            if not ts_matches:
+                continue
+
+            ts_val = int(ts_matches[0])
+            match_start_s = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
+
+            # Determine duration
+            duration = 900
+            if "5-min" in symbol:
+                duration = 300
+            elif "15-min" in symbol:
+                duration = 900
+            elif "hourly" in symbol:
+                duration = 3600
+            elif "daily" in symbol:
+                duration = 86400
+            elif "sport" in symbol or "esport" in symbol:
+                duration = 10800
+
+            # If the contract is in the past in the real world
+            if time.time() > match_start_s + duration:
+                # Lazy-load http client
+                if not client:
+                    client = HttpClient()
+                    market_fetcher = MarketFetcher(client)
+
+                # Extract market slug
+                slug = symbol.replace("limitless_crypto_", "").replace("limitless_sport_", "")
+                # Strip outcome suffix (e.g. _YES, _NO or sports details) by truncating at the underscore after the first timestamp
+                ts_match = re.search(r'\d{10,13}', slug)
+                if ts_match:
+                    ts_end = ts_match.end()
+                    if ts_end < len(slug) and slug[ts_end] == '_':
+                        slug = slug[:ts_end]
+
+                try:
+                    market = await market_fetcher.get_market(slug)
+                    if getattr(market, "status", None) == "RESOLVED" and getattr(market, "prices", None):
+                        yes_val = float(market.prices[0])
+                        no_val = float(market.prices[1])
+
+                        # YES won if YES price is 1.0; NO won if NO price is 1.0 (checking if symbol is YES or NO outcome)
+                        is_no_outcome = symbol.endswith("_NO") or "no-" in symbol.lower()
+                        if is_no_outcome:
+                            won = (side == "BUY" and no_val == 1.0) or (side == "SELL" and yes_val == 1.0)
+                        else:
+                            won = (side == "BUY" and yes_val == 1.0) or (side == "SELL" and no_val == 1.0)
+                        exit_price = 1.0 if won else 0.0
+                        payout = amount * exit_price
+
+                        # Close the position in DB with actual pnl
+                        self.db.close_position(pid, exit_price, exit_reason="Oracle Expiration Settlement", worker_id=self.worker_id)
+
+                        # Credit payout back to portfolio
+                        curr_usd = 0.0
+                        port = self.db.get_portfolio(worker_id=self.worker_id) or []
+                        for row in port:
+                            if row.get("asset", "").upper() == self.quote_asset.upper():
+                                curr_usd = float(row.get("free_balance", 0.0))
+                                break
+                        
+                        new_usd = curr_usd + payout
+                        self._update_db_portfolio(self.quote_asset, new_usd)
+                        
+                        self.db.log(
+                            "INFO",
+                            f"[Settlement] 🏁 Contrato {slug} RESUELTO. Payout: ${payout:.2f} USD (Resultado: {'GANADO' if won else 'PERDIDO'}). Nuevo saldo: ${new_usd:.2f} USD",
+                            self.worker_id
+                        )
+                except Exception as ex:
+                    print(f"[Settlement Error] Error resolving position {symbol}: {ex}")
+
+        if client:
+            await client.close()
+
+    async def _check_market_resolutions(self):
+        """
+        Verifica mercados abiertos contra la API de Limitless para detectar resoluciones reales.
+        Usa ResolutionMonitor + PnLCalculator para calcular P&L por canasta.
+        """
+        if self.execution_type == "simulation":
+            return
+
+        open_pos = self.db.get_open_positions(worker_id=self.worker_id) or []
+        if not open_pos:
+            return
+
+        from src.engine.resolution_monitor import ResolutionMonitor
+        from src.engine.pnl_calculator import PnLCalculator
+
+        monitor = ResolutionMonitor(self.db, self.worker_id)
+        calculator = PnLCalculator(self.db)
+
+        try:
+            resolved_markets = await monitor.check_open_positions()
+
+            for resolved in resolved_markets:
+                # Agrupar posiciones por este market
+                market_positions = [
+                    p for p in open_pos
+                    if resolved.market_slug in (p.get("symbol", "") or "")
+                ]
+
+                if not market_positions:
+                    continue
+
+                # Determinar si ganamos o perdimos
+                winning_outcome = resolved.winning_outcome
+
+                for pos in market_positions:
+                    symbol = pos.get("symbol", "")
+                    pid = pos.get("id")
+                    side = pos.get("side", "BUY")
+                    amount = float(pos.get("amount", 0) or 0)
+
+                    # Extraer token del symbol
+                    is_no = symbol.upper().endswith("_NO")
+                    pos_outcome = "NO" if is_no else "YES"
+
+                    # Determinar si esta pata ganó
+                    won = (pos_outcome == winning_outcome)
+
+                    if won:
+                        # Redeem: shares × $1.00
+                        exit_price = 1.0
+                        payout = amount * exit_price
+
+                        self.db.log(
+                            "INFO",
+                            f"[Resolution] 🏁 {symbol} RESUELTO → GANAMOS. "
+                            f"Payout: ${payout:.4f} ({amount:.4f} shares × $1.00)",
+                            self.worker_id,
+                        )
+                    else:
+                        # Perdimos: shares valen $0
+                        exit_price = 0.0
+                        payout = 0.0
+
+                        self.db.log(
+                            "INFO",
+                            f"[Resolution] ❌ {symbol} RESUELTO → PERDIMOS. "
+                            f"Shares valen $0.00",
+                            self.worker_id,
+                        )
+
+                    # Calcular P&L de la canasta completa
+                    if pid:
+                        basket_pnl = calculator.calculate_basket_pnl(
+                            position_id=pid,
+                            winning_outcome=winning_outcome,
+                            winning_shares=amount if won else 0,
+                        )
+
+                        # Registrar resolución
+                        calculator.record_resolution(
+                            basket_pnl=basket_pnl,
+                            exit_reason="market_resolved",
+                        )
+
+                        # Actualizar balance
+                        if payout > 0:
+                            curr_usd = 0.0
+                            port = self.db.get_portfolio(worker_id=self.worker_id) or []
+                            for row in port:
+                                if row.get("asset", "").upper() == self.quote_asset.upper():
+                                    curr_usd = float(row.get("free_balance", 0.0))
+                                    break
+                            new_usd = curr_usd + payout
+                            self._update_db_portfolio(self.quote_asset, new_usd)
+
+        except Exception as e:
+            self.db.log(
+                "WARNING",
+                f"[Resolution] Error verificando resoluciones: {e}",
+                self.worker_id,
+            )
+
     async def _event_loop(self):
         print(f"[Worker {self.worker_id}] Loop de eventos iniciado para {self.symbol}.")
         try:
             while self.is_running:
                 event = await self.queue.get()
+                _t_dequeue = time.time()
                 try:
                     if event.event_type == "PRICE_UPDATE":
+                        if event.symbol and event.symbol != self.symbol:
+                            self.symbol = event.symbol
                         self.last_bid = event.bid
                         self.last_ask = event.ask
+                        _t_strategy_start = time.time()
                         signal = self.strategy.on_price_update(event)
+                        _strategy_latency_ms = (time.time() - _t_strategy_start) * 1000
                         # Broadcast del precio a clientes WebSocket (no bloqueante)
                         if ws_server.has_clients(self.worker_id):
                             await ws_server.broadcast(
@@ -469,6 +747,9 @@ class TradingWorker:
                                         "chart_price": event.chart_price,
                                         "bid": event.bid,
                                         "ask": event.ask,
+                                        "kalshi_price": self.strategy._tracker.get_book(self.strategy.event_id, "kalshi").get("yes_ask") if hasattr(self.strategy, "_tracker") and getattr(self.strategy, "event_id", None) and self.strategy._tracker.get_book(self.strategy.event_id, "kalshi") else None,
+                                        "polymarket_price": self.strategy._tracker.get_book(self.strategy.event_id, "polymarket").get("yes_ask") if hasattr(self.strategy, "_tracker") and getattr(self.strategy, "event_id", None) and self.strategy._tracker.get_book(self.strategy.event_id, "polymarket") else None,
+                                        "limitless_price": self.strategy._tracker.get_book(self.strategy.event_id, "limitless").get("yes_ask") if hasattr(self.strategy, "_tracker") and getattr(self.strategy, "event_id", None) and self.strategy._tracker.get_book(self.strategy.event_id, "limitless") else None,
                                         "teorical_probability": getattr(
                                             self.strategy, "teorical_probability", 0.0
                                         ),
@@ -497,6 +778,11 @@ class TradingWorker:
                                 self.db.log("WARNING", f"[CIRCUIT BREAKER DETENIDO] Orden cancelada: {circuit_breaker.tripped_reason}", self.worker_id)
                                 continue
 
+                            # Attach latency metadata to signal for _execute_order
+                            _event_ts = event.timestamp.timestamp() if hasattr(event.timestamp, 'timestamp') else time.time()
+                            signal._queue_latency_ms = (_t_dequeue - _event_ts) * 1000
+                            signal._strategy_latency_ms = _strategy_latency_ms
+
                             # Execute this signal immediately
                             await self._execute_order(signal)
                             if ws_server.has_clients(self.worker_id):
@@ -512,24 +798,169 @@ class TradingWorker:
                                         },
                                     ),
                                 )
-                            # Batch: execute all pending 1×N signals in same tick
+                            # Batch: execute all pending 1×N signals with fill protection
                             pending = getattr(self.strategy, "_pending_signals", [])
-                            while pending:
-                                next_signal = pending.pop(0)
-                                await self._execute_order(next_signal)
-                                if ws_server.has_clients(self.worker_id):
-                                    await ws_server.broadcast(
+                            if pending:
+                                from src.engine.fill_guard import FillGuard
+                                
+                                # Collect all signals (first already executed + pending)
+                                all_signals = [signal] + list(pending)
+                                total_spend = sum(
+                                    getattr(s, 'position_size_usd', 0) or 0 
+                                    for s in all_signals
+                                )
+                                
+                                # PREVENTION: Verify balance covers all legs + gas
+                                balances = {
+                                    item["asset"]: float(item["free_balance"])
+                                    for item in self.db.get_portfolio(self.worker_id)
+                                }
+                                quote_balance = balances.get(self.quote_asset, 0.0)
+                                
+                                fill_guard = FillGuard(self.db, self.worker_id)
+                                can_proceed, reason = fill_guard.validate_balance_for_arb(
+                                    quote_balance, total_spend, 
+                                    gas_per_leg=0.005, num_legs=len(all_signals)
+                                )
+                                
+                                if not can_proceed:
+                                    self.db.log(
+                                        "WARNING",
+                                        f"[FillGuard] Arb cancelado: {reason}",
                                         self.worker_id,
-                                        make_event(
-                                            "trade_update",
-                                            {
-                                                "symbol": next_signal.symbol,
-                                                "side": next_signal.side,
-                                                "price": next_signal.price,
-                                                "reason": next_signal.reason,
-                                            },
-                                        ),
                                     )
+                                    # Drain pending signals without executing
+                                    while pending:
+                                        pending.pop(0)
+                                else:
+                                    # Execute remaining legs with recovery
+                                    async def execute_fn(sig):
+                                        try:
+                                            await self._execute_order(sig)
+                                            return True, None, None
+                                        except Exception as e:
+                                            return False, e, None
+                                    
+                                    async def sell_fn(sig):
+                                        try:
+                                            await self._execute_order(sig)
+                                            return True
+                                        except:
+                                            return False
+                                    
+                                    # Execute pending signals (first already done)
+                                    remaining = list(pending)
+                                    while pending:
+                                        pending.pop(0)
+                                    
+                                    for next_signal in remaining:
+                                        next_signal._queue_latency_ms = signal._queue_latency_ms
+                                        next_signal._strategy_latency_ms = 0.0
+                                        
+                                        success, error, _ = await execute_fn(next_signal)
+                                        
+                                        if success:
+                                            if ws_server.has_clients(self.worker_id):
+                                                await ws_server.broadcast(
+                                                    self.worker_id,
+                                                    make_event(
+                                                        "trade_update",
+                                                        {
+                                                            "symbol": next_signal.symbol,
+                                                            "side": next_signal.side,
+                                                            "price": next_signal.price,
+                                                            "reason": next_signal.reason,
+                                                        },
+                                                    ),
+                                                )
+                                        else:
+                                            # Classify error and handle recovery
+                                            category = fill_guard.classify_error(error)
+                                            
+                                            if category.value in ("balance", "market"):
+                                                # No retry - sell immediately
+                                                self.db.log(
+                                                    "ERROR",
+                                                    f"[FillGuard] Pata falló ({category.value}): {error}. "
+                                                    f"Vendiendo pata 1 inmediatamente.",
+                                                    self.worker_id,
+                                                )
+                                                sell_signal = SignalEvent(
+                                                    symbol=signal.symbol,
+                                                    side="SELL",
+                                                    price=signal.price,
+                                                    reason=f"Emergency sell: fill_partial_{category.value}",
+                                                    position_size_usd=getattr(signal, 'position_size_usd', None),
+                                                )
+                                                await self._execute_order(sell_signal)
+                                                break
+                                            
+                                            elif category.value == "network":
+                                                # Retry with backoff
+                                                retry_success = False
+                                                for attempt, delay in enumerate([1.0, 2.0, 4.0]):
+                                                    self.db.log(
+                                                        "WARNING",
+                                                        f"[FillGuard] Reintento {attempt+1}/3 para pata (esperando {delay}s)...",
+                                                        self.worker_id,
+                                                    )
+                                                    await asyncio.sleep(delay)
+                                                    
+                                                    success2, error2, _ = await execute_fn(next_signal)
+                                                    if success2:
+                                                        retry_success = True
+                                                        if ws_server.has_clients(self.worker_id):
+                                                            await ws_server.broadcast(
+                                                                self.worker_id,
+                                                                make_event(
+                                                                    "trade_update",
+                                                                    {
+                                                                        "symbol": next_signal.symbol,
+                                                                        "side": next_signal.side,
+                                                                        "price": next_signal.price,
+                                                                        "reason": next_signal.reason,
+                                                                    },
+                                                                ),
+                                                            )
+                                                        break
+                                                    
+                                                    # If error changed to balance/market, stop retrying
+                                                    cat2 = fill_guard.classify_error(error2)
+                                                    if cat2.value in ("balance", "market"):
+                                                        break
+                                                
+                                                if not retry_success:
+                                                    self.db.log(
+                                                        "ERROR",
+                                                        f"[FillGuard] Reintentos agotados. Vendiendo pata 1.",
+                                                        self.worker_id,
+                                                    )
+                                                    sell_signal = SignalEvent(
+                                                        symbol=signal.symbol,
+                                                        side="SELL",
+                                                        price=signal.price,
+                                                        reason="Emergency sell: retries_exhausted",
+                                                        position_size_usd=getattr(signal, 'position_size_usd', None),
+                                                    )
+                                                    await self._execute_order(sell_signal)
+                                                    break
+                                            
+                                            else:
+                                                # Unknown error - sell for safety
+                                                self.db.log(
+                                                    "ERROR",
+                                                    f"[FillGuard] Error desconocido: {error}. Vendiendo pata 1.",
+                                                    self.worker_id,
+                                                )
+                                                sell_signal = SignalEvent(
+                                                    symbol=signal.symbol,
+                                                    side="SELL",
+                                                    price=signal.price,
+                                                    reason="Emergency sell: unknown_error",
+                                                    position_size_usd=getattr(signal, 'position_size_usd', None),
+                                                )
+                                                await self._execute_order(sell_signal)
+                                                break
                 except Exception as e:
                     self.db.log("ERROR", f"Error en event_loop: {e}", self.worker_id)
                 finally:
@@ -538,6 +969,19 @@ class TradingWorker:
             print(f"[Worker {self.worker_id}] Loop de eventos cancelado.")
 
     async def _execute_order(self, signal: SignalEvent):
+        # GUARDRAIL ABSOLUTO: Capital Protection Whitelist
+        # Any worker NOT explicitly listed in ALLOWED_REAL_WORKERS env var is blocked from real execution.
+        allowed_real_workers = [
+            w.strip() for w in os.getenv("ALLOWED_REAL_WORKERS", "").split(",") if w.strip()
+        ]
+        if self.worker_id not in allowed_real_workers:
+            self.db.log(
+                "WARNING",
+                f"[CapitalProtection] Worker '{self.worker_id}' no está en ALLOWED_REAL_WORKERS. Ejecución on-chain BLOQUEADA (Modo Recolección de Datos).",
+                self.worker_id,
+            )
+            return
+        _t_exec_start = time.time()
         self.db.log("INFO", f"Procesando señal: {signal}", self.worker_id)
 
         # SecurityGuard: pre-trade check (skip for SELL — closing positions should never be blocked)
@@ -561,21 +1005,24 @@ class TradingWorker:
         quote_balance = balances.get(self.quote_asset, 0.0)
         base_balance = balances.get(self.base_asset, 0.0)
 
-        price = signal.price
+        price = max(signal.price, 0.001)
 
-        # Determinar cantidad a operar: priorizar signal.amount, fallback a 50% del balance
-        # Si signal.amount está entre 0 y 1 (exclusivo), se interpreta como % del balance
-        if getattr(signal, "amount", None) is not None:
+        # Determinar cantidad a operar:
+        # 1. position_size_usd → monto fijo en USD a invertir (calcula contratos automáticamente)
+        # 2. amount >= 1 → cantidad absoluta de contratos
+        # 3. 0 < amount < 1 → porcentaje del balance
+        # 4. Sin amount → 50% del balance (fallback)
+        requested_position_usd = getattr(signal, "position_size_usd", None)
+        requested_amount = None
+        requested_pct = None
+
+        if requested_position_usd is not None and requested_position_usd > 0:
+            pass  # ya tenemos requested_position_usd
+        elif getattr(signal, "amount", None) is not None:
             if 0 < signal.amount < 1:
-                pct = signal.amount
-                requested_amount = None
-                requested_pct = pct
+                requested_pct = signal.amount
             else:
                 requested_amount = signal.amount
-                requested_pct = None
-        else:
-            requested_amount = None
-            requested_pct = None
 
         # 1. EJECUCIÓN CON ALPACA (Acciones / Criptomonedas)
         if self.alpaca_client and self.feeder_type == "alpaca":
@@ -584,7 +1031,10 @@ class TradingWorker:
 
             try:
                 if signal.side == "BUY":
-                    if requested_pct is not None:
+                    if requested_position_usd is not None:
+                        spend_amount = min(requested_position_usd, quote_balance)
+                        amount_to_buy = spend_amount / price
+                    elif requested_pct is not None:
                         spend_amount = quote_balance * requested_pct
                         amount_to_buy = spend_amount / price
                     elif requested_amount is not None:
@@ -616,7 +1066,9 @@ class TradingWorker:
                         time_in_force=TimeInForce.GTC,
                     )
                 else:
-                    if requested_pct is not None:
+                    if requested_position_usd is not None:
+                        amount_to_sell = min(requested_position_usd / price, base_balance)
+                    elif requested_pct is not None:
                         amount_to_sell = base_balance * requested_pct
                     elif requested_amount is not None:
                         amount_to_sell = requested_amount
@@ -659,6 +1111,10 @@ class TradingWorker:
                     if hasattr(order.status, "value")
                     else str(order.status).upper()
                 )
+                _exec_ms = (time.time() - _t_exec_start) * 1000
+                _q_ms = getattr(signal, '_queue_latency_ms', None)
+                _s_ms = getattr(signal, '_strategy_latency_ms', None)
+                _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
                 self.db.save_trade(
                     symbol=self.symbol,
                     side=signal.side,
@@ -668,7 +1124,10 @@ class TradingWorker:
                     status=order_status,
                     worker_id=self.worker_id,
                     position_id=getattr(signal, "position_id", None),
-                    trading_mode=self.trading_mode,
+                    latency_ms=_total_ms,
+                    queue_latency_ms=_q_ms,
+                    strategy_latency_ms=_s_ms,
+                    execution_latency_ms=_exec_ms,
                 )
                 await self._sync_alpaca_portfolio()
             except Exception as e:
@@ -720,6 +1179,10 @@ class TradingWorker:
                     order_fill = res_data.get("orderFillTransaction", {})
                     trade_id = order_fill.get("id", "N/A")
 
+                    _exec_ms = (time.time() - _t_exec_start) * 1000
+                    _q_ms = getattr(signal, '_queue_latency_ms', None)
+                    _s_ms = getattr(signal, '_strategy_latency_ms', None)
+                    _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
                     self.db.save_trade(
                         symbol=self.symbol,
                         side=signal.side,
@@ -730,6 +1193,10 @@ class TradingWorker:
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
+                        latency_ms=_total_ms,
+                        queue_latency_ms=_q_ms,
+                        strategy_latency_ms=_s_ms,
+                        execution_latency_ms=_exec_ms,
                     )
                     await self._sync_oanda_portfolio()
                 else:
@@ -747,7 +1214,10 @@ class TradingWorker:
             # Si hay llaves reales, ejecutamos orden firmada
             if self.kalshi_api_key_id and self.kalshi_private_key_path:
                 try:
-                    if requested_pct is not None:
+                    if requested_position_usd is not None:
+                        spend_amount = min(requested_position_usd, quote_balance)
+                        contracts_count = int(spend_amount / price)
+                    elif requested_pct is not None:
                         spend_amount = quote_balance * requested_pct
                         contracts_count = int(spend_amount / price)
                     elif requested_amount is not None:
@@ -817,6 +1287,10 @@ class TradingWorker:
                     if response.status_code in [200, 201]:
                         res_json = response.json()
                         order_id = res_json.get("order", {}).get("order_id", "N/A")
+                        _exec_ms = (time.time() - _t_exec_start) * 1000
+                        _q_ms = getattr(signal, '_queue_latency_ms', None)
+                        _s_ms = getattr(signal, '_strategy_latency_ms', None)
+                        _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
                         self.db.save_trade(
                             symbol=self.symbol,
                             side=signal.side,
@@ -827,6 +1301,10 @@ class TradingWorker:
                             status="COMPLETED",
                             worker_id=self.worker_id,
                             position_id=getattr(signal, "position_id", None),
+                            latency_ms=_total_ms,
+                            queue_latency_ms=_q_ms,
+                            strategy_latency_ms=_s_ms,
+                            execution_latency_ms=_exec_ms,
                         )
                         await self._sync_kalshi_portfolio()
                     else:
@@ -843,7 +1321,10 @@ class TradingWorker:
             else:
                 # Simulación local para Kalshi si no hay keys
                 if signal.side == "BUY":
-                    if requested_pct is not None:
+                    if requested_position_usd is not None:
+                        spend_amount = min(requested_position_usd, quote_balance)
+                        contracts_count = spend_amount / price
+                    elif requested_pct is not None:
                         spend_amount = quote_balance * requested_pct
                         contracts_count = spend_amount / price
                     elif requested_amount is not None:
@@ -855,6 +1336,10 @@ class TradingWorker:
                     new_quote = quote_balance - spend_amount
                     new_base = base_balance + contracts_count
 
+                    _exec_ms = (time.time() - _t_exec_start) * 1000
+                    _q_ms = getattr(signal, '_queue_latency_ms', None)
+                    _s_ms = getattr(signal, '_strategy_latency_ms', None)
+                    _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
                     self.db.save_trade(
                         symbol=self.symbol,
                         side="BUY",
@@ -864,6 +1349,10 @@ class TradingWorker:
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
+                        latency_ms=_total_ms,
+                        queue_latency_ms=_q_ms,
+                        strategy_latency_ms=_s_ms,
+                        execution_latency_ms=_exec_ms,
                     )
                     self._update_db_portfolio(self.quote_asset, new_quote)
                     self._update_db_portfolio(self.base_asset, new_base)
@@ -884,12 +1373,18 @@ class TradingWorker:
                         amount_to_sell = min(base_balance * requested_pct, base_balance)
                     elif requested_amount is not None:
                         amount_to_sell = min(requested_amount, base_balance)
+                    elif requested_position_usd is not None:
+                        amount_to_sell = min(requested_position_usd / price, base_balance)
                     else:
                         amount_to_sell = base_balance
                     revenue = amount_to_sell * price
                     new_quote = quote_balance + revenue
                     new_base = base_balance - amount_to_sell
 
+                    _exec_ms = (time.time() - _t_exec_start) * 1000
+                    _q_ms = getattr(signal, '_queue_latency_ms', None)
+                    _s_ms = getattr(signal, '_strategy_latency_ms', None)
+                    _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
                     self.db.save_trade(
                         symbol=self.symbol,
                         side="SELL",
@@ -899,6 +1394,10 @@ class TradingWorker:
                         status="COMPLETED",
                         worker_id=self.worker_id,
                         position_id=getattr(signal, "position_id", None),
+                        latency_ms=_total_ms,
+                        queue_latency_ms=_q_ms,
+                        strategy_latency_ms=_s_ms,
+                        execution_latency_ms=_exec_ms,
                     )
                     self._update_db_portfolio(self.quote_asset, new_quote)
                     self._update_db_portfolio(self.base_asset, new_base)
@@ -909,9 +1408,261 @@ class TradingWorker:
                     )
                 return
 
-        # 4. SIMULACIÓN LOCAL MOCK / FALLBACK GENERAL
+        # 4. EJECUCIÓN CON LIMITLESS (Deportes / Cripto Blockchain)
+        if self.feeder_type in ("limitless", "limitless_sports", "maker_making", "binary_arb"):
+            api_key = os.getenv("LIMITLESS_API_KEY")
+            api_secret = os.getenv("LIMITLESS_API_SECRET")
+            private_key = os.getenv("LIMITLESS_PRIVATE_KEY")
+            
+            if api_key and api_secret and private_key and self.execution_type != "simulation":
+                try:
+                    from limitless_sdk import Client as LimitlessClient, HMACCredentials
+                    from limitless_sdk.types import Side as LimitlessSide, OrderType as LimitlessOrderType
+                    
+                    # scale collateral to 6 decimals, default size determination
+                    if requested_position_usd is not None:
+                        spend_amount = min(requested_position_usd, quote_balance)
+                    elif requested_pct is not None:
+                        spend_amount = quote_balance * requested_pct
+                    else:
+                        spend_amount = quote_balance * 0.5
+                    
+                    # Limitless SDK new_order_client using EOA private key
+                    async with LimitlessClient(
+                        base_url="https://api.limitless.exchange",
+                        hmac_credentials=HMACCredentials(token_id=api_key, secret=api_secret)
+                    ) as limitless_c:
+                        
+                        order_client = limitless_c.new_order_client(private_key)
+                        try:
+                            # Pre-warm cached user profile to prevent profile mismatch in SDK
+                            profile = await limitless_c.portfolio.get_current_profile()
+                            if profile and isinstance(profile, dict) and "id" in profile:
+                                from limitless_sdk.orders.client import UserData, OrderBuilder
+                                order_client._cached_user_data = UserData(
+                                    user_id=profile["id"],
+                                    fee_rate_bps=profile.get("rank", {}).get("feeRateBps", 300)
+                                )
+                                order_client._builder = OrderBuilder(
+                                    maker_address=order_client._wallet.address,
+                                    fee_rate_bps=order_client._cached_user_data.fee_rate_bps,
+                                    price_tick=0.001
+                                )
+                        except Exception:
+                            pass
+
+                        # Extract real Limitless market slug + token side (YES/NO) from pos_symbol.
+                        # Strategies encode the outcome differently:
+                        #   binary_arb:           "oracle_{slug}_{YES|NO}"
+                        #   atomic_crypto:        "limitless_crypto_{slug}_{YES|NO}"
+                        #   sports_arb:           "{platform}_{event_id}_{slug}"
+                        #   cross_platform 1xN:   "limitless_macro_{parent}_{outcome_slug}"
+                        #   cross_platform 2-leg: "{limitless_slug}" (side in signal.reason)
+                        #   negrisk/plain:        "{slug}"
+                        import re
+                        pos_symbol = getattr(signal, "symbol", self.symbol)
+                        raw = pos_symbol
+                        token = None
+                        upper = raw.upper()
+                        for suffix in ("_YES", "_NO"):
+                            if upper.endswith(suffix):
+                                token = suffix[1:]
+                                raw = raw[: -len(suffix)]
+                                break
+
+                        market_slug = raw
+                        if market_slug.startswith("oracle_"):
+                            market_slug = market_slug[len("oracle_"):]
+                        elif market_slug.startswith("limitless_crypto_"):
+                            market_slug = market_slug[len("limitless_crypto_"):]
+                        else:
+                            parts = market_slug.split("_")
+                            if len(parts) >= 3 and parts[0] in ("limitless", "kalshi", "polymarket"):
+                                market_slug = parts[-1]
+
+                        if token is None:
+                            reason = getattr(signal, "reason", "") or ""
+                            m = re.search(r"\b(YES|NO)\b", reason)
+                            if m:
+                                token = m.group(0).upper()
+                        token = token or "YES"
+
+                        # Resolve numeric token_id from the real market (the slug is NOT the token_id).
+                        market = await limitless_c.markets.get_market(market_slug)
+                        if token == "NO" and getattr(market, "tokens", None):
+                            token_id = market.tokens.no
+                        elif token == "YES" and getattr(market, "tokens", None):
+                            token_id = market.tokens.yes
+                        else:
+                            orderbook = await limitless_c.markets.get_orderbook(market_slug)
+                            token_id = orderbook.token_id
+                        
+                        # Truncate to 6 decimal places (Limitless API max precision)
+                        spend_amount = float(f"{spend_amount:.6f}")
+                        
+                        # OrderBookWalker: Validate liquidity before sending order
+                        try:
+                            from src.engine.orderbook_walker import orderbook_walker
+                            
+                            # Fetch orderbook for this market
+                            orderbook = await limitless_c.markets.get_orderbook(market_slug)
+                            
+                            if orderbook and hasattr(orderbook, 'bids') and hasattr(orderbook, 'asks'):
+                                # Convert to dict format expected by OrderBookWalker
+                                ob_dict = {
+                                    'bids': [{'price': str(b.price), 'size': str(b.size)} for b in (orderbook.bids or [])],
+                                    'asks': [{'price': str(a.price), 'size': str(a.size)} for a in (orderbook.asks or [])],
+                                }
+                                
+                                # Simulate fill to check liquidity and slippage
+                                fill_result = orderbook_walker.simulate_fill(
+                                    orderbook=ob_dict,
+                                    side=signal.side,
+                                    size_usd=spend_amount,
+                                )
+                                
+                                # Log the liquidity analysis
+                                self.db.log(
+                                    "INFO",
+                                    f"[OrderBookWalker] Liquidity check: "
+                                    f"best_price={fill_result.best_price:.4f}, "
+                                    f"avg_price={fill_result.avg_price:.4f}, "
+                                    f"slippage={fill_result.slippage_pct:.2f}%, "
+                                    f"levels_consumed={fill_result.levels_consumed}, "
+                                    f"partial_fill={fill_result.partial_fill}",
+                                    self.worker_id,
+                                )
+                                
+                                # Reject if slippage is too high (>2%)
+                                if fill_result.slippage_pct > 2.0:
+                                    self.db.log(
+                                        "WARNING",
+                                        f"[OrderBookWalker] REJECTED: Slippage too high ({fill_result.slippage_pct:.2f}% > 2.0%). "
+                                        f"Insufficient liquidity for ${spend_amount:.2f} order.",
+                                        self.worker_id,
+                                    )
+                                    return
+                                
+                                # Reject if partial fill (not enough liquidity)
+                                if fill_result.partial_fill:
+                                    self.db.log(
+                                        "WARNING",
+                                        f"[OrderBookWalker] REJECTED: Partial fill detected. "
+                                        f"Only ${fill_result.total_cost:.2f} of ${spend_amount:.2f} would fill.",
+                                        self.worker_id,
+                                    )
+                                    return
+                        except Exception as obw_error:
+                            # FAIL-SAFE: If liquidity check fails, reject the order
+                            self.db.log(
+                                "WARNING",
+                                f"[OrderBookWalker] REJECTED: Liquidity check failed: {obw_error}. "
+                                f"Cannot verify liquidity for ${spend_amount:.2f} order.",
+                                self.worker_id,
+                            )
+                            return
+                        
+                        self.db.log(
+                            "INFO",
+                            f"Enviando orden a Limitless Mainnet: {signal.side} {token} {spend_amount:.2f} USDC en {market_slug} (token_id={token_id})",
+                            self.worker_id,
+                        )
+                        
+                        # We use FOK (Fill Or Kill) style execution for taker orders
+                        response = await order_client.create_order(
+                            token_id=str(token_id),
+                            side=LimitlessSide.BUY if signal.side == "BUY" else LimitlessSide.SELL,
+                            order_type=LimitlessOrderType.FOK,
+                            market_slug=market_slug,
+                            maker_amount=spend_amount,
+                        )
+                        
+                        order_id = response.order.id if hasattr(response, "order") and response.order else "N/A"
+                        _exec_ms = (time.time() - _t_exec_start) * 1000
+                        _q_ms = getattr(signal, '_queue_latency_ms', None)
+                        _s_ms = getattr(signal, '_strategy_latency_ms', None)
+                        _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
+                        
+                        self.db.save_trade(
+                            symbol=pos_symbol,
+                            side=signal.side,
+                            price=price,
+                            amount=spend_amount / price if signal.side == "BUY" else spend_amount,
+                            total=spend_amount,
+                            external_order_id=str(order_id),
+                            status="COMPLETED",
+                            worker_id=self.worker_id,
+                            position_id=getattr(signal, "position_id", None),
+                            latency_ms=_total_ms,
+                            queue_latency_ms=_q_ms,
+                            strategy_latency_ms=_s_ms,
+                            execution_latency_ms=_exec_ms,
+                        )
+                        
+                        # Sync portfolio values (USDC lives on Base MAINNET, not Sepolia)
+                        wallet_address = order_client.wallet_address
+                        try:
+                            from web3 import Web3
+                            abi = [ { 'constant': True, 'inputs': [{'name': '_owner', 'type': 'address'}], 'name': 'balanceOf', 'outputs': [{'name': 'balance', 'type': 'uint256'}], 'payable': False, 'stateMutability': 'view', 'type': 'function' } ]
+                            # USDC contract on Base mainnet
+                            usdc_address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+                            usdc_balance = 0.0
+                            for rpc_url in ('https://mainnet.base.org', 'https://base-mainnet.public.blastapi.io', 'https://rpc.ankr.com/base'):
+                                try:
+                                    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={'timeout': 5}))
+                                    if w3.is_connected():
+                                        usdc_contract = w3.eth.contract(address=usdc_address, abi=abi)
+                                        usdc_balance = usdc_contract.functions.balanceOf(wallet_address).call() / 10**6
+                                        break
+                                except Exception:
+                                    continue
+                            self._update_db_portfolio(self.quote_asset, usdc_balance)
+                        except Exception as be:
+                            self.db.log(
+                                "WARNING",
+                                f"No se pudo sincronizar balance USDC on-chain: {be}",
+                                self.worker_id,
+                            )
+                        
+                        if signal.side == "BUY":
+                            if not getattr(signal, "position_id", None):
+                                pos_amount = (spend_amount / price) if (price > 0 and spend_amount > 0) else (requested_position_usd if requested_position_usd else 1.0)
+                                position_id = self.db.save_position(
+                                    self.worker_id,
+                                    pos_symbol,
+                                    "BUY",
+                                    price,
+                                    pos_amount,
+                                )
+                                if position_id and hasattr(self.strategy, "_arb_groups"):
+                                    for gid, grp in self.strategy._arb_groups.items():
+                                        if pos_symbol.startswith(gid):
+                                            grp.setdefault("position_ids", []).append(position_id)
+                                            break
+                                if position_id and hasattr(self.strategy, "_position_id") and not self.strategy._position_id:
+                                    self.strategy._position_id = position_id
+                        else:
+                            open_pos = self.db.get_open_positions(worker_id=self.worker_id) or []
+                            matched = [p for p in open_pos if p and isinstance(p, dict) and p.get("symbol") == pos_symbol]
+                            if matched:
+                                self.db.close_position(
+                                    matched[0]["id"], price, signal.reason, worker_id=self.worker_id
+                                )
+                        return
+                except Exception as e:
+                    self.db.log(
+                        "ERROR",
+                        f"RECHAZADO: fallo en ejecución on-chain Limitless: {e}. No se crea posición simulada (Modo Estricto Real).",
+                        self.worker_id,
+                    )
+                    return
+            
+        # 5. SIMULACIÓN LOCAL MOCK / FALLBACK GENERAL
         if signal.side == "BUY":
-            if requested_pct is not None:
+            if requested_position_usd is not None:
+                spend_amount = min(requested_position_usd, quote_balance)
+                amount_to_buy = spend_amount / price
+            elif requested_pct is not None:
                 spend_amount = quote_balance * requested_pct
                 amount_to_buy = spend_amount / price
             elif requested_amount is not None:
@@ -921,17 +1672,41 @@ class TradingWorker:
                 spend_amount = quote_balance * 0.5
                 amount_to_buy = spend_amount / price
 
-            if quote_balance < spend_amount:
-                self.db.log(
-                    "WARNING",
-                    f"Saldo insuficiente. Requerido: {spend_amount:.2f} {self.quote_asset}, Disponible: {quote_balance:.2f} {self.quote_asset}.",
-                    self.worker_id,
-                )
-                return
+            if self.execution_type == "simulation":
+                # Simulation: allow virtual fills even with $0 balance
+                # Seed initial capital if portfolio is empty
+                if quote_balance < spend_amount and quote_balance <= 0.0:
+                    initial_capital = float(os.getenv("INITIAL_VIRTUAL_CAPITAL", "1000.0"))
+                    self.db.log(
+                        "INFO",
+                        f"Simulation: seeding ${initial_capital:.2f} virtual capital for {self.worker_id}",
+                        self.worker_id,
+                    )
+                    self._update_db_portfolio(self.quote_asset, initial_capital)
+                    quote_balance = initial_capital
+                elif quote_balance < spend_amount:
+                    self.db.log(
+                        "WARNING",
+                        f"Saldo insuficiente. Requerido: {spend_amount:.2f} {self.quote_asset}, Disponible: {quote_balance:.2f} {self.quote_asset}.",
+                        self.worker_id,
+                    )
+                    return
+            else:
+                if quote_balance < spend_amount:
+                    self.db.log(
+                        "WARNING",
+                        f"Saldo insuficiente. Requerido: {spend_amount:.2f} {self.quote_asset}, Disponible: {quote_balance:.2f} {self.quote_asset}.",
+                        self.worker_id,
+                    )
+                    return
 
             new_quote = quote_balance - spend_amount
             new_base = base_balance + amount_to_buy
 
+            _exec_ms = (time.time() - _t_exec_start) * 1000
+            _q_ms = getattr(signal, '_queue_latency_ms', None)
+            _s_ms = getattr(signal, '_strategy_latency_ms', None)
+            _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
             self.db.save_trade(
                 symbol=self.symbol,
                 side="BUY",
@@ -941,18 +1716,23 @@ class TradingWorker:
                 status="COMPLETED",
                 worker_id=self.worker_id,
                 position_id=getattr(signal, "position_id", None),
+                latency_ms=_total_ms,
+                queue_latency_ms=_q_ms,
+                strategy_latency_ms=_s_ms,
+                execution_latency_ms=_exec_ms,
             )
             self._update_db_portfolio(self.quote_asset, new_quote)
             self._update_db_portfolio(self.base_asset, new_base)
 
             pos_symbol = getattr(signal, "symbol", self.symbol)
             if not getattr(signal, "position_id", None):
+                sim_pos_amount = amount_to_buy if amount_to_buy > 0 else (requested_position_usd if requested_position_usd else 1.0)
                 position_id = self.db.save_position(
                     self.worker_id,
                     pos_symbol,
                     "BUY",
                     price,
-                    amount_to_buy,
+                    sim_pos_amount,
                 )
                 if position_id and hasattr(self.strategy, "_arb_groups"):
                     for gid, grp in self.strategy._arb_groups.items():
@@ -972,7 +1752,9 @@ class TradingWorker:
                 self.worker_id,
             )
         elif signal.side == "SELL":
-            if requested_pct is not None:
+            if requested_position_usd is not None:
+                amount_to_sell = min(requested_position_usd / price, base_balance)
+            elif requested_pct is not None:
                 amount_to_sell = min(base_balance * requested_pct, base_balance)
             elif requested_amount is not None:
                 amount_to_sell = min(requested_amount, base_balance)
@@ -991,6 +1773,10 @@ class TradingWorker:
             new_quote = quote_balance + revenue
             new_base = base_balance - amount_to_sell
 
+            _exec_ms = (time.time() - _t_exec_start) * 1000
+            _q_ms = getattr(signal, '_queue_latency_ms', None)
+            _s_ms = getattr(signal, '_strategy_latency_ms', None)
+            _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
             self.db.save_trade(
                 symbol=self.symbol,
                 side="SELL",
@@ -1000,13 +1786,17 @@ class TradingWorker:
                 status="COMPLETED",
                 worker_id=self.worker_id,
                 position_id=getattr(signal, "position_id", None),
+                latency_ms=_total_ms,
+                queue_latency_ms=_q_ms,
+                strategy_latency_ms=_s_ms,
+                execution_latency_ms=_exec_ms,
             )
             self._update_db_portfolio(self.quote_asset, new_quote)
             self._update_db_portfolio(self.base_asset, new_base)
 
             pos_symbol = getattr(signal, "symbol", self.symbol)
-            open_pos = self.db.get_open_positions(worker_id=self.worker_id)
-            matched = [p for p in open_pos if p["symbol"] == pos_symbol]
+            open_pos = self.db.get_open_positions(worker_id=self.worker_id) or []
+            matched = [p for p in open_pos if p and isinstance(p, dict) and p.get("symbol") == pos_symbol]
             if matched:
                 self.db.close_position(
                     matched[0]["id"], price, signal.reason, worker_id=self.worker_id
@@ -1321,12 +2111,14 @@ class TradingWorker:
                     for candle in candles
                 ]
                 self.strategy.prices_df = pd.DataFrame(rows)
+                if rows:
+                    self.last_price = float(rows[-1]["price"])
                 self.db.log(
                     "INFO",
                     f"Pre-carga Binance completada. {len(rows)} velas reales cargadas.",
                     self.worker_id,
                 )
-            elif self.feeder_type in ("limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal", "maker_making"):
+            elif self.feeder_type in ("limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal", "maker_making", "multi_platform", "resolution_sniper"):
                 self.db.log(
                     "INFO",
                     f"{self.feeder_type}: omitiendo historial sintético (esperando datos reales del feeder)...",
@@ -1342,11 +2134,10 @@ class TradingWorker:
                 f"Error al pre-cargar datos históricos: {e}.",
                 self.worker_id,
             )
-            if self.feeder_type not in ("binance", "limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal", "maker_making"):
-                try:
-                    await self._generate_synthetic_history()
-                except Exception:
-                    pass
+            try:
+                await self._generate_synthetic_history()
+            except Exception:
+                pass
 
     async def _generate_synthetic_history(self):
         try:
@@ -1371,7 +2162,7 @@ class TradingWorker:
                 start_price = 100.0
 
             # Generar 120 velas de 1 minuto hacia atrás
-            now = datetime.datetime.now()
+            now = datetime.datetime.now(datetime.timezone.utc)
             rows = []
             current_price = start_price
             for i in range(120, 0, -1):
@@ -1441,7 +2232,7 @@ class TradingEngine:
                             {
                                 "level": level,
                                 "message": message,
-                                "timestamp": timestamp.isoformat(),
+                                "timestamp": timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp),
                                 "worker_id": worker_id,
                             },
                         ),
@@ -1456,63 +2247,104 @@ class TradingEngine:
         # Perfil de Configuración Global de Workers: 'pure_arbitrage', 'balanced' o 'crypto_hft_volatile'
         profile_mode = os.getenv("WORKER_PROFILE_MODE", "pure_arbitrage").lower()
 
-        if profile_mode == "pure_arbitrage":
-            # Perfil ARBITRAJE PURO SINO RIESGO DIRECCIONAL (Ganancia garantizada del 2-3% neto por evento)
-            # Worker 1: Desactivado / En espera (Worker 1 se trabajará después)
-            self.workers["worker_1"] = TradingWorker(
-                "worker_1", "Binance Spot Feed", "BTCUSDT", "binance", self.db
-            )
-            # Worker 2: Arbitraje Cross-Platform Regulado/DEX (Kalshi ↔ Polymarket ↔ Limitless Macro)
-            self.workers["worker_2"] = TradingWorker(
-                "worker_2", "Cross-Platform Macro Arb", "CORE-PCE-YOY-JUNE-2026-1784042260443", "limitless", self.db
-            )
-            # Worker 3: Arbitraje Deportivo 1xN (Cobertura Total sum(YES) < 1.00)
-            self.workers["worker_3"] = TradingWorker(
-                "worker_3", "Sports Arbitrage 1xN", "SPORTS", "limitless_sports", self.db
-            )
-            # Worker 4: Market Making or Binary Arb (toggle with WORKER4_STRATEGY)
-            w4_strategy = os.getenv("WORKER4_STRATEGY", "binary_arb")
-            try:
-                if w4_strategy == "maker_making":
-                    w4_worker = TradingWorker(
-                        "worker_4", "Market Making", "core-pce-yoy-june-2026-1784042260443", "maker_making", self.db
-                    )
-                    self.workers["worker_4"] = w4_worker
-                    with open("w4_debug.txt", "w") as _f: _f.write(f"CREATED: name={w4_worker.name} feeder={w4_worker.feeder_type} strategy={type(w4_worker.strategy).__name__}\n")
-                else:
-                    self.workers["worker_4"] = TradingWorker(
-                        "worker_4", "Crypto Binary Arb 5m", "BTC-5MIN-UP-OR-DOWN", "binary_arb", self.db
-                    )
-                    with open("w4_debug.txt", "w") as _f: _f.write(f"ELSE BRANCH: strategy={w4_strategy}\n")
-            except Exception as e:
-                import traceback
-                with open("w4_debug.txt", "w") as _f: _f.write(f"ERROR: {e}\n{traceback.format_exc()}\n")
-                self.workers["worker_4"] = TradingWorker(
-                    "worker_4", "Crypto Binary Arb 5m", "BTC-5MIN-UP-OR-DOWN", "binary_arb", self.db
+        # CRITICAL VALIDATION: Block cross-platform arb if mixing real + demo execution
+        execution_type = os.getenv("EXECUTION_TYPE", "limitless").lower()
+        kalshi_env = os.getenv("KALSHI_ENV", "demo").lower()
+        
+        if execution_type != "simulation" and kalshi_env == "demo":
+            # Check if any worker uses cross-platform arbitrage
+            # This would mix real Limitless execution with demo Kalshi execution
+            # which is NOT real arbitrage — it's a directional position disguised as arb
+            print("[ENGINE WARNING] ⚠️  EXECUTION_TYPE=limitless pero KALSHI_ENV=demo")
+            print("[ENGINE WARNING] Cualquier worker cross-platform (Limitless+Kalshi) estaría")
+            print("[ENGINE WARNING] mezclando dinero REAL con dinero FICTICIO.")
+            print("[ENGINE WARNING] Esto NO es arbitraje real — es una posición direccional.")
+            print("[ENGINE WARNING] Cambia KALSHI_ENV=prod para cross-platform real,")
+            print("[ENGINE WARNING] o deshabilita workers cross-platform.")
+            # Log to DB for audit trail
+            if self.db:
+                self.db.log(
+                    "ERROR",
+                    "CONFIGURACIÓN INVÁLIDA: EXECUTION_TYPE=limitless + KALSHI_ENV=demo. "
+                    "Workers cross-platform mezclarían real con demo. "
+                    "Cambia KALSHI_ENV=prod o deshabilita workers cross-platform.",
+                    "engine",
                 )
-            # Worker 5: Arbitraje Intra-Market (YES_ask + NO_ask < 0.97)
-            self.workers["worker_5"] = TradingWorker(
-                "worker_5", "Intra-Market YES/NO Arb", "us-recession-by-end-of-2026-1767804297592", "limitless", self.db
-            )
-            # Worker 6: NUEVO MÓDULO — Maker Liquidity Rewards Strategy ($0.00 Fees + Rebates Diarios)
-            from src.strategy.maker_rewards_strategy import MakerLiquidityRewardsStrategy
-            worker6 = TradingWorker(
-                "worker_6", "Maker Liquidity Rewards", "us-recession-by-end-of-2026-1767804297592", "limitless", self.db
-            )
-            worker6.strategy = MakerLiquidityRewardsStrategy(
-                "us-recession-by-end-of-2026-1767804297592", db=self.db, worker_id="worker_6"
-            )
-            self.workers["worker_6"] = worker6
 
-            # Worker 7: NUEVO MÓDULO — NegRisk Multi-Outcome Arbitrage (Mercados Complejos 4 a 10 Opciones)
-            from src.strategy.negrisk_strategy import NegRiskMultiOutcomeStrategy
-            worker7 = TradingWorker(
-                "worker_7", "NegRisk 10x Arbitrage", "core-pce-yoy-june-2026-1784042260443", "limitless", self.db
-            )
-            worker7.strategy = NegRiskMultiOutcomeStrategy(
-                "core-pce-yoy-june-2026-1784042260443", db=self.db, worker_id="worker_7"
-            )
-            self.workers["worker_7"] = worker7
+        if profile_mode == "pure_arbitrage":
+            # Cargar parámetros desde el entorno (.env)
+            sports_edge = float(os.getenv("SPORTS_ARB_EDGE_PCT", "0.03"))
+            sports_size = float(os.getenv("SPORTS_POSITION_SIZE_USD", "2.0"))
+            crypto_edge = float(os.getenv("CRYPTO_ARB_EDGE_PCT", "0.03"))
+            crypto_size_pct = float(os.getenv("CRYPTO_POSITION_SIZE_PCT", "0.015"))
+            crypto_maker_edge = float(os.getenv("CRYPTO_MAKER_EDGE_PCT", "0.05"))
+            crypto_maker_size = float(os.getenv("CRYPTO_MAKER_POSITION_SIZE_USD", "10.0"))
+            
+            # Determinar si usar WebSocket o polling
+            use_ws = os.getenv("LIMITLESS_USE_WEBSOCKET", "false").lower() == "true"
+            limitless_feeder_type = "limitless_ws" if use_ws else "limitless"
+
+            # Worker 1: Arbitraje Intraday General (Opciones de mismo día / rápida resolución)
+            w1_enabled = os.getenv("WORKER1_ENABLED", "true").lower() == "true"
+            if w1_enabled:
+                from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
+                worker1 = TradingWorker("worker_1", "Limitless Intraday General", "ANY-INTRADAY", limitless_feeder_type, self.db)
+                worker1.strategy = AtomicCryptoArbStrategy("ANY-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=1.0, db=self.db, worker_id="worker_1", observation_only=True)
+                self.workers["worker_1"] = worker1
+
+            # Worker 2: Arbitraje Cross-Platform Deportes (Limitless vs Polymarket vs Kalshi)
+            w2_enabled = os.getenv("WORKER2_ENABLED", "false").lower() == "true"
+            if w2_enabled:
+                worker2_type = os.getenv("WORKER2_FEEDER_TYPE", "multi_platform")
+                worker2 = TradingWorker("worker_2", "Cross-Platform Sports", "SPORTS", worker2_type, self.db)
+                worker2.strategy = SportsArbitrageStrategy(
+                    "SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size,
+                    db=self.db, worker_id="worker_2", cross_platform=True,
+                    observation_only=True,
+                )
+                self.workers["worker_2"] = worker2
+
+            # Worker 3: Arbitraje Deportivo 1xN (Partidos de 3 opciones en Limitless)
+            w3_enabled = os.getenv("WORKER3_ENABLED", "true").lower() == "true"
+            if w3_enabled:
+                worker3 = TradingWorker("worker_3", "Limitless Sports (3 Opciones)", "SPORTS", "limitless_sports", self.db)
+                worker3.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_3", outcomes_count=3, observation_only=True)
+                self.workers["worker_3"] = worker3
+
+            # Worker 4: Arbitraje Deportivo 1xN (Opciones Binarias de 2 opciones en Limitless)
+            w4_enabled = os.getenv("WORKER4_ENABLED", "true").lower() == "true"
+            if w4_enabled:
+                worker4 = TradingWorker("worker_4", "Limitless Sports (2 Opciones)", "SPORTS", "limitless_sports", self.db)
+                worker4.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_4", outcomes_count=2, observation_only=False)
+                self.workers["worker_4"] = worker4
+
+            # Worker 5: Oráculo HFT de Referencia Binance Spot (0 Latency Feed)
+            w5_enabled = os.getenv("WORKER5_ENABLED", "true").lower() == "true"
+            if w5_enabled:
+                from src.strategy.base import BaseStrategy
+                class OracleOnlyStrategy(BaseStrategy):
+                    def evaluate_signal(self, event):
+                        return None
+                worker5 = TradingWorker("worker_5", "Binance HFT Oracle", "BTCUSDT", "binance", self.db)
+                worker5.strategy = OracleOnlyStrategy("BTCUSDT")
+                self.workers["worker_5"] = worker5
+
+            # Worker 6: Arbitraje Atómico/Maker Market Making (Post-Only) en Limitless/Kalshi
+            w6_enabled = os.getenv("WORKER6_ENABLED", "true").lower() == "true"
+            if w6_enabled:
+                from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
+                worker6 = TradingWorker("worker_6", "Crypto Atomic-Arb", "BTC-INTRADAY", limitless_feeder_type, self.db)
+                worker6.strategy = AtomicCryptoArbStrategy("BTC-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=crypto_maker_size, db=self.db, worker_id="worker_6", observation_only=True)
+                self.workers["worker_6"] = worker6
+
+            # Worker 7: Resolution Sniper (Buy near-certain markets, hold to resolution)
+            w7_enabled = os.getenv("WORKER7_ENABLED", "false").lower() == "true"
+            if w7_enabled:
+                from src.strategy.resolution_sniper import ResolutionSniperStrategy
+                worker7 = TradingWorker("worker_7", "Resolution Sniper", "SPORTS", "resolution_sniper", self.db)
+                worker7.strategy = ResolutionSniperStrategy("SPORTS", db=self.db, worker_id="worker_7")
+                self.workers["worker_7"] = worker7
+
         elif profile_mode == "crypto_hft_volatile":
             self.workers["worker_1"] = TradingWorker(
                 "worker_1", "Hyperliquid BTC Perp", "BTC-PERP", "hyperliquid", self.db
@@ -1619,9 +2451,25 @@ class TradingEngine:
                 await w.start()
 
     async def stop(self, worker_id: str = None):
+        total_orders_cancelled = 0
+        total_open_positions = 0
+        all_open_positions = []
+
         if worker_id:
             if worker_id in self.workers:
-                await self.workers[worker_id].stop()
+                result = await self.workers[worker_id].stop()
+                total_orders_cancelled += result.get("orders_cancelled", 0)
+                total_open_positions += result.get("open_positions", 0)
+                all_open_positions.extend(result.get("open_positions_details", []))
         else:
             for w in self.workers.values():
-                await w.stop()
+                result = await w.stop()
+                total_orders_cancelled += result.get("orders_cancelled", 0)
+                total_open_positions += result.get("open_positions", 0)
+                all_open_positions.extend(result.get("open_positions_details", []))
+
+        return {
+            "orders_cancelled": total_orders_cancelled,
+            "open_positions": total_open_positions,
+            "open_positions_details": all_open_positions,
+        }

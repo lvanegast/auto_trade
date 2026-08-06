@@ -138,31 +138,95 @@ class ExecutionPlan:
     async def _simulate_execution(
         self, leg1_price, leg2_price, leg1_size, leg2_size, friction_details
     ):
-        import random
-
-        slippage_leg1 = random.uniform(0, friction_details["leg1_slippage"])
-        slippage_leg2 = random.uniform(0, friction_details["leg2_slippage"])
-
-        self.leg1_avg_price = leg1_price * (1 + slippage_leg1 / leg1_price) if leg1_price > 0 else leg1_price
-        self.leg2_avg_price = leg2_price * (1 + slippage_leg2 / leg2_price) if leg2_price > 0 else leg2_price
-
-        leg1_fill_ratio = random.uniform(0.9, 1.0)
-        leg2_fill_ratio = random.uniform(0.9, 1.0)
-
-        self.leg1_filled_qty = leg1_size * leg1_fill_ratio
-        self.leg2_filled_qty = leg2_size * leg2_fill_ratio
-
+        """
+        Simula ejecución REALISTA usando OrderBookWalker y LatencyTracker.
+        
+        En vez de slippage aleatorio:
+        1. Obtiene latencia real medida por los feeders
+        2. Camina el order book real consumiendo liquidez nivel por nivel
+        3. Calcula slippage real basado en la profundidad del book
+        """
+        from src.engine.orderbook_walker import orderbook_walker
+        from src.engine.latency_tracker import latency_tracker
+        
+        # Obtener latencia real medida por los feeders
+        leg1_latency_ms = latency_tracker.get_recent_latency_ms(self.leg1_feeder, "get_orderbook")
+        leg2_latency_ms = latency_tracker.get_recent_latency_ms(self.leg2_feeder, "get_orderbook")
+        
+        # Obtener order books reales del CrossPlatformTracker
+        from src.strategy.cross_platform_tracker import cross_platform_tracker
+        
+        # Simular fill de Leg 1
+        leg1_book = None
+        leg1_event_id = self.leg1_symbol  # Aproximación
+        for event_id in cross_platform_tracker.get_all_event_ids():
+            book = cross_platform_tracker.get_book(event_id, self.leg1_feeder)
+            if book:
+                leg1_book = book
+                break
+        
+        if leg1_book:
+            # Convertir formato del tracker a formato del walker
+            leg1_orderbook = {
+                "asks": [{"price": leg1_book["yes_ask"], "size": 1000}],  # Size estimado
+                "bids": [{"price": leg1_book["yes_bid"], "size": 1000}],
+            }
+            leg1_fill = orderbook_walker.simulate_fill(
+                orderbook=leg1_orderbook,
+                side=self.leg1_side,
+                size_usd=self.position_size_usd,
+                latency_ms=leg1_latency_ms,
+            )
+            self.leg1_avg_price = leg1_fill.avg_price
+            self.leg1_filled_qty = leg1_fill.total_filled
+        else:
+            # Fallback: usar precio solicitado sin slippage
+            self.leg1_avg_price = leg1_price
+            self.leg1_filled_qty = leg1_size
+            leg1_fill = None
+        
+        # Simular fill de Leg 2
+        leg2_book = None
+        for event_id in cross_platform_tracker.get_all_event_ids():
+            book = cross_platform_tracker.get_book(event_id, self.leg2_feeder)
+            if book:
+                leg2_book = book
+                break
+        
+        if leg2_book:
+            leg2_orderbook = {
+                "asks": [{"price": leg2_book["yes_ask"], "size": 1000}],
+                "bids": [{"price": leg2_book["yes_bid"], "size": 1000}],
+            }
+            leg2_fill = orderbook_walker.simulate_fill(
+                orderbook=leg2_orderbook,
+                side=self.leg2_side,
+                size_usd=self.position_size_usd,
+                latency_ms=leg2_latency_ms,
+            )
+            self.leg2_avg_price = leg2_fill.avg_price
+            self.leg2_filled_qty = leg2_fill.total_filled
+        else:
+            self.leg2_avg_price = leg2_price
+            self.leg2_filled_qty = leg2_size
+            leg2_fill = None
+        
+        # Generar IDs de orden con información de slippage
         ts = int(time.time() * 1000)
-        self.leg1_external_order_id = f"SIM-{ts}-LEG1"
-        self.leg2_external_order_id = f"SIM-{ts}-LEG2"
-
+        self.leg1_external_order_id = f"WALK-{ts}-LEG1"
+        self.leg2_external_order_id = f"WALK-{ts}-LEG2"
+        
         leg1_fee = friction_details.get("leg1_fee_per_asset", 0)
         leg2_fee = friction_details.get("leg2_fee_per_asset", 0)
         leg1_gas = friction_details.get("leg1_gas", 0)
         leg2_gas = friction_details.get("leg2_gas", 0)
-        leg1_slip = friction_details.get("leg1_slippage", 0)
-        leg2_slip = friction_details.get("leg2_slippage", 0)
-
+        
+        # Calcular slippage real
+        leg1_slippage_pct = leg1_fill.slippage_pct if leg1_fill else 0.0
+        leg2_slippage_pct = leg2_fill.slippage_pct if leg2_fill else 0.0
+        leg1_slippage_usd = leg1_fill.slippage_usd if leg1_fill else 0.0
+        leg2_slippage_usd = leg2_fill.slippage_usd if leg2_fill else 0.0
+        
         self.leg1_order_id = self.db.save_trade(
             symbol=self.leg1_symbol,
             side=self.leg1_side,
@@ -179,7 +243,7 @@ class ExecutionPlan:
             filled_qty=self.leg1_filled_qty,
             fee_per_asset=leg1_fee,
             gas_usd=leg1_gas,
-            slippage_usd=leg1_slip,
+            slippage_usd=leg1_slippage_usd,
             net_pnl=None,
             leg_id="LEG1",
         )
@@ -200,28 +264,38 @@ class ExecutionPlan:
             filled_qty=self.leg2_filled_qty,
             fee_per_asset=leg2_fee,
             gas_usd=leg2_gas,
-            slippage_usd=leg2_slip,
+            slippage_usd=leg2_slippage_usd,
             net_pnl=None,
             leg_id="LEG2",
         )
 
         self.db.log(
             "INFO",
-            f"[ExecutionPlan PAPER] Leg1: {self.leg1_symbol} {self.leg1_side} ${self.leg1_avg_price:.4f} x{self.leg1_filled_qty:.2f} | "
-            f"Leg2: {self.leg2_symbol} {self.leg2_side} ${self.leg2_avg_price:.4f} x{self.leg2_filled_qty:.2f}",
+            f"[ExecutionPlan WALK] Leg1: {self.leg1_symbol} {self.leg1_side} ${self.leg1_avg_price:.4f} x{self.leg1_filled_qty:.2f} "
+            f"(slip: {leg1_slippage_pct:.2f}%, lat: {leg1_latency_ms:.0f}ms) | "
+            f"Leg2: {self.leg2_symbol} {self.leg2_side} ${self.leg2_avg_price:.4f} x{self.leg2_filled_qty:.2f} "
+            f"(slip: {leg2_slippage_pct:.2f}%, lat: {leg2_latency_ms:.0f}ms)",
             self.worker_id,
         )
 
     async def _execute_real_trades(
         self, leg1_price, leg2_price, leg1_size, leg2_size, friction_details
     ):
+        # RECHAZAR en lugar de simular silenciosamente
+        # La ejecución real de cross-platform arbitrage requiere integración directa
+        # con los exchanges (Kalshi/Limitless/Polymarket) — no existe aún
+        self.status = "REJECTED_NO_REAL_EXECUTION"
         self.db.log(
-            "WARNING",
-            "[ExecutionPlan] Ejecución real no disponible — usando simulación",
+            "ERROR",
+            f"[ExecutionPlan] RECHAZADO — ejecución real no implementada para cross-platform. "
+            f"Leg1: {self.leg1_symbol} {self.leg1_side} @{leg1_price:.4f}, "
+            f"Leg2: {self.leg2_symbol} {self.leg2_side} @{leg2_price:.4f}. "
+            f"Usar paper_trading=True para simulación explícita.",
             self.worker_id,
         )
-        await self._simulate_execution(
-            leg1_price, leg2_price, leg1_size, leg2_size, friction_details
+        raise NotImplementedError(
+            "Ejecución real de cross-platform arbitrage no implementada. "
+            "Usar paper_trading=True o integrar ejecución directa en supervisor."
         )
 
     def get_execution_details(self) -> Dict[str, Any]:

@@ -1479,4 +1479,135 @@ select option, select optgroup {
     50% { opacity: 0.4; }
 }
 
+/* --- INFO BUTTON & STRATEGIES MODAL --- */
+.info-btn {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all 0.2s ease-in-out;
+    margin-left: 8px;
+    outline: none;
+}
+
+.info-btn:hover {
+    background: rgba(0, 230, 255, 0.1);
+    color: var(--primary);
+    border-color: var(--primary);
+    box-shadow: 0 0 8px rgba(0, 230, 255, 0.2);
+}
+
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    opacity: 1;
+    transition: opacity 0.25s ease-in-out;
+}
+
+.modal-overlay.hidden {
+    display: none !important;
+}
+
+.modal-content {
+    background: #181a20;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    width: 90%;
+    max-width: 850px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 30px rgba(0, 230, 255, 0.03);
+    animation: modal-enter 0.3s cubic-bezier(0.1, 0.8, 0.2, 1);
+    overflow: hidden;
+}
+
+@keyframes modal-enter {
+    from { transform: scale(0.95); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+}
+
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border-color);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.modal-header h3 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 700;
+    color: #eaecef;
+    letter-spacing: 0.5px;
+}
+
+.close-modal-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 1.5rem;
+    cursor: pointer;
+    line-height: 1;
+    transition: color 0.15s;
+    outline: none;
+}
+
+.close-modal-btn:hover {
+    color: #f6465d;
+}
+
+.modal-body {
+    padding: 24px;
+    overflow-y: auto;
+}
+
+.strategies-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+    text-align: left;
+}
+
+.strategies-table th {
+    background-color: rgba(255, 255, 255, 0.02);
+    color: var(--text-secondary);
+    font-weight: 600;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.strategies-table td {
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+    line-height: 1.4;
+    vertical-align: top;
+}
+
+.strategies-table tbody tr:hover {
+    background-color: rgba(255, 255, 255, 0.01);
+}
+
+.strategies-table td strong {
+    color: var(--primary);
+}
+
 

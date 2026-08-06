@@ -85,21 +85,14 @@ class MakerLiquidityRewardsStrategy(BaseStrategy):
 
                 if self.db:
                     self.db.log("INFO", f"[Maker-Reward] 💎 {reason}", self.worker_id)
-                    self._position_id = self.db.save_position(
-                        self.worker_id,
-                        self.symbol,
-                        "BUY_LIMIT",
-                        maker_buy_price,
-                        maker_no_price
-                    )
 
                 return SignalEvent(
                     symbol=self.symbol,
                     side="BUY",
                     price=maker_buy_price,
                     reason=reason,
-                    amount=0.5,
-                    position_id=self._position_id
+                    position_size_usd=self.position_size_usd,
+                    position_id=None
                 )
 
         return None

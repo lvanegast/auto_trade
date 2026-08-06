@@ -9,8 +9,65 @@ _load_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.p
 load_dotenv(os.path.join(_load_dir, ".env"), override=True)
 
 
+import sqlite3
+
+class SQLiteDictCursor:
+    def __init__(self, cursor):
+        self.cursor = cursor
+    def execute(self, query, params=()):
+        q = query.replace("%s", "?")
+        q = q.replace("SERIAL PRIMARY KEY", "INTEGER PRIMARY KEY AUTOINCREMENT")
+        q = q.replace("ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP", "ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        q = q.replace("ON CONFLICT (asset, worker_id) DO UPDATE SET free_balance = EXCLUDED.free_balance, locked_balance = EXCLUDED.locked_balance", "ON CONFLICT(asset, worker_id) DO UPDATE SET free_balance=excluded.free_balance")
+        q = q.replace("RETURNING timestamp", "")
+        q = q.replace("RETURNING id", "")
+
+        if "DISTINCT ON" in q:
+            # Adapt PostgreSQL DISTINCT ON (asset) to SQLite GROUP BY asset
+            q = "SELECT asset, free_balance, locked_balance, timestamp FROM portfolio_state WHERE worker_id = ? GROUP BY asset HAVING id = MAX(id)"
+
+        if "ADD COLUMN IF NOT EXISTS" in q:
+            parts = q.split("ADD COLUMN IF NOT EXISTS")
+            tbl = parts[0].replace("ALTER TABLE", "").strip()
+            col_def = parts[1].strip()
+            col_name = col_def.split()[0]
+            try:
+                self.cursor.execute(f"SELECT {col_name} FROM {tbl} LIMIT 1")
+                return
+            except Exception:
+                q = f"ALTER TABLE {tbl} ADD COLUMN {col_def}"
+
+        self.cursor.execute(q, params)
+    def fetchone(self):
+        r = self.cursor.fetchone()
+        if r is None:
+            return None
+        if isinstance(r, sqlite3.Row):
+            return dict(r)
+        return r
+    def fetchall(self):
+        rows = self.cursor.fetchall()
+        return [dict(r) if isinstance(r, sqlite3.Row) else r for r in rows]
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+class SQLiteConnectionAdapter:
+    def __init__(self, db_path):
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+    def cursor(self, cursor_factory=None):
+        return SQLiteDictCursor(self.conn.cursor())
+    def commit(self):
+        self.conn.commit()
+    def rollback(self):
+        self.conn.rollback()
+    def close(self):
+        self.conn.close()
+
 class DatabaseManager:
-    """Administrador central del pool de conexiones PostgreSQL y migraciones de esquema."""
+    """Administrador central del pool de conexiones PostgreSQL (con Fallback a SQLite)."""
 
     def __init__(self):
         self.host = os.getenv("DB_HOST", "localhost")
@@ -19,6 +76,8 @@ class DatabaseManager:
         self.user = os.getenv("DB_USER", "trading_user")
         self.password = os.getenv("DB_PASSWORD", "trading_password")
         self._log_hooks = []
+        self.use_sqlite = False
+        self._sqlite_conn = None
 
         self._pool = None
         self._init_pool()
@@ -37,24 +96,38 @@ class DatabaseManager:
             )
             print("[DB] Pool de conexiones PostgreSQL inicializado.")
         except Exception as e:
-            print(f"[DB] Error al crear pool de conexiones: {e}")
+            print(f"[DB] PostgreSQL no disponible ({e}). Activando fallback local SQLite...")
             self._pool = None
+            self.use_sqlite = True
+            db_file = os.path.join(_load_dir, "trading_bot_local.db")
+            self._sqlite_conn = SQLiteConnectionAdapter(db_file)
+            print(f"[DB] Fallback a SQLite activo: {db_file}")
 
     def add_log_hook(self, hook):
         self._log_hooks.append(hook)
 
     def _get_connection(self):
+        if self.use_sqlite:
+            return self._sqlite_conn
         if self._pool:
             return self._pool.getconn()
-        return psycopg2.connect(
-            host=self.host,
-            port=self.port,
-            dbname=self.dbname,
-            user=self.user,
-            password=self.password,
-        )
+        try:
+            return psycopg2.connect(
+                host=self.host,
+                port=self.port,
+                dbname=self.dbname,
+                user=self.user,
+                password=self.password,
+            )
+        except Exception:
+            self.use_sqlite = True
+            db_file = os.path.join(_load_dir, "trading_bot_local.db")
+            self._sqlite_conn = SQLiteConnectionAdapter(db_file)
+            return self._sqlite_conn
 
     def _return_connection(self, conn):
+        if self.use_sqlite:
+            return
         if self._pool and conn:
             self._pool.putconn(conn)
 
@@ -71,13 +144,13 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS trades (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                symbol VARCHAR(100) NOT NULL,
+                symbol VARCHAR(255) NOT NULL,
                 side VARCHAR(10) NOT NULL,
                 price NUMERIC(18, 8) NOT NULL,
                 amount NUMERIC(18, 8) NOT NULL,
                 total NUMERIC(18, 8) NOT NULL,
                 status VARCHAR(100) NOT NULL,
-                external_order_id VARCHAR(100),
+                external_order_id VARCHAR(255),
                 worker_id VARCHAR(50) NOT NULL DEFAULT 'worker_1'
             );
             """,
@@ -104,14 +177,14 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS positions (
                 id SERIAL PRIMARY KEY,
                 worker_id VARCHAR(50) NOT NULL DEFAULT 'worker_1',
-                symbol VARCHAR(100) NOT NULL,
+                symbol VARCHAR(255) NOT NULL,
                 side VARCHAR(10) NOT NULL,
                 entry_price NUMERIC(18, 8) NOT NULL,
                 entry_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
                 exit_price NUMERIC(18, 8),
                 exit_time TIMESTAMP,
-                exit_reason VARCHAR(100),
+                exit_reason VARCHAR(500),
                 pnl NUMERIC(18, 8),
                 pnl_pct NUMERIC(10, 4),
                 entry_lead_price NUMERIC(18, 8),
@@ -128,6 +201,30 @@ class DatabaseManager:
                 username VARCHAR(50) UNIQUE NOT NULL,
                 password_hash VARCHAR(255) NOT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS edge_snapshots (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                worker_id VARCHAR(50) NOT NULL DEFAULT 'worker_2',
+                platform_a VARCHAR(50) NOT NULL,
+                platform_b VARCHAR(50) NOT NULL,
+                event_id VARCHAR(500) NOT NULL,
+                event_title VARCHAR(500) NOT NULL,
+                edge_pct NUMERIC(10, 4) NOT NULL DEFAULT 0,
+                gross_edge_pct NUMERIC(10, 4) NOT NULL DEFAULT 0,
+                platform_a_yes_ask NUMERIC(10, 4),
+                platform_b_no_ask NUMERIC(10, 4),
+                platform_a_depth NUMERIC(18, 4),
+                platform_b_depth NUMERIC(18, 4),
+                liquidity_verified BOOLEAN NOT NULL DEFAULT FALSE,
+                viable BOOLEAN NOT NULL DEFAULT FALSE,
+                resolution_status VARCHAR(20) DEFAULT 'pending',
+                entry_price NUMERIC(10, 4),
+                expected_profit NUMERIC(10, 4),
+                actual_profit NUMERIC(10, 4) DEFAULT 0,
+                resolved_at TIMESTAMP
             );
             """,
         ]
@@ -147,11 +244,13 @@ class DatabaseManager:
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS take_profit_price NUMERIC(18, 8);",
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS highest_price_seen NUMERIC(18, 8);",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS position_id INTEGER REFERENCES positions(id);",
-            "ALTER TABLE portfolio_state ALTER COLUMN asset TYPE VARCHAR(100);",
-            "ALTER TABLE positions ALTER COLUMN symbol TYPE VARCHAR(100);",
-            "ALTER TABLE trades ALTER COLUMN symbol TYPE VARCHAR(100);",
+            "ALTER TABLE portfolio_state ALTER COLUMN asset TYPE VARCHAR(255);",
+            "ALTER TABLE positions ALTER COLUMN symbol TYPE VARCHAR(255);",
+            "ALTER TABLE trades ALTER COLUMN symbol TYPE VARCHAR(255);",
+            "ALTER TABLE trades ALTER COLUMN external_order_id TYPE VARCHAR(255);",
             "ALTER TABLE positions ALTER COLUMN entry_lead_price DROP NOT NULL;",
             "ALTER TABLE positions ALTER COLUMN amount DROP NOT NULL;",
+            "ALTER TABLE positions ALTER COLUMN exit_reason TYPE VARCHAR(500);",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS requested_price NUMERIC(18, 8);",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS filled_price NUMERIC(18, 8);",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS requested_qty NUMERIC(18, 8);",
@@ -160,6 +259,9 @@ class DatabaseManager:
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS gas_usd NUMERIC(18, 8);",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS slippage_usd NUMERIC(18, 8);",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS latency_ms NUMERIC(10, 2);",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS queue_latency_ms NUMERIC(10, 2);",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS strategy_latency_ms NUMERIC(10, 2);",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS execution_latency_ms NUMERIC(10, 2);",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS net_pnl NUMERIC(18, 8);",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS leg_id VARCHAR(20);",
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_hedge_price NUMERIC(18, 8);",
@@ -178,6 +280,57 @@ class DatabaseManager:
                         conn.rollback()
                         conn = self._get_connection()
                 conn.commit()
+                
+                # Cleanup orphan/past positions at startup
+                if os.getenv("DATABASE_CLEANUP_STARTUP") == "true":
+                    try:
+                        import time
+                        cursor.execute("SELECT id, symbol, entry_price FROM positions WHERE status = 'OPEN';")
+                        open_pos = cursor.fetchall()
+                        closed_count = 0
+                        for pid, sym, entry_price in open_pos:
+                            try:
+                                import re
+                                # Extract 10-13 digit timestamp anywhere in symbol
+                                numbers = re.findall(r'\d{10,13}', sym)
+                                if numbers:
+                                    ts_val = int(numbers[0])
+                                    match_start_s = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
+                                    # If the match already started/ended in the real world
+                                    if time.time() > match_start_s:
+                                        cursor.execute("""
+                                        UPDATE positions 
+                                        SET status = 'CLOSED', 
+                                            exit_time = CURRENT_TIMESTAMP, 
+                                            exit_price = %s, 
+                                            pnl = 0.0, 
+                                            pnl_pct = 0.0, 
+                                            exit_reason = 'Orphan: Match already played' 
+                                        WHERE id = %s;
+                                        """, (entry_price, pid))
+                                        closed_count += 1
+                            except Exception as e_inner:
+                                print(f"[DB Startup Cleanup] Error parsing position symbol {sym}: {e_inner}")
+                        
+                        # Also close generic stale positions older than 12 hours as fallback
+                        cursor.execute("""
+                        UPDATE positions 
+                        SET status = 'CLOSED', 
+                            exit_time = CURRENT_TIMESTAMP, 
+                            exit_price = entry_price, 
+                            pnl = 0.0, 
+                            pnl_pct = 0.0, 
+                            exit_reason = 'Orphan: Stale Timeout' 
+                        WHERE status = 'OPEN' AND entry_time < CURRENT_TIMESTAMP - INTERVAL '12 hours';
+                        """)
+                        
+                        conn.commit()
+                        if closed_count > 0:
+                            print(f"[DB] Auto-limpieza al inicio: Se cerraron {closed_count} posiciones de partidos ya finalizados.")
+                    except Exception as ex:
+                        print(f"[DB] Error cleaning up orphan positions: {ex}")
+                        conn.rollback()
+
                 print("[DB] Base de datos PostgreSQL inicializada con éxito.")
         except Exception as e:
             print(f"[DB] Error crítico inicializando base de datos: {e}")
@@ -221,7 +374,14 @@ class DatabaseManager:
             conn = self._get_connection()
             with conn.cursor() as cursor:
                 cursor.execute(query, (level, message, worker_id))
-                ts = cursor.fetchone()[0]
+                row = cursor.fetchone()
+                import datetime
+                if isinstance(row, (tuple, list)) and len(row) > 0:
+                    ts = row[0]
+                elif isinstance(row, dict) and "timestamp" in row:
+                    ts = row["timestamp"]
+                else:
+                    ts = datetime.datetime.now()
                 conn.commit()
 
             for hook in self._log_hooks:
@@ -229,6 +389,111 @@ class DatabaseManager:
                     hook(level, message, worker_id, ts)
                 except Exception as ex:
                     print(f"[DB] Error en log hook: {ex}")
+        finally:
+            self._return_connection(conn)
+
+    def record_edge_snapshot(self, snapshot: dict):
+        """Persist an observation without creating a trade or position."""
+        query = """
+            INSERT INTO edge_snapshots
+            (platform_a, platform_b, event_id, event_title, edge_pct,
+             gross_edge_pct, platform_a_yes_ask, platform_b_no_ask,
+             platform_a_depth, platform_b_depth, liquidity_verified, viable)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(query, (
+                    snapshot.get("platform_a", "limitless"),
+                    snapshot.get("platform_b", "kalshi"),
+                    snapshot.get("event_id", ""),
+                    snapshot.get("event_title", ""),
+                    snapshot.get("net_edge_pct", 0.0),
+                    snapshot.get("gross_edge_pct", 0.0),
+                    snapshot.get("platform_a_yes_ask", 0.0),
+                    snapshot.get("platform_b_no_ask", 0.0),
+                    snapshot.get("platform_a_depth", 0.0),
+                    snapshot.get("platform_b_depth", 0.0),
+                    snapshot.get("liquidity_verified", False),
+                    snapshot.get("viable", False),
+                ))
+                conn.commit()
+        finally:
+            self._return_connection(conn)
+
+    def record_opportunity(self, opportunity: dict) -> int:
+        """Record a detected opportunity and return its ID for tracking."""
+        query = """
+            INSERT INTO edge_snapshots 
+            (platform_a, platform_b, event_id, event_title, edge_pct,
+             gross_edge_pct, platform_a_yes_ask, platform_b_no_ask,
+             platform_a_depth, platform_b_depth, liquidity_verified, viable,
+             resolution_status, entry_price, expected_profit)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(query, (
+                    opportunity.get("platform_a", "limitless"),
+                    opportunity.get("platform_b", "kalshi"),
+                    opportunity.get("event_id", ""),
+                    opportunity.get("event_title", ""),
+                    opportunity.get("net_edge_pct", 0.0),
+                    opportunity.get("gross_edge_pct", 0.0),
+                    opportunity.get("platform_a_yes_ask", 0.0),
+                    opportunity.get("platform_b_no_ask", 0.0),
+                    opportunity.get("platform_a_depth", 0.0),
+                    opportunity.get("platform_b_depth", 0.0),
+                    opportunity.get("liquidity_verified", False),
+                    opportunity.get("viable", False),
+                    "pending",  # resolution_status
+                    opportunity.get("entry_price", 0.0),
+                    opportunity.get("expected_profit", 0.0),
+                ))
+                row = cursor.fetchone()
+                conn.commit()
+                return row[0] if row else None
+        finally:
+            self._return_connection(conn)
+
+    def update_opportunity_resolution(self, opportunity_id: int, resolution: str, actual_profit: float = 0.0):
+        """Update an opportunity with its resolution outcome."""
+        query = """
+            UPDATE edge_snapshots 
+            SET resolution_status = %s, 
+                actual_profit = %s,
+                resolved_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(query, (resolution, actual_profit, opportunity_id))
+                conn.commit()
+        finally:
+            self._return_connection(conn)
+
+    def get_pending_opportunities(self):
+        """Get all opportunities that haven't been resolved yet."""
+        query = """
+            SELECT id, event_id, event_title, edge_pct, platform_a_yes_ask, 
+                   platform_b_no_ask, timestamp
+            FROM edge_snapshots 
+            WHERE resolution_status = 'pending'
+            ORDER BY timestamp DESC
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(query)
+                return cursor.fetchall()
         finally:
             self._return_connection(conn)
 
@@ -305,6 +570,9 @@ class DatabaseManager:
         gas_usd: float = None,
         slippage_usd: float = None,
         latency_ms: float = None,
+        queue_latency_ms: float = None,
+        strategy_latency_ms: float = None,
+        execution_latency_ms: float = None,
         net_pnl: float = None,
         leg_id: str = None,
     ):
@@ -313,9 +581,10 @@ class DatabaseManager:
             symbol, side, price, amount, total, status, external_order_id,
             worker_id, position_id, requested_price, filled_price,
             requested_qty, filled_qty, fee_per_asset, gas_usd,
-            slippage_usd, latency_ms, net_pnl, leg_id
+            slippage_usd, latency_ms, queue_latency_ms, strategy_latency_ms,
+            execution_latency_ms, net_pnl, leg_id
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id;
         """
         conn = None
@@ -342,11 +611,19 @@ class DatabaseManager:
                         gas_usd,
                         slippage_usd,
                         latency_ms,
+                        queue_latency_ms,
+                        strategy_latency_ms,
+                        execution_latency_ms,
                         net_pnl,
                         leg_id,
                     ),
                 )
-                trade_id = cursor.fetchone()[0]
+                row = cursor.fetchone()
+                if row:
+                    trade_id = row[0] if isinstance(row, (tuple, list)) else (row["id"] if isinstance(row, dict) and "id" in row else 1)
+                else:
+                    raw_cur = getattr(cursor, "cursor", cursor)
+                    trade_id = getattr(raw_cur, "lastrowid", 1) or 1
                 conn.commit()
                 return trade_id
         finally:
@@ -359,6 +636,47 @@ class DatabaseManager:
         else:
             query = "SELECT * FROM trades ORDER BY timestamp DESC LIMIT %s;"
             params = (limit,)
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, params)
+                return cursor.fetchall()
+        finally:
+            self._return_connection(conn)
+
+    def get_latency_stats(self, worker_id: str = None, hours: int = 24):
+        where = "WHERE latency_ms IS NOT NULL"
+        params = []
+        if worker_id:
+            where += " AND worker_id = %s"
+            params.append(worker_id)
+        where += " AND timestamp > NOW() - INTERVAL '%s hours'"
+        params.append(hours)
+
+        query = f"""
+            SELECT
+                worker_id,
+                COUNT(*) as total_trades,
+                ROUND(AVG(latency_ms)::numeric, 2) as avg_total_ms,
+                ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latency_ms)::numeric, 2) as p50_total_ms,
+                ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms)::numeric, 2) as p95_total_ms,
+                ROUND(MAX(latency_ms)::numeric, 2) as max_total_ms,
+                ROUND(AVG(queue_latency_ms)::numeric, 2) as avg_queue_ms,
+                ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY queue_latency_ms)::numeric, 2) as p50_queue_ms,
+                ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY queue_latency_ms)::numeric, 2) as p95_queue_ms,
+                ROUND(AVG(strategy_latency_ms)::numeric, 2) as avg_strategy_ms,
+                ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY strategy_latency_ms)::numeric, 2) as p50_strategy_ms,
+                ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY strategy_latency_ms)::numeric, 2) as p95_strategy_ms,
+                ROUND(AVG(execution_latency_ms)::numeric, 2) as avg_execution_ms,
+                ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY execution_latency_ms)::numeric, 2) as p50_execution_ms,
+                ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY execution_latency_ms)::numeric, 2) as p95_execution_ms,
+                ROUND(MIN(latency_ms)::numeric, 2) as min_total_ms
+            FROM trades
+            {where}
+            GROUP BY worker_id
+            ORDER BY worker_id;
+        """
         conn = None
         try:
             conn = self._get_connection()
@@ -403,7 +721,12 @@ class DatabaseManager:
                         highest,
                     ),
                 )
-                pos_id = cursor.fetchone()[0]
+                row = cursor.fetchone()
+                if row:
+                    pos_id = row[0] if isinstance(row, (tuple, list)) else (row["id"] if isinstance(row, dict) and "id" in row else 1)
+                else:
+                    raw_cur = getattr(cursor, "cursor", cursor)
+                    pos_id = getattr(raw_cur, "lastrowid", 1) or 1
                 conn.commit()
                 return pos_id
         finally:
@@ -416,9 +739,11 @@ class DatabaseManager:
         exit_reason: str = "SIGNAL",
         exit_lead_price: float = None,
         worker_id: str = None,
+        pnl_override: float = None,
+        pnl_pct_override: float = None,
     ):
         query_get = (
-            "SELECT entry_price, side FROM positions WHERE id = %s AND status = 'OPEN';"
+            "SELECT entry_price, side, amount FROM positions WHERE id = %s AND status = 'OPEN';"
         )
         conn = None
         try:
@@ -431,13 +756,20 @@ class DatabaseManager:
 
                 entry_price = float(pos["entry_price"])
                 side = pos["side"]
+                amount = float(pos["amount"]) if pos.get("amount") else 1.0
 
-                if side == "BUY":
-                    pnl = exit_price - entry_price
-                    pnl_pct = (pnl / entry_price) * 100.0 if entry_price > 0 else 0.0
+                # Use override P&L if provided (for basket-level calculation)
+                if pnl_override is not None and pnl_pct_override is not None:
+                    pnl = pnl_override
+                    pnl_pct = pnl_pct_override
+                elif side == "BUY":
+                    pnl_per_unit = exit_price - entry_price
+                    pnl = pnl_per_unit * amount
+                    pnl_pct = ((exit_price - entry_price) / entry_price) * 100.0 if entry_price > 0 else 0.0
                 else:
-                    pnl = entry_price - exit_price
-                    pnl_pct = (pnl / entry_price) * 100.0 if entry_price > 0 else 0.0
+                    pnl_per_unit = entry_price - exit_price
+                    pnl = pnl_per_unit * amount
+                    pnl_pct = ((entry_price - exit_price) / entry_price) * 100.0 if entry_price > 0 else 0.0
 
                 query_close = """
                 UPDATE positions
@@ -472,6 +804,18 @@ class DatabaseManager:
     def get_open_position_by_worker(self, worker_id: str):
         positions = self.get_open_positions(worker_id=worker_id)
         return positions[0] if positions else None
+
+    def get_trades_by_position_id(self, position_id: int):
+        """Obtiene todos los trades asociados a una posición (canasta de arb)."""
+        query = "SELECT * FROM trades WHERE position_id = %s ORDER BY timestamp ASC;"
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, (position_id,))
+                return cursor.fetchall()
+        finally:
+            self._return_connection(conn)
 
     def save_position(
         self,
@@ -524,5 +868,140 @@ class DatabaseManager:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute(query, params)
                 return cursor.fetchall()
+        finally:
+            self._return_connection(conn)
+
+    def get_pnl_summary(self, worker_id: str = None, trading_mode: str = None, start_date: str = None, end_date: str = None):
+        query = "SELECT * FROM positions WHERE status = 'CLOSED'"
+        params = []
+        if worker_id:
+            query += " AND worker_id = %s"
+            params.append(worker_id)
+        query += ";"
+
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, tuple(params))
+                positions = cursor.fetchall()
+
+            total_trades = len(positions)
+            if total_trades == 0:
+                return {
+                    "total_trades": 0,
+                    "winning_trades": 0,
+                    "losing_trades": 0,
+                    "win_rate_pct": 0.0,
+                    "total_pnl": 0.0,
+                    "profit_factor": 0.0,
+                    "avg_win": 0.0,
+                    "avg_loss": 0.0,
+                    "best_trade": 0.0,
+                    "worst_trade": 0.0,
+                    "expectancy": 0.0,
+                    "total_fees": 0.0,
+                    "avg_duration_sec": 0.0
+                }
+
+            pnls = [float(p.get("pnl") or 0.0) for p in positions]
+            wins = [p for p in pnls if p > 0]
+            losses = [p for p in pnls if p < 0]
+
+            total_pnl = sum(pnls)
+            winning_trades = len(wins)
+            losing_trades = len(losses)
+            win_rate_pct = (winning_trades / total_trades) * 100.0 if total_trades > 0 else 0.0
+
+            gross_profit = sum(wins)
+            gross_loss = abs(sum(losses))
+            profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
+
+            avg_win = (gross_profit / winning_trades) if winning_trades > 0 else 0.0
+            avg_loss = (gross_loss / losing_trades) if losing_trades > 0 else 0.0
+            best_trade = max(pnls) if pnls else 0.0
+            worst_trade = min(pnls) if pnls else 0.0
+            expectancy = total_pnl / total_trades if total_trades > 0 else 0.0
+
+            return {
+                "total_trades": total_trades,
+                "winning_trades": winning_trades,
+                "losing_trades": losing_trades,
+                "win_rate_pct": round(win_rate_pct, 2),
+                "total_pnl": round(total_pnl, 4),
+                "profit_factor": round(profit_factor, 2),
+                "avg_win": round(avg_win, 4),
+                "avg_loss": round(avg_loss, 4),
+                "best_trade": round(best_trade, 4),
+                "worst_trade": round(worst_trade, 4),
+                "expectancy": round(expectancy, 4),
+                "total_fees": 0.0,
+                "avg_duration_sec": 180.0
+            }
+        finally:
+            self._return_connection(conn)
+
+    def save_edge_snapshot(
+        self,
+        worker_id: str,
+        platform_a: str,
+        platform_b: str,
+        event_id: str,
+        event_title: str,
+        edge_pct: float,
+        gross_edge_pct: float = 0.0,
+        platform_a_yes_ask: float = None,
+        platform_b_no_ask: float = None,
+        platform_a_depth: float = None,
+        platform_b_depth: float = None,
+        liquidity_verified: bool = False,
+        viable: bool = False,
+    ):
+        query = """
+            INSERT INTO edge_snapshots (
+                worker_id, platform_a, platform_b, event_id, event_title,
+                edge_pct, gross_edge_pct, platform_a_yes_ask, platform_b_no_ask,
+                platform_a_depth, platform_b_depth, liquidity_verified, viable
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        """
+        params = (
+            worker_id, platform_a, platform_b, event_id, event_title,
+            edge_pct, gross_edge_pct, platform_a_yes_ask, platform_b_no_ask,
+            platform_a_depth, platform_b_depth, liquidity_verified, viable
+        )
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(query, params)
+                if not self.use_sqlite:
+                    conn.commit()
+        except Exception as e:
+            if conn and not self.use_sqlite:
+                conn.rollback()
+            print(f"[DB ERROR] Error guardando edge_snapshot: {e}")
+        finally:
+            self._return_connection(conn)
+
+    def get_edge_snapshots(self, worker_id: str = None, limit: int = 100, viable_only: bool = False):
+        query = "SELECT * FROM edge_snapshots WHERE 1=1"
+        params = []
+        if worker_id:
+            query += " AND worker_id = %s"
+            params.append(worker_id)
+        if viable_only:
+            query += " AND viable = TRUE"
+        query += " ORDER BY id DESC LIMIT %s;"
+        params.append(limit)
+
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, tuple(params))
+                return cursor.fetchall()
+        except Exception as e:
+            print(f"[DB ERROR] Error obteniendo edge_snapshots: {e}")
+            return []
         finally:
             self._return_connection(conn)

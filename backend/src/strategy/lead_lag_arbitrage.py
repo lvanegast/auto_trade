@@ -160,7 +160,10 @@ class LeadLagArbitrageStrategy(BaseStrategy):
             lead_price = BinanceTracker.latest_btc_price
 
         if lead_price <= 0.0:
-            return None
+            if current_price > 0:
+                lead_price = current_price
+            else:
+                return None
 
         if self.last_position is not None:
             return self._evaluate_exit(current_price, lead_price, event)

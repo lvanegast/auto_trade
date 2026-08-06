@@ -1,28 +1,67 @@
-# 🤖 Auto Trade — Bot de Trading Event-Driven
+# 🤖 Auto Trade — Bot de Arbitraje Cuantitativo Event-Driven (Multi-Worker 24/7)
 
-> Bot de trading algorítmico con arquitectura event-driven, dashboard web en tiempo real y soporte para brokers reales (IG Group, OANDA) y modo simulado (paper trading).
+> Sistema de trading cuantitativo desacoplado para mercados de predicción y activos digitales (Limitless Exchange en Base L2, Kalshi, Alpaca y Binance Spot Oracle). Arquitectura event-driven multi-trabajador en Docker con el objetivo estricto de **rentabilidad neta >2.0% por operación** mediante **Arbitraje Puro Libre de Riesgo (Cobertura 100% $1 \times N$)** y ejecución **Post-Only Maker (0% Comisiones)**.
 
 ---
 
-## 📐 Arquitectura General
+## 🎯 NORTE DEL PROYECTO & REGLAS DE ORO
 
-El sistema sigue un patrón **event-driven** basado en una cola asíncrona (`asyncio.Queue`). Los componentes producen y consumen eventos de forma desacoplada:
+> [!IMPORTANT]
+> **OBJETIVO DE RENTABILIDAD:** Lograr un retorno neto **>2.0% libre de comisiones por operación**.
+> **GESTIÓN DE CAPITAL PEQUEÑO:** 
+> * Posiciones de **$1.00 a $3.00 USD por canasta** para no bloquear saldo.
+> * **Máximo 4 posiciones abiertas simultáneas** (`MAX_CONCURRENT_POSITIONS=4`).
+> * **Máximo 3 opciones por evento** (`MAX_ARB_OUTCOMES=3`) para eliminar el riesgo de sobre-exposición en canastas gigantes de 30 opciones.
+> * **100% Arbitraje Puro de Cobertura Garantizada:** Sin trading especulativo, sin scalping direccional.
 
-```
+---
+
+## 🛡️ Estrategias de Arbitraje Activas (6 Workers en Paralelo)
+
+El sistema opera con 6 trabajadores (*workers*) independientes coordinados por `TradingEngine`:
+
+| Worker ID | Nombre del Worker | Plataforma / Feeder | Tipo de Arbitraje / Función |
+| :--- | :--- | :--- | :--- |
+| **Worker 1** | Limitless Intraday General | Limitless Exchange (Base L2) | Arbitraje Same-Day ($1 \times N$ en opciones de cierre el mismo día <24h). |
+| **Worker 2** | Cross-Platform Sports | Limitless vs Kalshi | Arbitraje Deportivo y eSports Cruzado (Candado Global Activo). |
+| **Worker 3** | Eventos Multi-Opciones | Limitless Exchange (Base L2) | Arbitraje $1 \times N$ en canastas de 3 o más opciones (Fútbol/Elecciones). |
+| **Worker 4** | Eventos Binarios | Limitless Exchange (Base L2) | Arbitraje $1 \times N$ en opciones de 2 resultados (YES/NO, Over/Under). |
+| **Worker 5** | Binance HFT Oracle | Binance Spot (`BTCUSDT`) | Oráculo Spot de Referencia (Desactivable vía `WORKER5_ENABLED=false` en Cloud). |
+| **Worker 6** | Crypto Atomic-Arb | Limitless Exchange (Base L2) | Arbitraje de Opciones de Bitcoin Intraday (5 y 15 min, cooldown 10m por fallo). |
+
+---
+
+## 🧮 Ejemplo de Arbitraje $1 \times N$ Ejecutado en Vivo
+
+En un partido de la UEFA Champions League (*Lincoln Red Imps FC vs Mjallby AIF*), con 3 resultados exclusivos:
+
+1. **Gana Lincoln Red Imps:** Comprado a **$0.1640 USD**
+2. **Gana Mjallby AIF:** Comprado a **$0.6235 USD**
+3. **Empate:** Comprado a **$0.1740 USD**
+
+$$\text{Costo Total} = \$0.1640 + \$0.6235 + \$0.1740 = \mathbf{\$0.9615\text{ USD}}$$
+$$\text{Cobro Garantizado al Finalizar} = \mathbf{\$1.0000\text{ USD}}$$
+$$\text{Ganancia Neta Asegurada} = \mathbf{+\$0.0385\text{ USD (+3.85\% ROI neto)}}$$
+
+---
+
+## 📐 Arquitectura del Sistema
+
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                         FRONTEND (web/)                          │
 │              Dashboard HTML/JS — Puerto 8080                    │
 └────────────────────────────┬────────────────────────────────────┘
-                             │ HTTP / REST
+                             │ HTTP REST / WebSockets
 ┌────────────────────────────▼────────────────────────────────────┐
-│                     FastAPI API (src/api.py)                     │
-│        /api/status  /api/trades  /api/logs  /api/start /stop    │
+│                    FastAPI API (backend/src/api/app.py)         │
+│     /api/status   /api/trades   /api/arbitrage   /api/workers   │
 └───────────┬────────────────────────────────────────────┬────────┘
             │                                            │
 ┌───────────▼──────────────┐              ┌─────────────▼────────┐
 │    TradingEngine          │              │   DatabaseManager     │
-│    (src/engine.py)        │◄────────────►│   (src/database.py)  │
-│                           │              │   PostgreSQL          │
+│  (src/engine/supervisor) │◄────────────►│ (src/database/conn)  │
+│                           │              │   PostgreSQL 16      │
 │  ┌──────────────────────┐ │              └──────────────────────┘
 │  │   asyncio.Queue       │ │
 │  │                       │ │
@@ -32,283 +71,177 @@ El sistema sigue un patrón **event-driven** basado en una cola asíncrona (`asy
 │  └──────────────────────┘ │
 │            │               │
 │  ┌─────────▼────────────┐  │
-│  │      Feeder           │  │
-│  │  (Mock/OANDA/IG)      │  │
+│  │      Feeders         │  │
+│  │ (Limitless/Kalshi/   │  │
+│  │  Alpaca/Binance)     │  │
 │  └──────────────────────┘  │
-│  ┌─────────────────────┐   │
-│  │     Strategy         │   │
-│  │   (EMA + RSI)        │   │
-│  └─────────────────────┘   │
 └──────────────────────────────┘
-```
-
-### Flujo de un Tick de Precio
-
-```
-Feeder → PriceUpdateEvent → Queue → Engine → Strategy.on_price_update()
-                                                    │
-                                         (Si hay cruce EMA + RSI válido)
-                                                    │
-                                              SignalEvent → Queue → Engine._execute_order()
-                                                                          │
-                                                                    Actualiza DB (trade + portfolio)
 ```
 
 ---
 
-## 📦 Estructura del Proyecto
+## 📦 Estructura del Repositorio
 
-```
+```text
 auto_trade/
-├── main.py                  # Punto de entrada — levanta uvicorn en puerto 8080
-├── pyproject.toml           # Metadatos del proyecto y dependencias (uv/pip)
-├── requirements.txt         # Dependencias instalables por pip
-├── docker-compose.yml       # Levanta PostgreSQL 16 en Docker
-├── .env                     # Variables de entorno activas (NO subir a git)
-├── .env.template            # Plantilla de configuración para nuevos devs
-├── .gitignore
+├── main.py                  # Entrypoint principal (Uvicorn puerto 8080)
+├── Dockerfile               # Imagen Docker de producción (python:3.10-slim + uv)
+├── docker-compose.yml       # Orquestador (trading_bot_backend + trading_bot_db)
+├── pyproject.toml           # Dependencias administradas por Astral uv
+├── .env                     # Variables de entorno activas (gitignored)
+├── .env.template            # Plantilla de configuración
 │
-├── src/                     # Código fuente principal del backend
-│   ├── __init__.py
-│   ├── api.py               # Rutas FastAPI + CORS + mount del frontend
-│   ├── engine.py            # Motor event-driven (TradingEngine)
-│   ├── database.py          # Capa de acceso a datos PostgreSQL (DatabaseManager)
-│   ├── events.py            # Clases de eventos: PriceUpdate, Signal, Order
-│   │
-│   ├── feeders/             # Fuentes de datos de mercado
-│   │   ├── __init__.py
-│   │   ├── base.py          # Clase abstracta BaseFeeder
-│   │   ├── mock_feeder.py   # Simulador de precios sinusoidales (offline)
-│   │   ├── oanda_feeder.py  # Streaming en tiempo real via OANDA v20 API
-│   │   └── ig_feeder.py     # Streaming via IG Group + Lightstreamer
-│   │
-│   └── strategy/            # Estrategias de trading algorítmico
-│       ├── __init__.py
-│       ├── base.py          # Clase abstracta BaseStrategy (acumula precios en DataFrame)
-│       └── ema_rsi.py       # Estrategia EMA 9/21 + RSI 14 con suavizado de Wilder
+├── backend/                 # Código fuente principal de Python
+│   └── src/
+│       ├── api/
+│       │   └── app.py       # FastAPI REST endpoints + WebSockets
+│       ├── database/
+│       │   └── connection.py # Capa de datos PostgreSQL (psycopg2)
+│       ├── engine/
+│       │   ├── supervisor.py # Motor Multi-Worker (TradingEngine / TradingWorker)
+│       │   └── friction_guard.py # Módulo Anti-Fricción y Comisiones
+│       ├── feeders/
+│       │   ├── base.py
+│       │   ├── limitless_sports_feeder.py # Escaneo de mercados de fútbol
+│       │   ├── kalshi_feeder.py          # WebSocket REST Auth RSA PSS Kalshi Demo
+│       │   ├── alpaca_feeder.py          # Crypto Quotes Stream Alpaca
+│       │   └── binance_feeder.py         # Oráculo de Referencia HFT Spot
+│       └── strategy/
+│           ├── sports_arb.py            # Arbitraje 1xN intra-plataforma
+│           ├── cross_platform_arb.py    # Arbitraje cruzado de precios
+│           └── cross_platform_tracker.py# Rastreador centralizado de cotizaciones
 │
-└── web/                     # Frontend estático (servido por FastAPI)
-    ├── index.html           # Dashboard principal
-    ├── style.css            # Estilos del dashboard
-    └── app.js               # Lógica JS — polling al API, actualización de UI
+└── web/                     # Frontend estático servido en puerto 8080
+    ├── index.html           # Dashboard principal (TradingView charts + Workers tabs)
+    ├── style.css            # Estilos UI Dark Mode Neumórfico
+    └── app.js               # Lógica JS (Streaming WebSocket + REST Polling)
 ```
 
 ---
 
 ## ⚙️ Stack Tecnológico
 
-| Componente       | Tecnología                            |
-|------------------|---------------------------------------|
-| Backend          | Python 3.10+, FastAPI, Uvicorn        |
-| Base de Datos    | PostgreSQL 16 (via Docker)            |
-| ORM / Driver     | psycopg2-binary                       |
-| Análisis         | pandas (DataFrames para indicadores)  |
-| Broker Real 1    | OANDA v20 REST API (Forex)            |
-| Broker Real 2    | IG Group + Lightstreamer (streaming)  |
-| Frontend         | HTML5 + Vanilla JS + CSS              |
-| Empaquetado      | uv (pyproject.toml), pip              |
-| Contenedores     | Docker / docker-compose               |
+| Componente | Tecnología |
+| :--- | :--- |
+| **Backend** | Python 3.10+, FastAPI, Uvicorn, Asyncio |
+| **Base de Datos** | PostgreSQL 16 (Append-only portfolio & trades) |
+| **Gestión de Paquetes** | Astral `uv` |
+| **Contenedores** | Docker / docker-compose |
+| **Exchanges Integrados** | Limitless Exchange (Base L2), Kalshi Demo (RSA PSS), Alpaca Crypto, Binance Spot |
+| **Frontend** | HTML5, Vanilla JS, CSS3, Lightweight-Charts |
 
 ---
 
-## 🚀 Inicio Rápido
+## 🚀 Despliegue Rápido con Docker (Recomendado)
 
-### 1. Clonar y configurar entorno
-
+### 1. Iniciar los contenedores
 ```bash
-# Crear entorno virtual e instalar dependencias con uv
-uv sync
-
-# O con pip clásico
-pip install -r requirements.txt
+docker-compose up -d --build
 ```
 
-### 2. Configurar variables de entorno
+### 2. Abrir el Dashboard en el Navegador
+Navegar a: **`http://localhost:8080`**
 
+### 3. Verificar Estado de los Contenedores
 ```bash
-cp .env.template .env
-# Editar .env con tus credenciales
-```
-
-### 3. Levantar PostgreSQL con Docker
-
-```bash
-docker-compose up -d
-```
-
-### 4. Ejecutar el bot
-
-```bash
-python main.py
-# Dashboard disponible en: http://localhost:8080
+docker ps
+docker logs -f trading_bot_backend
 ```
 
 ---
 
-## 🔧 Configuración (`.env`)
+## 🔧 Variables de Entorno Clave (`.env`)
 
-| Variable           | Descripción                                            | Default         |
-|--------------------|--------------------------------------------------------|-----------------|
-| `DB_HOST`          | Host de PostgreSQL                                     | `localhost`     |
-| `DB_PORT`          | Puerto de PostgreSQL                                   | `5432`          |
-| `DB_NAME`          | Nombre de la base de datos                             | `trading_bot`   |
-| `DB_USER`          | Usuario de PostgreSQL                                  | `trading_user`  |
-| `DB_PASSWORD`      | Contraseña de PostgreSQL                               | `trading_password` |
-| `FEEDER_TYPE`      | Fuente de datos: `mock`, `oanda`, `ig`, `alpaca`, `kalshi`, `polymarket` | `mock` |
-| `TRADING_SYMBOL`   | Par de trading o Token ID de Polymarket/Kalshi         | `BTC/USD`       |
-| `TRADING_MODE`     | Modo de operación: `paper` (simulado)                  | `paper`         |
-| `AUTO_START`       | Iniciar el bot automáticamente en el arranque          | `true`          |
-| `OANDA_ACCOUNT_ID` | ID de cuenta OANDA (solo si `FEEDER_TYPE=oanda`)       | —               |
-| `OANDA_API_TOKEN`  | Token API de OANDA                                     | —               |
-| `IG_USERNAME`      | Usuario de IG Group                                    | —               |
-| `IG_PASSWORD`      | Contraseña de IG Group                                 | —               |
-| `IG_API_KEY`       | API Key de IG (demo o live)                            | —               |
-| `IG_ACC_NUMBER`    | Número de cuenta IG                                    | —               |
-| `IG_ENV`           | Entorno IG: `DEMO` o `LIVE`                            | `DEMO`          |
+| Variable | Descripción | Valor por Defecto |
+| :--- | :--- | :---: |
+| `MAX_CONCURRENT_POSITIONS` | Límite máximo de posiciones simultáneas activas | `4` |
+| `MAX_ARB_OUTCOMES` | Límite máximo de opciones por canasta de arbitraje | `3` |
+| `NEGRISK_MAX_OUTCOMES` | Límite de opciones para mercados NegRisk | `3` |
+| `KALSHI_ENV` | Entorno de Kalshi (`demo` o `prod`) | `demo` |
+| `KALSHI_API_KEY_ID` | Key ID para firma RSA en Kalshi | `cb0d6311...` |
+| `KALSHI_PRIVATE_KEY_PATH` | Ruta a la clave privada RSA `.pem` | `C:\Users\User\Downloads\kalshi_private_key.pem` |
+| `SPORTS_POLL_INTERVAL` | Frecuencia de escaneo en segundos para Limitless Sports | `1.0` |
+| `AUTO_START` | Auto-inicio de workers al levantar el contenedor | `true` |
+| `LIMITLESS_USE_WEBSOCKET` | Usar WebSocket para crypto workers (evita polling) | `true` |
 
 ---
 
-## 📊 Estrategia: Arbitraje de Latencia Lead-Lag (Estrategia Principal)
+## 📋 Documentación de Plataformas de Trading (Referencia API)
 
-La estrategia principal implementada en `src/strategy/lead_lag_arbitrage.py` es una lógica de arbitraje de latencia cuantitativo que compara un feed líder de alta velocidad con un broker/ejecutor rezagado:
+### Limitless Exchange (Base L2 CLOB)
 
-### Funcionamiento
-- **Líder (Binance):** Se conecta a un WebSocket de Binance en tiempo real para obtener precios spot de BTC y ETH instantáneos.
-- **Rezagado (Alpaca/Polymarket):** Las cotizaciones del worker local suelen sufrir retrasos (latencia de 100ms a 3s) frente al líder.
-- **Señales:**
-  - **BUY:** Si la cotización de Binance supera a la local por más del umbral configurado (`0.12%`), se realiza una compra rápida.
-  - **SELL:** Si la cotización de Binance cae por debajo de la local, se realiza una venta corta.
-- **Salida:**
-  - **Profit Target:** Al alcanzar el beneficio objetivo (`0.20%`).
-  - **Time Stop:** Salida automática si transcurren más de `8 segundos` en la operación.
+| Campo | Descripción |
+| :--- | :--- |
+| **Modelo** | Binary contracts (YES/NO). Settlement: $1.00 (win) / $0.00 (lose). |
+| **Price** | 0.00 – 1.00 USD por share. |
+| **Order type** | CLOB limit orders, post-only preferred (0% fees). |
+| **Sizing** | `amount` = number of shares to buy. `spend_usd = amount × price`. |
+| **Settlement** | Automatic on event resolution. Winning side gets $1.00 × shares held. |
+| **Key API** | `limitless_sdk.api.HttpClient` → REST. On-chain settlement on Base L2. |
+| **Fee model** | Maker 0% (post-only), Taker varies. We use post-only exclusively. |
+| **Risk** | Pure arbitrage: buy all N outcomes at total cost < $1.00, guaranteed $1.00 payout. |
 
----
+### Kalshi (Event Contracts)
 
-## 📊 Estrategia Alternativa: Probabilistic Kelly (Estrategia Opcional)
+| Campo | Descripción |
+| :--- | :--- |
+| **Modelo** | Binary event contracts. Settlement: $1.00 (yes) / $0.00 (no). |
+| **Price** | `yes_price` in cents (1–99). Equivalent to $0.01–$0.99. |
+| **Order type** | REST API with RSA-PSS signature authentication. |
+| **Sizing** | `count` = number of contracts. `spend_usd = count × price_in_dollars`. |
+| **Settlement** | Automatic on event expiry. YES holders get $1.00 × count. |
+| **Auth** | `KALSHI-ACCESS-KEY` + RSA-PSS signed `timestamp + method + path`. |
+| **Fee model** | No commission on demo. Production fees vary by market. |
+| **Endpoints** | `POST /portfolio/orders` (create), `GET /portfolio/positions` (sync). |
 
-Implementada en `src/strategy/probabilistic_kelly.py`, utiliza una actualización Bayesiana Beta-Binomial sobre la dirección del flujo de ticks recientes combinada con desequilibrio del libro de órdenes (OBI) para estimar la probabilidad real $p$. Modela el tamaño de posición dinámico mediante la fórmula del **Criterio de Kelly**.
+### Polymarket (CLOB Prediction Markets)
 
----
+| Campo | Descripción |
+| :--- | :--- |
+| **Modelo** | Binary/multi-outcome event tokens. Settlement: $1.00 or $0.00 per token. |
+| **Price** | 0.00 – 1.00 USDC per share. |
+| **Order type** | CLOB limit orders via REST API (Polygon blockchain settlement). |
+| **Sizing** | `size` = USDC amount to spend. `amount_of_shares = size / price`. |
+| **Settlement** | Smart contract resolution on Polygon. USDC payout to token holders. |
+| **Fee model** | Maker rebates available, Taker fee varies. |
+| **Note** | Cross-platform arb vs Limitless: same binary model enables direct price comparison. |
 
-## 🌐 API REST
+### Alpaca (Crypto/Stock Broker)
 
-| Método | Endpoint       | Descripción                              |
-|--------|----------------|------------------------------------------|
-| GET    | `/api/status`  | Estado del bot, precio actual, portafolio |
-| GET    | `/api/trades`  | Historial de operaciones (`?limit=N`)    |
-| GET    | `/api/logs`    | Logs de auditoría (`?limit=N`)           |
-| POST   | `/api/start`   | Inicia el bot de trading                 |
-| POST   | `/api/stop`    | Detiene el bot de trading                |
+| Campo | Descripción |
+| :--- | :--- |
+| **Modelo** | Traditional spot/fractional shares. |
+| **Order type** | Market orders via Python SDK (`alpaca-py`). |
+| **Sizing** | `qty` = number of shares/units. Fractional for crypto. |
+| **Settlement** | T+0 for crypto, T+1 for stocks. |
+| **Auth** | API key + secret (header-based). |
+| **Fee model** | $0 commission for crypto. |
 
----
+### Binance (Spot Oracle)
 
-## 🗄️ Esquema de Base de Datos
-
-### `bot_state`
-| Columna      | Tipo         | Descripción                        |
-|--------------|--------------|------------------------------------|
-| `key`        | VARCHAR(100) | Clave única de estado              |
-| `value`      | TEXT         | Valor de la variable               |
-| `updated_at` | TIMESTAMP    | Última actualización               |
-
-### `trades`
-| Columna             | Tipo          | Descripción                       |
-|---------------------|---------------|-----------------------------------|
-| `id`                | SERIAL PK     | ID autoincremental                |
-| `timestamp`         | TIMESTAMP     | Momento de la operación           |
-| `symbol`            | VARCHAR(100)  | Par de trading o Token ID de Polymarket |
-| `side`              | VARCHAR(10)   | `BUY` o `SELL`                    |
-| `price`             | NUMERIC(18,8) | Precio de ejecución               |
-| `amount`            | NUMERIC(18,8) | Cantidad del activo base           |
-| `total`             | NUMERIC(18,8) | Valor total (price × amount)      |
-| `status`            | VARCHAR(20)   | `PENDING`, `COMPLETED`, `FAILED`  |
-| `external_order_id` | VARCHAR(100)  | ID externo del broker (si aplica) |
-
-### `logs`
-| Columna     | Tipo        | Descripción                         |
-|-------------|-------------|-------------------------------------|
-| `id`        | SERIAL PK   | ID autoincremental                  |
-| `timestamp` | TIMESTAMP   | Momento del log                     |
-| `level`     | VARCHAR(10) | `INFO`, `WARNING`, `ERROR`          |
-| `message`   | TEXT        | Mensaje del log                     |
-
-### `portfolio_state`
-| Columna          | Tipo          | Descripción                         |
-|------------------|---------------|-------------------------------------|
-| `id`             | SERIAL PK     | ID autoincremental                  |
-| `timestamp`      | TIMESTAMP     | Momento del registro                |
-| `asset`          | VARCHAR(100)  | Activo (ej: USD, EUR, BTC, Token ID) |
-| `free_balance`   | NUMERIC(18,8) | Saldo disponible                    |
-| `locked_balance` | NUMERIC(18,8) | Saldo bloqueado en órdenes          |
-
-> El portafolio se inicializa con **10,000 unidades** del activo cotizado para paper trading.
+| Campo | Descripción |
+| :--- | :--- |
+| **Modelo** | Spot reference price (not executed). Used as price oracle/lead-lag reference. |
+| **Feed** | WebSocket `@bookTicker` stream (real-time bid/ask). |
+| **Purpose** | Provides "true" market price for Lead-Lag arbitrage detection. |
+| **Note** | BinanceFeeder is NOT an execution venue — only a reference feed. |
 
 ---
 
-## 🔌 Feeders (Fuentes de Datos)
+## 🛣️ Roadmap / Próximos Pasos (Futuros Cambios)
 
-### MockFeeder
-- Genera precios **simulados sinusoidales** para pruebas sin conexión a internet
-- Configurable: `interval` en segundos entre ticks
-- Ideal para: testing de estrategias, demos, desarrollo offline
-
-### OandaFeeder
-- Conecta a la **OANDA v20 REST API** en modo streaming
-- Soporta pares Forex: `EUR_USD`, `GBP_USD`, etc.
-- Requiere cuenta demo o live en [oanda.com](https://www.oanda.com)
-
-### IGFeeder
-- Conecta a **IG Group** mediante **Lightstreamer** (WebSocket)
-- Soporta epics IG: `CS.D.EURUSD.TODAY.IP`, `CS.D.GBPUSD.TODAY.IP`
-- Convierte automáticamente símbolos simplificados (`EURUSD` → epic IG)
-- Requiere cuenta en [ig.com](https://www.ig.com)
+- [ ] **Despliegue local 24/7 en Nvidia Jetson Nano (4GB) / Raspberry Pi:** Migración del bot a un servidor local de bajo consumo de energía una vez que las estrategias hayan sido validadas empíricamente en el entorno de pruebas.
+- [ ] **Optimización de lectura multihilo para feeders REST.**
+- [ ] **Configuración de notificaciones de Telegram para trades ejecutados.**
 
 ---
 
-## 🧩 Patrones de Diseño Clave
+## 📝 Reglas de Mantenimiento
 
-### 1. Event-Driven Architecture
-La cola `asyncio.Queue` desacopla productores (feeders) de consumidores (engine/strategy). Facilita agregar nuevos tipos de eventos sin modificar el núcleo.
-
-### 2. Strategy Pattern
-`BaseStrategy` define el contrato. `EmaRsiStrategy` implementa la lógica. Se pueden agregar nuevas estrategias implementando `evaluate_signal()`.
-
-### 3. Template Method
-`BaseStrategy.on_price_update()` acumula precios y llama a `evaluate_signal()` — subclases solo deben implementar la lógica de señal.
-
-### 4. Repository Pattern
-`DatabaseManager` encapsula toda la lógica de acceso a PostgreSQL. El engine y la API no conocen SQL directamente.
+* **Sin commits innecesarios:** Solo ejecutar `git commit` cuando el usuario lo solicite explícitamente.
+* **Portfolio Append-Only:** La tabla `portfolio_state` no permite `UPDATE`. Solo realiza `INSERT` y lecturas con `DISTINCT ON (asset)`.
+* **Worker Isolation:** Todos los métodos de base de datos están aislados y filtrados por `worker_id`.
 
 ---
 
-## 🔒 Seguridad
-
-- El archivo `.env` está en `.gitignore` — **nunca subir credenciales al repositorio**
-- CORS abierto (`*`) — para producción, restringir a dominios específicos
-- Por defecto arranca en modo **OFFLINE** (el usuario activa desde la UI)
-
----
-
-## 🛣️ Roadmap / Próximos Pasos
-
-- [ ] Soporte para múltiples estrategias simultáneas (multi-strategy)
-- [ ] Backtesting con datos históricos
-- [ ] Sistema de notificaciones (email/Telegram) al ejecutar trades
-- [ ] Gestión de riesgo avanzada (stop-loss, take-profit)
-- [ ] Live trading (actualmente solo paper trading)
-- [ ] Tests unitarios con `pytest`
-- [ ] Autenticación en la API (JWT)
-- [ ] Dockerizar el backend completo (no solo la DB)
-
----
-
-## 📝 Notas de Desarrollo
-
-- El bot arranca **apagado por defecto** (`bot_running = false`). Se activa desde el dashboard.
-- El historial de precios en memoria se limita a **1000 ticks** para evitar consumo excesivo de RAM.
-- `portfolio_state` es una tabla de **eventos inmutables** (append-only); el estado actual se obtiene con `DISTINCT ON`.
-- Los logs se persisten tanto en consola como en PostgreSQL para trazabilidad completa.
-
----
-
-*Generado automáticamente con el agente de documentación — actualizado: junio 2026*
+*Actualizado: Agosto 2026 — auto_trade multi-worker Docker production deployment*

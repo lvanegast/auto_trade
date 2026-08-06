@@ -27,6 +27,7 @@ from src.strategy.market_pairs import (
     get_pair_by_limitless_slug,
 )
 from src.events import PriceUpdateEvent, SignalEvent
+from src.strategy.sports_arb import _globally_claimed_events
 
 
 class CrossPlatformArbitrageStrategy(BaseStrategy):
@@ -193,6 +194,10 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         current_price = event.price
         self.teorical_probability = current_price
 
+        event_key = self.event_id or event.symbol
+        if event_key in _globally_claimed_events:
+            return None
+
         real_bid = getattr(event, "bid", 0.0)
         real_ask = getattr(event, "ask", 0.0)
         if real_ask > 0 and real_bid > 0:
@@ -216,8 +221,9 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
                     side="BUY",
                     price=real_ask,
                     reason=f"Intra-Arb: YES_ask={real_ask:.4f} NO_ask={no_ask:.4f} edge={intra_edge:.2%}",
-                    amount=0.5,
+                    amount=None,
                     position_id=getattr(self, "_position_id", None),
+                    position_size_usd=self.position_size_usd,
                 )
 
         if self.event_id:
@@ -397,7 +403,7 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         if abs(edge) < self.min_edge_pct or len(outcomes) < 2:
             return None
 
-        max_outcomes = int(os.getenv("MAX_ARB_OUTCOMES", "4"))
+        max_outcomes = int(os.getenv("MAX_ARB_OUTCOMES", "10"))
         if len(outcomes) > max_outcomes:
             return None
 
@@ -668,7 +674,7 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
             side=side,
             price=price,
             reason=reason,
-            amount=self.position_size_pct,
+            amount=None,
             position_id=closed_position_id,
         )
 

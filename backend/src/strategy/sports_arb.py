@@ -1,30 +1,19 @@
 """
-Sports Arbitrage Strategy — 1×N intra-platform arb on Limitless Exchange.
+Sports Arbitrage Strategy — 1×N intra-platform & cross-platform arb on Limitless & Polymarket.
 
-Detects group markets (Method of Victory, Player of the Match, etc.)
-where the sum of all YES outcomes deviates from 1.0.
-
-  sum(YES) < 1.0  →  buy ALL YES outcomes = guaranteed profit = $1 - sum(YES)
-  sum(YES) > 1.0  →  buy ALL NO outcomes  = guaranteed profit = sum(YES) - $1
-
-This is TRUE arbitrage: mathematically guaranteed profit regardless of outcome.
-
-Execution: N sequential BUY signals (one per outcome), amount = position_size_usd / N.
-Exit: N sequential SELL signals (one per outcome).
-
-Edge data is written by LimitlessSportsFeeder into _sports_edge_data,
-and read here on each PriceUpdateEvent.
+Detects group sports markets where the sum of all YES outcomes deviates from 1.0.
+Supports outcomes filtering and cross-platform best-price selection.
 """
 
 import asyncio
 import os
+import time
+
 import time as _time
 from src.strategy.base import BaseStrategy
 from src.events import PriceUpdateEvent, SignalEvent
 
 # Shared data store: feeder writes, strategy reads
-# {event_id: {"total_yes": float, "edge": float, "outcomes_count": int,
-#             "title": str, "outcomes": [...], "group_slug": str}}
 _sports_edge_data: dict = {}
 
 
@@ -48,6 +37,10 @@ def update_sports_edge(
     }
 
 
+# Global set of claimed event_ids to prevent concurrent workers from trading the same event
+_globally_claimed_events: set = set()
+
+
 class SportsArbitrageStrategy(BaseStrategy):
     def __init__(
         self,
@@ -61,6 +54,9 @@ class SportsArbitrageStrategy(BaseStrategy):
         cooldown_seconds: float = 30.0,
         db=None,
         worker_id: str = "worker_3",
+        outcomes_count: int = None,
+        cross_platform: bool = False,
+        observation_only: bool = False,
     ):
         super().__init__(symbol)
         self.feeder_type = feeder_type
@@ -83,6 +79,9 @@ class SportsArbitrageStrategy(BaseStrategy):
         )
         self.db = db
         self.worker_id = worker_id
+        self.outcomes_count = outcomes_count
+        self.cross_platform = cross_platform
+        self.observation_only = observation_only
 
         # Active arb groups: {event_id: {entry_time, total_cost, expected_profit, arb_type, position_ids: []}}
         self._arb_groups = {}
@@ -90,12 +89,14 @@ class SportsArbitrageStrategy(BaseStrategy):
         self._last_exit_time = {}
         # Pending signals queue for N sequential fills
         self._pending_signals = []
+        # Track pending event_ids to prevent duplicate entries while fills are in progress
+        self._pending_event_ids = set()
         # Current arb state for UI
         self.teorical_probability = 0.50
         self.edge = 0.0
         self.total_opportunities = 0
 
-    def on_price_update(self, event: PriceUpdateEvent) -> SignalEvent:
+    def on_price_update(self, event: PriceUpdateEvent) -> SignalEvent | None:
         super().on_price_update(event)
 
         self.teorical_probability = event.price
@@ -111,6 +112,10 @@ class SportsArbitrageStrategy(BaseStrategy):
         if event_id in self._arb_groups:
             return self._evaluate_group_exit(event_id, event.price, now)
 
+        # 2b. Skip if we or another worker already claimed this event (prevent cross-worker duplicate entries)
+        if event_id in self._pending_event_ids or event_id in _globally_claimed_events:
+            return None
+
         # 3. Cooldown check
         if event_id in self._last_exit_time:
             if now - self._last_exit_time[event_id] < self.cooldown_seconds:
@@ -122,15 +127,84 @@ class SportsArbitrageStrategy(BaseStrategy):
             self.edge = 0.0
             return None
 
-        edge_data["total_yes"]
-        self.edge = edge_data["edge"]
         outcomes = edge_data.get("outcomes", [])
-        edge_data["outcomes_count"]
-        title = edge_data.get("title", event_id)
-        arb_type = edge_data.get("arb_type", "YES" if self.edge > 0 else "NO")
+        
+        # Outcomes count filter
+        if self.outcomes_count is not None and len(outcomes) != self.outcomes_count:
+            return None
 
-        # 5. Validate: need minimum edge, net profitability after friction, and outcomes
+        title = edge_data.get("title", event_id)
+
+        # 5. Cross-platform best price calculation: Limitless vs Polymarket/Kalshi
+        # Uses REAL executable prices from orderbooks, not midpoints
+        if self.cross_platform:
+            from src.strategy.cross_platform_tracker import cross_platform_tracker
+            from src.limitless_price_cache import get_limitless_executable_price
+            total_yes = 0.0
+            best_outcomes = []
+            has_cross_data = False
+            
+            for outcome in outcomes:
+                # Get REAL Limitless price from orderbook
+                ll_slug = outcome.get("slug", "")
+                ll_ob = get_limitless_executable_price(ll_slug)
+
+                # Fail closed: a listing midpoint is never an executable price.
+                if not ll_ob:
+                    self.edge = 0.0
+                    return None
+
+                ll_yes_ask = ll_ob["yes_ask"]
+                ll_yes_bid = ll_ob["yes_bid"]
+
+                poly_book = cross_platform_tracker.get_book(event_id, "polymarket")
+                kalshi_book = cross_platform_tracker.get_book(event_id, "kalshi")
+                
+                # Check Polymarket
+                if poly_book and poly_book.get("yes_ask"):
+                    poly_price = poly_book["yes_ask"]
+                    has_cross_data = True
+                    best_price = ll_yes_ask if ll_yes_ask <= poly_price else poly_price
+                    best_platform = "limitless" if ll_yes_ask <= poly_price else "polymarket"
+                # Check Kalshi
+                elif kalshi_book and kalshi_book.get("yes_ask"):
+                    kalshi_price = kalshi_book["yes_ask"]
+                    has_cross_data = True
+                    best_price = ll_yes_ask if ll_yes_ask <= kalshi_price else kalshi_price
+                    best_platform = "limitless" if ll_yes_ask <= kalshi_price else "kalshi"
+                else:
+                    # No cross-platform data — skip (don't trade on fabricated edges)
+                    continue
+                
+                total_yes += best_price
+                best_outcomes.append({
+                    "slug": outcome["slug"],
+                    "title": outcome["title"],
+                    "yes_price": best_price,
+                    "no_price": 1.0 - best_price,
+                    "platform": best_platform,
+                    "limitless_bid": ll_yes_bid,
+                    "limitless_ask": ll_yes_ask,
+                })
+            
+            # If no cross-platform data available, skip
+            if not has_cross_data:
+                self.edge = 0.0
+                return None
+            
+            self.edge = round(1.0 - total_yes, 4)
+            outcomes = best_outcomes
+            arb_type = "YES" if self.edge > 0 else "NO"
+        else:
+            self.edge = edge_data["edge"]
+            arb_type = edge_data.get("arb_type", "YES" if self.edge > 0 else "NO")
+
+        # 6. Validate: need minimum edge and outcomes
         if abs(self.edge) < self.min_edge_pct:
+            return None
+
+        # Sanity: edges > 15% are data errors or illiquid markets — not real arb
+        if abs(self.edge) > 0.15:
             return None
 
         # Filtro de Rentabilidad Neta Anti-Fricción
@@ -139,25 +213,31 @@ class SportsArbitrageStrategy(BaseStrategy):
             self.feeder_type, self.feeder_type, abs(self.edge), self.position_size_usd
         )
         if not is_profitable:
+            if self.db:
+                self.db.log("INFO", f"[Sports ARB] Friction reject: {reason_guard}", self.worker_id)
             return None
         if len(outcomes) < 2:
             return None
-        max_outcomes = int(os.getenv("MAX_ARB_OUTCOMES", "4"))
+        max_outcomes = int(os.getenv("MAX_ARB_OUTCOMES", "10"))
         if len(outcomes) > max_outcomes:
             return None
         if arb_type not in ("YES", "NO"):
             return None
 
-        # 6. Already in a group for this event?
+        # 7. Already in a group for this event? (memory + DB check)
         if event_id in self._arb_groups:
             return None
+        if self.db:
+            open_positions = self.db.get_open_positions(worker_id=None)
+            for pos in open_positions:
+                if pos["symbol"].endswith(event_id + "_" + outcomes[0]["slug"]):
+                    return None
 
-        # 7. Calculate 1×N arbitrage
+        # 8. Calculate 1×N arbitrage
         total_cost = 0.0
         per_outcome_signals = []
 
         if arb_type == "YES":
-            # sum(YES) < 1.0 → buy all YES
             for outcome in outcomes:
                 yes_price = outcome["yes_price"]
                 total_cost += yes_price
@@ -168,10 +248,10 @@ class SportsArbitrageStrategy(BaseStrategy):
                         "side": "BUY",
                         "token": "YES",
                         "price": yes_price,
+                        "platform": outcome.get("platform", "limitless")
                     }
                 )
         else:
-            # sum(YES) > 1.0 → buy all NO
             for outcome in outcomes:
                 no_price = outcome["no_price"]
                 total_cost += no_price
@@ -182,33 +262,70 @@ class SportsArbitrageStrategy(BaseStrategy):
                         "side": "BUY",
                         "token": "NO",
                         "price": no_price,
+                        "platform": outcome.get("platform", "limitless")
                     }
                 )
 
-        # Expected guaranteed profit
-        expected_profit = 1.0 - total_cost if arb_type == "YES" else total_cost - 1.0
+        if self.observation_only:
+            from src.engine.friction_guard import friction_guard
+            is_profitable, net_edge, _, _ = friction_guard.validate_arbitrage_profitability(
+                "limitless", "kalshi", abs(self.edge), self.position_size_usd
+            )
+            if self.db:
+                self.db.record_edge_snapshot({
+                    "event_id": event_id,
+                    "event_title": title,
+                    "gross_edge_pct": self.edge * 100,
+                    "net_edge_pct": net_edge * 100,
+                    "platform_a_yes_ask": total_cost,
+                    "platform_b_no_ask": 0.0,
+                    "liquidity_verified": True,
+                    "viable": is_profitable,
+                })
+                self.db.log(
+                    "INFO",
+                    f"[Cross-Platform Observation] {title} | "
+                    f"Gross: {self.edge:.2%} | Net: {net_edge:.2%} | "
+                    "No order generated",
+                    self.worker_id,
+                )
+                # Record opportunity for outcome tracking
+                opp_id = self.db.record_opportunity({
+                    "platform_a": "limitless",
+                    "platform_b": "kalshi",
+                    "event_id": event_id,
+                    "event_title": title,
+                    "gross_edge_pct": self.edge * 100,
+                    "net_edge_pct": net_edge * 100,
+                    "platform_a_yes_ask": total_cost,
+                    "platform_b_no_ask": 0.0,
+                    "platform_a_depth": 0,
+                    "platform_b_depth": 0,
+                    "liquidity_verified": True,
+                    "viable": is_profitable,
+                    "entry_price": total_cost,
+                    "expected_profit": net_edge * self.position_size_usd,
+                })
+                # Telegram alert for cross-platform opportunities (once per event per hour)
+                from src.telegram_bot import telegram_bot
+                if telegram_bot.enabled and net_edge >= 0.02:
+                    now_ts = time.time()
+                    last_alert = getattr(self, '_last_telegram_alert', {}).get(event_id, 0)
+                    if now_ts - last_alert > 3600:  # 1 hour cooldown
+                        telegram_bot.send_opportunity(title, net_edge * 100, "Limitless", "Kalshi")
+                        if not hasattr(self, '_last_telegram_alert'):
+                            self._last_telegram_alert = {}
+                        self._last_telegram_alert[event_id] = now_ts
+            return None
+
+        expected_profit = (1.0 - total_cost) if arb_type == "YES" else ((len(outcomes) - 1.0) - total_cost)
         if expected_profit <= 0:
             return None
 
-        # Validate balance
-        per_outcome_amount = self.position_size_usd / len(outcomes)
-        total_spend = per_outcome_amount * len(outcomes)
+        num_sets = self.position_size_usd / max(total_cost, 0.01)
+        total_spend = num_sets * total_cost
 
-        if self.db:
-            balances = {
-                item["asset"]: float(item["free_balance"])
-                for item in self.db.get_portfolio(self.worker_id)
-            }
-            available = balances.get("USD", 0.0)
-            if available < total_spend:
-                self.db.log(
-                    "WARNING",
-                    f"[Sports 1xN] Saldo insuficiente: ${available:.2f} < ${total_spend:.2f} para {len(outcomes)} outcomes",
-                    self.worker_id,
-                )
-                return None
-
-        # 8. Record arb group
+        # 9. Record arb group
         self._arb_groups[event_id] = {
             "entry_time": now,
             "total_cost": total_cost,
@@ -218,53 +335,79 @@ class SportsArbitrageStrategy(BaseStrategy):
             "title": title,
             "position_ids": [],
             "total_spend": total_spend,
+            "num_sets": num_sets,
         }
+        self._pending_event_ids.add(event_id)
+        _globally_claimed_events.add(event_id)
         self.total_opportunities += 1
 
-        # 9. Generate N sequential BUY signals
+        # 10. Generate N sequential BUY signals — each outcome gets proportional USD
         signals = []
         for i, sig_data in enumerate(per_outcome_signals):
-            outcome_amount = per_outcome_amount
             outcome_price = sig_data["price"]
+            outcome_amount = num_sets * outcome_price  # USD for THIS outcome
             token_label = sig_data["token"]
+            platform = sig_data["platform"].upper()
 
             reason = (
                 f"1x{len(outcomes)} {arb_type} Arb [{i + 1}/{len(outcomes)}]: "
                 f"{title} | {sig_data['title']} | "
-                f"{token_label} @{outcome_price:.4f} | "
+                f"{token_label} on {platform} @{outcome_price:.4f} | "
+                f"Sets: {num_sets:.2f} | "
                 f"Total cost: ${total_cost:.4f} | "
-                f"Guaranteed profit: ${expected_profit:.4f}"
+                f"Guaranteed profit: ${expected_profit * num_sets:.4f} | "
+                f"LIMIT ORDER (maker=0% fee)"
             )
+
+            # Suffix platform to track in DB
+            symbol = f"{sig_data['platform']}_{event_id}_{sig_data['slug']}"
 
             signals.append(
                 SignalEvent(
-                    symbol=f"{event_id}_{sig_data['slug']}",
+                    symbol=symbol,
                     side="BUY",
                     price=outcome_price,
                     reason=reason,
-                    amount=outcome_amount,
+                    amount=None,
                     position_id=None,
+                    position_size_usd=outcome_amount,
+                    order_type="GTC",
                 )
             )
 
         if self.db:
+            venue = "Cross-Platform" if self.cross_platform else "Local"
             self.db.log(
                 "INFO",
-                f"[Sports 1x{len(outcomes)} {arb_type}] {title} | "
-                f"Total cost: ${total_cost:.4f} | "
-                f"Guaranteed profit: ${expected_profit:.4f} | "
-                f"{len(outcomes)} outcomes x ${per_outcome_amount:.2f}",
+                f"[{venue} Sports 1x{len(outcomes)} {arb_type}] {title} | "
+                f"Total cost/set: ${total_cost:.4f} | "
+                f"Sets: {num_sets:.2f} | "
+                f"Total spend: ${total_spend:.2f} | "
+                f"Guaranteed profit: ${expected_profit * num_sets:.4f} | "
+                f"{len(outcomes)} outcomes",
                 self.worker_id,
             )
+            # Telegram alert for 1xN arb opportunities (deduplicated)
+            from src.telegram_bot import telegram_bot
+            if telegram_bot.enabled and self.edge >= 0.02:
+                now_ts = time.time()
+                last_alert = getattr(self, '_last_telegram_alert', {}).get(event_id, 0)
+                if now_ts - last_alert > 3600:  # 1 hour cooldown
+                    profit_usd = expected_profit * num_sets
+                    telegram_bot.send_alert("opportunity",
+                        f"1x{len(outcomes)} {arb_type} Arb: {title}\n"
+                        f"Edge: {self.edge:.2%} | Profit: ${profit_usd:.4f}\n"
+                        f"Spend: ${total_spend:.2f} | Sets: {num_sets:.2f}")
+                    if not hasattr(self, '_last_telegram_alert'):
+                        self._last_telegram_alert = {}
+                    self._last_telegram_alert[event_id] = now_ts
 
-        # Queue all but first (first is returned immediately)
+        # Queue all but first
         if len(signals) > 1:
             self._pending_signals = signals[1:]
         return signals[0]
 
-    def _evaluate_group_exit(
-        self, event_id: str, current_price: float, now: float
-    ) -> SignalEvent:
+    def _evaluate_group_exit(self, event_id: str, current_price: float, now: float) -> SignalEvent | None:
         """Exit all outcomes in an arb group."""
         group = self._arb_groups.get(event_id)
         if not group:
@@ -282,19 +425,16 @@ class SportsArbitrageStrategy(BaseStrategy):
             current_edge = edge_data["edge"]
             arb_type = group["arb_type"]
 
-            # If we bought YES and edge went negative → market overpriced now, lock profit
             if arb_type == "YES" and current_edge < -0.05:
                 return self._close_group(
                     event_id, f"Edge reversed ({current_edge:+.2%}), locking profit"
                 )
 
-            # If we bought NO and edge went positive → market underpriced now, lock profit
             if arb_type == "NO" and current_edge > 0.05:
                 return self._close_group(
                     event_id, f"Edge reversed ({current_edge:+.2%}), locking profit"
                 )
 
-        # USD stop loss (should rarely trigger on true arb, but safety net)
         if self.stop_loss_usd > 0 and elapsed > 30:
             pnl = group["expected_profit"] - (group["total_cost"] * 0.05)
             if pnl < -self.stop_loss_usd:
@@ -304,46 +444,61 @@ class SportsArbitrageStrategy(BaseStrategy):
 
         return None
 
-    def _close_group(self, event_id: str, reason: str) -> SignalEvent:
-        """Close all outcomes in an arb group, simulate market resolution.
-
-        In 1×N arbitrage the guaranteed profit comes from market resolution:
-        one outcome pays $1.00, all others pay $0.  We simulate this by
-        resolving the first outcome at $1.00 and the rest at $0.00, which
-        gives the correct PnL regardless of which outcome actually wins.
-        """
+    def _close_group(self, event_id: str, reason: str) -> SignalEvent | None:
+        """Close all outcomes in an arb group."""
         group = self._arb_groups.pop(event_id, None)
         if not group:
             return None
 
+        self._pending_event_ids.discard(event_id)
+        _globally_claimed_events.discard(event_id)
         self._last_exit_time[event_id] = _time.time()
 
         arb_type = group["arb_type"]
         outcomes = group["outcomes"]
-        group["total_cost"]
-        group["expected_profit"]
-        group["title"]
+        num_sets = group.get("num_sets", 1.0)
+
+        # Get current real-time prices for early exits
+        edge_data = _sports_edge_data.get(event_id)
+        current_outcomes = edge_data.get("outcomes", []) if edge_data else []
+        current_prices = {o["slug"]: o for o in current_outcomes}
 
         # Simulate resolution: first outcome pays $1.00, rest pay $0
         signals = []
-        per_outcome_amount = (
-            self.position_size_usd / len(outcomes)
-            if outcomes
-            else self.position_size_usd
-        )
+        is_early_exit = any(x in reason for x in ["Time Stop", "reversed", "Stop Loss"])
 
         for i, outcome in enumerate(outcomes):
-            if i == 0:
-                sell_price = 0.99
+            slug = outcome["slug"]
+            if is_early_exit:
+                # Use current market price if available, otherwise fall back to entry price
+                if slug in current_prices:
+                    if arb_type == "YES":
+                        sell_price = current_prices[slug]["yes_price"]
+                    else:
+                        sell_price = current_prices[slug].get("no_price", round(1.0 - current_prices[slug]["yes_price"], 4))
+                else:
+                    sell_price = outcome["yes_price"] if arb_type == "YES" else outcome.get("no_price", round(1.0 - outcome["yes_price"], 4))
             else:
-                sell_price = 0.01
+                # Settlement: use current market price, not fabricated resolution
+                # The actual resolution is unknown until the event settles
+                if slug in current_prices:
+                    if arb_type == "YES":
+                        sell_price = current_prices[slug]["yes_price"]
+                    else:
+                        sell_price = current_prices[slug].get("no_price", round(1.0 - current_prices[slug]["yes_price"], 4))
+                else:
+                    # No current price available — use entry price as estimate
+                    sell_price = outcome["yes_price"] if arb_type == "YES" else outcome.get("no_price", round(1.0 - outcome["yes_price"], 4))
+
+            platform = outcome.get("platform", "limitless")
+            symbol = f"{platform}_{event_id}_{slug}"
 
             signals.append(SignalEvent(
-                symbol=f"{event_id}_{outcome['slug']}",
+                symbol=symbol,
                 side="SELL",
                 price=sell_price,
                 reason=f"1xN {arb_type} Arb exit: {reason}",
-                amount=per_outcome_amount,
+                amount=num_sets,
                 position_id=None,
             ))
 
@@ -354,5 +509,5 @@ class SportsArbitrageStrategy(BaseStrategy):
 
         return None
 
-    def evaluate_signal(self, event: PriceUpdateEvent) -> SignalEvent:
+    def evaluate_signal(self, event: PriceUpdateEvent) -> SignalEvent | None:
         return None
