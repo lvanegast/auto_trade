@@ -288,10 +288,16 @@ class SportsArbitrageStrategy(BaseStrategy):
                     "No order generated",
                     self.worker_id,
                 )
-                # Telegram alert for cross-platform opportunities
+                # Telegram alert for cross-platform opportunities (once per event per hour)
                 from src.telegram_bot import telegram_bot
                 if telegram_bot.enabled and net_edge >= 0.02:
-                    telegram_bot.send_opportunity(title, net_edge * 100, "Limitless", "Kalshi")
+                    now_ts = time.time()
+                    last_alert = getattr(self, '_last_telegram_alert', {}).get(event_id, 0)
+                    if now_ts - last_alert > 3600:  # 1 hour cooldown
+                        telegram_bot.send_opportunity(title, net_edge * 100, "Limitless", "Kalshi")
+                        if not hasattr(self, '_last_telegram_alert'):
+                            self._last_telegram_alert = {}
+                        self._last_telegram_alert[event_id] = now_ts
             return None
 
         expected_profit = (1.0 - total_cost) if arb_type == "YES" else ((len(outcomes) - 1.0) - total_cost)
