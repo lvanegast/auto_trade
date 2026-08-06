@@ -289,6 +289,17 @@ class SportsArbitrageStrategy(BaseStrategy):
                     "No order generated",
                     self.worker_id,
                 )
+                try:
+                    from src.telegram_bot import telegram_bot
+                    if telegram_bot.enabled and is_profitable:
+                        telegram_bot.send_opportunity(
+                            event=title,
+                            edge=net_edge * 100,
+                            platform_a="Limitless",
+                            platform_b="Kalshi"
+                        )
+                except Exception:
+                    pass
                 # Record opportunity for outcome tracking
                 opp_id = self.db.record_opportunity({
                     "platform_a": "limitless",
