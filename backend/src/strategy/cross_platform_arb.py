@@ -28,6 +28,7 @@ from src.strategy.market_pairs import (
 )
 from src.events import PriceUpdateEvent, SignalEvent
 from src.strategy.sports_arb import _globally_claimed_events
+from src.utils.bounded_dict import BoundedTimeDict
 
 
 class CrossPlatformArbitrageStrategy(BaseStrategy):
@@ -107,11 +108,11 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         # 1×N state
         self._arb_groups = {}
         self._pending_signals = []
-        self._last_exit_time = {}
+        self._last_exit_time = BoundedTimeDict(max_size=200, ttl_seconds=3600)
 
-        # Exposure tracking
-        self._open_exposure_by_event = {}   # event_id -> total USD exposed
-        self._open_exposure_by_platform = {}  # platform -> total USD exposed
+        # Exposure tracking — auto-expire stale entries after 1h
+        self._open_exposure_by_event = BoundedTimeDict(max_size=200, ttl_seconds=3600)
+        self._open_exposure_by_platform = BoundedTimeDict(max_size=50, ttl_seconds=3600)
 
         self.teorical_probability = 0.50
         self.edge = 0.0

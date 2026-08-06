@@ -515,6 +515,44 @@ class TradingWorker:
                         self.db.log("WARNING", f"[CIRCUIT BREAKER] {reason}", self.worker_id)
                 except Exception:
                     pass
+
+                # Periodic memory cleanup (every 60s)
+                try:
+                    import gc
+                    import time as _time
+                    if not hasattr(self, '_last_gc_time'):
+                        self._last_gc_time = 0.0
+                    if _time.time() - self._last_gc_time > 60:
+                        self._last_gc_time = _time.time()
+                        # Cleanup BoundedTimeDicts in strategy
+                        if hasattr(self.strategy, '_last_exit_time'):
+                            self.strategy._last_exit_time.cleanup()
+                        if hasattr(self.strategy, '_last_telegram_alert'):
+                            self.strategy._last_telegram_alert.cleanup()
+                        if hasattr(self.strategy, '_last_observation_time'):
+                            self.strategy._last_observation_time.cleanup()
+                        # Flush row buffer
+                        if hasattr(self.strategy, '_flush_row_buffer'):
+                            self.strategy._flush_row_buffer()
+                        # Cleanup price cache
+                        try:
+                            from src.limitless_price_cache import _cache
+                            _cache.cleanup()
+                        except Exception:
+                            pass
+                        # Force garbage collection
+                        gc.collect()
+                        # Prune old DB logs (every 6 hours)
+                        if not hasattr(self, '_last_log_prune'):
+                            self._last_log_prune = 0.0
+                        if _time.time() - self._last_log_prune > 21600:
+                            self._last_log_prune = _time.time()
+                            try:
+                                self.db.prune_old_logs(days=7)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
         except asyncio.CancelledError:
             print(
                 f"[Worker {self.worker_id}] Tarea de sincronización periódica cancelada."

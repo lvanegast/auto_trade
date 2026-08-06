@@ -12,6 +12,7 @@ Cambios vs. versión anterior:
 import time
 import os
 from typing import Optional
+from src.utils.bounded_dict import BoundedDict
 
 
 class CrossPlatformTracker:
@@ -37,7 +38,7 @@ class CrossPlatformTracker:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._books = {}
+            cls._instance._books = BoundedDict(max_size=500)
         return cls._instance
 
     def update_book(

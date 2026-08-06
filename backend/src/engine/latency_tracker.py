@@ -16,7 +16,8 @@ Uso:
 
 import time
 import asyncio
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, Any
+from collections import deque
 from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
 import statistics
@@ -51,8 +52,8 @@ class LatencyTracker:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._measurements: Dict[str, List[LatencyMeasurement]] = {}
-            cls._instance._max_history = 1000  # Últimas 1000 mediciones por plataforma
+            cls._instance._measurements: Dict[str, deque] = {}
+            cls._instance._max_history = 200  # Últimas 200 mediciones por plataforma
         return cls._instance
     
     @asynccontextmanager
@@ -83,16 +84,14 @@ class LatencyTracker:
             self._record(measurement)
     
     def _record(self, measurement: LatencyMeasurement):
-        """Almacena una medición."""
+        """Almacena una medición (sin el resultado API para ahorrar memoria)."""
+        # Strip the full API response to prevent OOM — only store latency stats
+        measurement.result = None
         key = f"{measurement.platform}:{measurement.operation}"
         if key not in self._measurements:
-            self._measurements[key] = []
+            self._measurements[key] = deque(maxlen=self._max_history)
         
         self._measurements[key].append(measurement)
-        
-        # Mantener solo las últimas N mediciones
-        if len(self._measurements[key]) > self._max_history:
-            self._measurements[key] = self._measurements[key][-self._max_history:]
     
     def get_stats(self, platform: str, operation: str = None) -> Dict[str, float]:
         """

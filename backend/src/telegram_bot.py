@@ -3,13 +3,17 @@ Telegram Bot for AutoTrade — Alerts and Commands
 
 Sends real-time alerts and responds to user commands.
 Works on both local and Railway deployments.
+
+DEDUP: Once an alert is sent for an event_id, no more alerts until resolution.
 """
 
 import os
 import json
 import asyncio
+import time
 import urllib.request
 from datetime import datetime
+from src.utils.bounded_dict import BoundedTimeDict
 
 
 class TelegramBot:
@@ -18,6 +22,9 @@ class TelegramBot:
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
         self.enabled = bool(self.token and self.chat_id)
         self.base_url = f"https://api.telegram.org/bot{self.token}"
+        # Dedup: event_ids that already received an opportunity alert.
+        # Auto-expire after 24h so old events don't permanently block.
+        self._sent_event_alerts = BoundedTimeDict(max_size=500, ttl_seconds=86400)
         
     def send_message(self, text: str, parse_mode: str = "HTML") -> bool:
         """Send a message to the configured chat."""
@@ -45,8 +52,26 @@ class TelegramBot:
             print(f"[Telegram] Error sending message: {e}")
             return False
     
-    def send_alert(self, alert_type: str, message: str):
-        """Send a formatted alert."""
+    def has_been_alerted(self, event_id: str) -> bool:
+        """Check if an opportunity alert was already sent for this event_id."""
+        return self._sent_event_alerts.get(event_id) is not None
+
+    def mark_alerted(self, event_id: str):
+        """Mark an event_id as having received an opportunity alert."""
+        self._sent_event_alerts[event_id] = time.time()
+
+    def clear_alerted(self, event_id: str):
+        """Clear an event_id after resolution — allows new alert if event reopens."""
+        self._sent_event_alerts.discard(event_id)
+
+    def send_alert(self, alert_type: str, message: str, event_id: str = None):
+        """Send a formatted alert. If event_id is provided, deduplicates."""
+        # Dedup: skip if already alerted for this event (except resolution results)
+        if event_id and alert_type == "opportunity":
+            if self.has_been_alerted(event_id):
+                return False
+            self.mark_alerted(event_id)
+        
         icons = {
             "opportunity": "🎯",
             "trade": "✅",
@@ -60,6 +85,11 @@ class TelegramBot:
         icon = icons.get(alert_type, "📢")
         timestamp = datetime.now().strftime("%H:%M:%S")
         text = f"{icon} [{timestamp}] {message}"
+        
+        # Resolution results (profit/loss) always clear the dedup
+        if event_id and alert_type in ("profit", "loss"):
+            self.clear_alerted(event_id)
+        
         return self.send_message(text)
     
     def send_daily_report(self, stats: dict):
@@ -75,8 +105,14 @@ class TelegramBot:
 <b>Errores:</b> {stats.get('errors', 0)}"""
         return self.send_message(text)
     
-    def send_opportunity(self, event: str, edge: float, platform_a: str, platform_b: str):
-        """Send an opportunity alert."""
+    def send_opportunity(self, event: str, edge: float, platform_a: str, platform_b: str, event_id: str = None):
+        """Send an opportunity alert with dedup."""
+        # Dedup check
+        if event_id and self.has_been_alerted(event_id):
+            return False
+        if event_id:
+            self.mark_alerted(event_id)
+        
         text = f"""🎯 <b>Oportunidad Detectada</b>
 
 <b>Evento:</b> {event}

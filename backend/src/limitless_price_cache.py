@@ -16,9 +16,10 @@ import urllib.request
 import json
 import asyncio
 from typing import Optional, Dict
+from src.utils.bounded_dict import BoundedDict
 
-# Cache: {slug: {"data": {...}, "ts": timestamp}}
-_cache: Dict[str, dict] = {}
+# Cache: {slug: {"data": {...}, "ts": timestamp}} — bounded to prevent OOM
+_cache: Dict[str, dict] = BoundedDict(max_size=200)
 CACHE_TTL_SECONDS = 10  # Cache for 10 seconds
 
 

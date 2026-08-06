@@ -90,10 +90,13 @@ class WebSocketServer:
 ws_server = WebSocketServer()
 
 
-def make_event(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
-    """Crea un evento estandarizado con timestamp."""
-    return {
+def make_event(event_type: str, data: dict[str, Any], dedup_key: str = None) -> dict[str, Any]:
+    """Crea un evento estandarizado con timestamp y dedup key opcional."""
+    event = {
         "type": event_type,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "data": data,
     }
+    if dedup_key:
+        event["dedup_key"] = dedup_key
+    return event

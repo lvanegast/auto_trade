@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import pandas as pd
 import os
+from collections import deque
 from datetime import datetime
 from src.events import PriceUpdateEvent, SignalEvent
 
@@ -11,6 +12,9 @@ class BaseStrategy(ABC):
         self.prices_df = pd.DataFrame(
             columns=["timestamp", "open", "high", "low", "close", "price"]
         )
+        # Buffer for new rows — avoids pd.concat on every bar
+        self._row_buffer: list = []
+        self._buffer_flush_size = 50
 
         # Cargar intervalo de agregación (por defecto 60 segundos)
         try:
@@ -74,26 +78,32 @@ class BaseStrategy(ABC):
                 # Evaluamos la estrategia sobre el historial cerrado actual.
                 signal = self.evaluate_signal(event)
 
-                # Después de evaluar la señal en las barras cerradas, añadimos la nueva barra abierta:
-                new_row = pd.DataFrame(
-                    [
-                        {
-                            "timestamp": bar_time,
-                            "open": event.price,
-                            "high": event.price,
-                            "low": event.price,
-                            "close": event.price,
-                            "price": event.price,
-                        }
-                    ]
-                )
-                self.prices_df = pd.concat([self.prices_df, new_row], ignore_index=True)
+                # Buffer the new row instead of pd.concat every time
+                self._row_buffer.append({
+                    "timestamp": bar_time,
+                    "open": event.price,
+                    "high": event.price,
+                    "low": event.price,
+                    "close": event.price,
+                    "price": event.price,
+                })
 
-                # Limitar historial para no consumir memoria infinita
-                if len(self.prices_df) > 1000:
-                    self.prices_df = self.prices_df.iloc[-1000:].reset_index(drop=True)
+                # Flush buffer periodically to avoid memory buildup
+                if len(self._row_buffer) >= self._buffer_flush_size:
+                    self._flush_row_buffer()
 
         return signal
+
+    def _flush_row_buffer(self):
+        """Flush buffered rows into prices_df."""
+        if not self._row_buffer:
+            return
+        new_rows = pd.DataFrame(self._row_buffer)
+        self._row_buffer.clear()
+        self.prices_df = pd.concat([self.prices_df, new_rows], ignore_index=True)
+        # Cap at 1000 rows
+        if len(self.prices_df) > 1000:
+            self.prices_df = self.prices_df.iloc[-1000:].reset_index(drop=True)
 
     @abstractmethod
     def evaluate_signal(self, event: PriceUpdateEvent) -> SignalEvent:

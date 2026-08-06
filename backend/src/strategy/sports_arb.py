@@ -12,9 +12,10 @@ import time
 import time as _time
 from src.strategy.base import BaseStrategy
 from src.events import PriceUpdateEvent, SignalEvent
+from src.utils.bounded_dict import BoundedDict, BoundedTimeDict
 
-# Shared data store: feeder writes, strategy reads
-_sports_edge_data: dict = {}
+# Shared data store: feeder writes, strategy reads (bounded to prevent OOM)
+_sports_edge_data: dict = BoundedDict(max_size=300)
 
 
 def update_sports_edge(
@@ -85,12 +86,14 @@ class SportsArbitrageStrategy(BaseStrategy):
 
         # Active arb groups: {event_id: {entry_time, total_cost, expected_profit, arb_type, position_ids: []}}
         self._arb_groups = {}
-        # Cooldowns: {event_id: last_exit_time}
-        self._last_exit_time = {}
+        # Cooldowns: {event_id: last_exit_time} — auto-expire after 1h
+        self._last_exit_time = BoundedTimeDict(max_size=200, ttl_seconds=3600)
         # Pending signals queue for N sequential fills
         self._pending_signals = []
         # Track pending event_ids to prevent duplicate entries while fills are in progress
         self._pending_event_ids = set()
+        # Telegram alert cooldowns — auto-expire after 1h
+        self._last_telegram_alert = BoundedTimeDict(max_size=200, ttl_seconds=3600)
         # Current arb state for UI
         self.teorical_probability = 0.50
         self.edge = 0.0
@@ -309,13 +312,7 @@ class SportsArbitrageStrategy(BaseStrategy):
                 # Telegram alert for cross-platform opportunities (once per event per hour)
                 from src.telegram_bot import telegram_bot
                 if telegram_bot.enabled and net_edge >= 0.02:
-                    now_ts = time.time()
-                    last_alert = getattr(self, '_last_telegram_alert', {}).get(event_id, 0)
-                    if now_ts - last_alert > 3600:  # 1 hour cooldown
-                        telegram_bot.send_opportunity(title, net_edge * 100, "Limitless", "Kalshi")
-                        if not hasattr(self, '_last_telegram_alert'):
-                            self._last_telegram_alert = {}
-                        self._last_telegram_alert[event_id] = now_ts
+                    telegram_bot.send_opportunity(title, net_edge * 100, "Limitless", "Kalshi", event_id=event_id)
             return None
 
         expected_profit = (1.0 - total_cost) if arb_type == "YES" else ((len(outcomes) - 1.0) - total_cost)
@@ -387,20 +384,15 @@ class SportsArbitrageStrategy(BaseStrategy):
                 f"{len(outcomes)} outcomes",
                 self.worker_id,
             )
-            # Telegram alert for 1xN arb opportunities (deduplicated)
+            # Telegram alert for 1xN arb opportunities (deduplicated via event_id)
             from src.telegram_bot import telegram_bot
             if telegram_bot.enabled and self.edge >= 0.02:
-                now_ts = time.time()
-                last_alert = getattr(self, '_last_telegram_alert', {}).get(event_id, 0)
-                if now_ts - last_alert > 3600:  # 1 hour cooldown
-                    profit_usd = expected_profit * num_sets
-                    telegram_bot.send_alert("opportunity",
-                        f"1x{len(outcomes)} {arb_type} Arb: {title}\n"
-                        f"Edge: {self.edge:.2%} | Profit: ${profit_usd:.4f}\n"
-                        f"Spend: ${total_spend:.2f} | Sets: {num_sets:.2f}")
-                    if not hasattr(self, '_last_telegram_alert'):
-                        self._last_telegram_alert = {}
-                    self._last_telegram_alert[event_id] = now_ts
+                profit_usd = expected_profit * num_sets
+                telegram_bot.send_alert("opportunity",
+                    f"1x{len(outcomes)} {arb_type} Arb: {title}\n"
+                    f"Edge: {self.edge:.2%} | Profit: ${profit_usd:.4f}\n"
+                    f"Spend: ${total_spend:.2f} | Sets: {num_sets:.2f}",
+                    event_id=event_id)
 
         # Queue all but first
         if len(signals) > 1:

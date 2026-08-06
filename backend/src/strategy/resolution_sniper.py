@@ -23,10 +23,11 @@ import os
 import time as _time
 from src.strategy.base import BaseStrategy
 from src.events import PriceUpdateEvent, SignalEvent
+from src.utils.bounded_dict import BoundedDict, BoundedTimeDict
 
 
-# Shared data store: feeder writes, strategy reads
-_sniper_data: dict = {}
+# Shared data store: feeder writes, strategy reads (bounded to prevent OOM)
+_sniper_data: dict = BoundedDict(max_size=300)
 
 
 def update_sniper_data(
@@ -77,13 +78,15 @@ class ResolutionSniperStrategy(BaseStrategy):
 
         # Active sniper positions: {event_id: {entry_time, buy_price, amount, title, slug}}
         self._active_positions = {}
-        # Cooldowns: {event_id: last_exit_time}
-        self._last_exit_time = {}
+        # Cooldowns: {event_id: last_exit_time} — auto-expire after 1h
+        self._last_exit_time = BoundedTimeDict(max_size=200, ttl_seconds=3600)
         # Pending signals queue
         self._pending_signals = []
         # Track claimed events
         self._pending_event_ids = set()
-        self._last_observation_time = {}
+        self._last_observation_time = BoundedTimeDict(max_size=200, ttl_seconds=3600)
+        # Telegram alert cooldowns — auto-expire after 1h
+        self._last_telegram_alert = BoundedTimeDict(max_size=200, ttl_seconds=3600)
 
         # Stats
         self.teorical_probability = 0.50
@@ -162,16 +165,10 @@ class ResolutionSniperStrategy(BaseStrategy):
                 "entry_price": yes_price,
                 "expected_profit": self.edge * self.position_size_usd,
             })
-            # Telegram alert for sniper opportunities (only once per event)
+            # Telegram alert for sniper opportunities (deduplicated via event_id)
             from src.telegram_bot import telegram_bot
             if telegram_bot.enabled and self.edge >= 0.02:
-                now_ts = _time.time()
-                last_alert = getattr(self, '_last_telegram_alert', {}).get(event_id, 0)
-                if now_ts - last_alert > 3600:  # 1 hour cooldown
-                    telegram_bot.send_opportunity(title, self.edge * 100, "Limitless", "Crypto")
-                    if not hasattr(self, '_last_telegram_alert'):
-                        self._last_telegram_alert = {}
-                    self._last_telegram_alert[event_id] = now_ts
+                telegram_bot.send_opportunity(title, self.edge * 100, "Limitless", "Crypto", event_id=event_id)
 
         if self.db:
             self.db.log(
@@ -266,14 +263,15 @@ class ResolutionSniperStrategy(BaseStrategy):
                     f"Profit: ${profit:.4f} ({profit/total_spend*100:.1f}%)",
                     self.worker_id,
                 )
-                # Telegram alert for win
+                # Telegram alert for win (clears dedup so new cycle can alert)
                 from src.telegram_bot import telegram_bot
                 if telegram_bot.enabled:
                     telegram_bot.send_alert("profit", 
                         f"Resolution Sniper WON: {title}\n"
                         f"Bought @ {buy_price:.4f}\n"
                         f"Payout: ${payout:.2f}\n"
-                        f"Profit: +${profit:.4f} (+{profit/total_spend*100:.1f}%)")
+                        f"Profit: +${profit:.4f} (+{profit/total_spend*100:.1f}%)",
+                        event_id=event_id)
             else:
                 self.db.log(
                     "INFO",
@@ -283,13 +281,14 @@ class ResolutionSniperStrategy(BaseStrategy):
                     f"Loss: ${abs(profit):.2f}",
                     self.worker_id,
                 )
-                # Telegram alert for loss
+                # Telegram alert for loss (clears dedup so new cycle can alert)
                 from src.telegram_bot import telegram_bot
                 if telegram_bot.enabled:
                     telegram_bot.send_alert("loss",
                         f"Resolution Sniper LOST: {title}\n"
                         f"Bought @ {buy_price:.4f}\n"
-                        f"Loss: -${abs(profit):.2f}")
+                        f"Loss: -${abs(profit):.2f}",
+                        event_id=event_id)
 
     def evaluate_signal(self, event: PriceUpdateEvent) -> SignalEvent | None:
         return None

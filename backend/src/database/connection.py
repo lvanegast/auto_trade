@@ -392,6 +392,25 @@ class DatabaseManager:
         finally:
             self._return_connection(conn)
 
+    def prune_old_logs(self, days: int = 7):
+        """Delete logs older than N days to prevent DB bloat."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM logs WHERE timestamp < NOW() - INTERVAL '%s days'",
+                    (days,)
+                )
+                deleted = cursor.rowcount
+                conn.commit()
+                if deleted > 0:
+                    print(f"[DB] Pruned {deleted} old log entries (>{days} days)")
+        except Exception as e:
+            print(f"[DB] Error pruning logs: {e}")
+        finally:
+            self._return_connection(conn)
+
     def record_edge_snapshot(self, snapshot: dict):
         """Persist an observation without creating a trade or position."""
         query = """
