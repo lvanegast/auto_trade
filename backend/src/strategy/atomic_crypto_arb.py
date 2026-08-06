@@ -125,6 +125,23 @@ class AtomicCryptoArbStrategy(BaseStrategy):
                         f"[Atomic Crypto Observation] {event.symbol} | Cost: {total_cost:.4f} | Gross Edge: {gross_profit:.2%} | No order generated",
                         self.worker_id,
                     )
+                try:
+                    from src.telegram_bot import telegram_bot
+                    if telegram_bot.enabled:
+                        now_ts = time.time()
+                        last_alert = getattr(self, '_last_telegram_alert', {}).get(event.symbol, 0)
+                        if now_ts - last_alert > 3600:  # 1 hour cooldown per symbol
+                            telegram_bot.send_opportunity(
+                                event=f"Crypto Intraday: {event.symbol}",
+                                edge=gross_profit * 100,
+                                platform_a="Limitless (YES)",
+                                platform_b="Limitless (NO)"
+                            )
+                            if not hasattr(self, '_last_telegram_alert'):
+                                self._last_telegram_alert = {}
+                            self._last_telegram_alert[event.symbol] = now_ts
+                except Exception:
+                    pass
                 return None
 
             self.total_bundles_sent += 1
