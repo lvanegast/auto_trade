@@ -157,9 +157,11 @@ async def debug_tasks(worker_id: str = "worker_1"):
 
 
 @app.get("/api/status")
-async def get_status(worker_id: str = "worker_1"):
+async def get_status(worker_id: str = None):
     """Obtiene el estado actual de un worker específico, el portafolio, indicadores y precios."""
     try:
+        if not worker_id:
+            worker_id = "worker_1" if "worker_1" in engine.workers else (next(iter(engine.workers.keys())) if engine.workers else "worker_1")
         if worker_id not in engine.workers:
             raise HTTPException(
                 status_code=404, detail=f"Worker {worker_id} no encontrado"
