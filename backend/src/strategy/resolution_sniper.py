@@ -136,7 +136,7 @@ class ResolutionSniperStrategy(BaseStrategy):
         self._last_observation_time[event_id] = now
         self.total_opportunities += 1
 
-        # 8. Log opportunity
+        # 8. Log opportunity and record for tracking
         if self.db:
             self.db.log(
                 "INFO",
@@ -145,16 +145,33 @@ class ResolutionSniperStrategy(BaseStrategy):
                 f"Position: ${self.position_size_usd:.2f}",
                 self.worker_id,
             )
+            # Record opportunity for outcome tracking
+            opp_id = self.db.record_opportunity({
+                "platform_a": "limitless",
+                "platform_b": "crypto",
+                "event_id": event_id,
+                "event_title": title,
+                "gross_edge_pct": self.edge * 100,
+                "net_edge_pct": self.edge * 100,
+                "platform_a_yes_ask": yes_price,
+                "platform_b_no_ask": 0.0,
+                "platform_a_depth": 0,
+                "platform_b_depth": 0,
+                "liquidity_verified": True,
+                "viable": self.edge >= 0.02,
+                "entry_price": yes_price,
+                "expected_profit": self.edge * self.position_size_usd,
+            })
             # Telegram alert for sniper opportunities (only once per event)
             from src.telegram_bot import telegram_bot
             if telegram_bot.enabled and self.edge >= 0.02:
-                # Only send alert if we haven't alerted for this event recently (1 hour cooldown)
+                now_ts = time.time()
                 last_alert = getattr(self, '_last_telegram_alert', {}).get(event_id, 0)
-                if now - last_alert > 3600:  # 1 hour cooldown
+                if now_ts - last_alert > 3600:  # 1 hour cooldown
                     telegram_bot.send_opportunity(title, self.edge * 100, "Limitless", "Crypto")
                     if not hasattr(self, '_last_telegram_alert'):
                         self._last_telegram_alert = {}
-                    self._last_telegram_alert[event_id] = now
+                    self._last_telegram_alert[event_id] = now_ts
 
         if self.db:
             self.db.log(

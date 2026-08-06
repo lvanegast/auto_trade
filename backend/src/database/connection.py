@@ -219,7 +219,12 @@ class DatabaseManager:
                 platform_a_depth NUMERIC(18, 4),
                 platform_b_depth NUMERIC(18, 4),
                 liquidity_verified BOOLEAN NOT NULL DEFAULT FALSE,
-                viable BOOLEAN NOT NULL DEFAULT FALSE
+                viable BOOLEAN NOT NULL DEFAULT FALSE,
+                resolution_status VARCHAR(20) DEFAULT 'pending',
+                entry_price NUMERIC(10, 4),
+                expected_profit NUMERIC(10, 4),
+                actual_profit NUMERIC(10, 4) DEFAULT 0,
+                resolved_at TIMESTAMP
             );
             """,
         ]
@@ -415,6 +420,80 @@ class DatabaseManager:
                     snapshot.get("viable", False),
                 ))
                 conn.commit()
+        finally:
+            self._return_connection(conn)
+
+    def record_opportunity(self, opportunity: dict) -> int:
+        """Record a detected opportunity and return its ID for tracking."""
+        query = """
+            INSERT INTO edge_snapshots 
+            (platform_a, platform_b, event_id, event_title, edge_pct,
+             gross_edge_pct, platform_a_yes_ask, platform_b_no_ask,
+             platform_a_depth, platform_b_depth, liquidity_verified, viable,
+             resolution_status, entry_price, expected_profit)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(query, (
+                    opportunity.get("platform_a", "limitless"),
+                    opportunity.get("platform_b", "kalshi"),
+                    opportunity.get("event_id", ""),
+                    opportunity.get("event_title", ""),
+                    opportunity.get("net_edge_pct", 0.0),
+                    opportunity.get("gross_edge_pct", 0.0),
+                    opportunity.get("platform_a_yes_ask", 0.0),
+                    opportunity.get("platform_b_no_ask", 0.0),
+                    opportunity.get("platform_a_depth", 0.0),
+                    opportunity.get("platform_b_depth", 0.0),
+                    opportunity.get("liquidity_verified", False),
+                    opportunity.get("viable", False),
+                    "pending",  # resolution_status
+                    opportunity.get("entry_price", 0.0),
+                    opportunity.get("expected_profit", 0.0),
+                ))
+                row = cursor.fetchone()
+                conn.commit()
+                return row[0] if row else None
+        finally:
+            self._return_connection(conn)
+
+    def update_opportunity_resolution(self, opportunity_id: int, resolution: str, actual_profit: float = 0.0):
+        """Update an opportunity with its resolution outcome."""
+        query = """
+            UPDATE edge_snapshots 
+            SET resolution_status = %s, 
+                actual_profit = %s,
+                resolved_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(query, (resolution, actual_profit, opportunity_id))
+                conn.commit()
+        finally:
+            self._return_connection(conn)
+
+    def get_pending_opportunities(self):
+        """Get all opportunities that haven't been resolved yet."""
+        query = """
+            SELECT id, event_id, event_title, edge_pct, platform_a_yes_ask, 
+                   platform_b_no_ask, timestamp
+            FROM edge_snapshots 
+            WHERE resolution_status = 'pending'
+            ORDER BY timestamp DESC
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(query)
+                return cursor.fetchall()
         finally:
             self._return_connection(conn)
 

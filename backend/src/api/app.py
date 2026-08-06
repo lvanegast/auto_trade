@@ -1597,6 +1597,33 @@ async def telegram_test():
     return {"status": "sent" if result else "failed"}
 
 
+@app.get("/api/opportunities/tracking")
+async def get_opportunity_tracking():
+    """Get all tracked opportunities with their resolution status."""
+    opportunities = db.get_pending_opportunities()
+    return {
+        "pending": len(opportunities),
+        "opportunities": [
+            {
+                "id": o[0],
+                "event_id": o[1],
+                "event_title": o[2],
+                "edge_pct": o[3],
+                "entry_price": o[4],
+                "timestamp": str(o[6]) if o[6] else None,
+            }
+            for o in opportunities
+        ]
+    }
+
+
+@app.post("/api/opportunities/{opp_id}/resolve")
+async def resolve_opportunity(opp_id: int, resolution: str, actual_profit: float = 0.0):
+    """Mark an opportunity as resolved (won/lost) with actual profit."""
+    db.update_opportunity_resolution(opp_id, resolution, actual_profit)
+    return {"status": "resolved", "id": opp_id, "resolution": resolution, "profit": actual_profit}
+
+
 # Servir archivos estáticos del frontend en la raíz (MUST BE LAST)
 if os.path.exists("web"):
     app.mount("/", StaticFiles(directory="web", html=True), name="web")

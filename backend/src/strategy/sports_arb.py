@@ -288,6 +288,23 @@ class SportsArbitrageStrategy(BaseStrategy):
                     "No order generated",
                     self.worker_id,
                 )
+                # Record opportunity for outcome tracking
+                opp_id = self.db.record_opportunity({
+                    "platform_a": "limitless",
+                    "platform_b": "kalshi",
+                    "event_id": event_id,
+                    "event_title": title,
+                    "gross_edge_pct": self.edge * 100,
+                    "net_edge_pct": net_edge * 100,
+                    "platform_a_yes_ask": total_cost,
+                    "platform_b_no_ask": 0.0,
+                    "platform_a_depth": 0,
+                    "platform_b_depth": 0,
+                    "liquidity_verified": True,
+                    "viable": is_profitable,
+                    "entry_price": total_cost,
+                    "expected_profit": net_edge * self.position_size_usd,
+                })
                 # Telegram alert for cross-platform opportunities (once per event per hour)
                 from src.telegram_bot import telegram_bot
                 if telegram_bot.enabled and net_edge >= 0.02:
