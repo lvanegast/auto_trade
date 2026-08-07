@@ -65,6 +65,11 @@ engine = TradingEngine(db)
 
 @app.on_event("startup")
 async def startup_event():
+    # Configure Telegram bot with DB and engine for command handlers
+    if telegram_bot.enabled:
+        telegram_bot.configure(db, engine)
+        await telegram_bot.start_polling()
+
     # Configuración para auto-iniciar el bot al encender el contenedor (por defecto true)
     auto_start = os.getenv("AUTO_START", "true").lower() == "true"
     if auto_start:

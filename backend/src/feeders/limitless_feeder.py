@@ -12,11 +12,12 @@ import os
 from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
 from src.engine.latency_tracker import latency_tracker
+from src.utils.bounded_dict import BoundedDict
 
 
 # Shared macro edge data: feeder writes, cross-platform arb strategy reads
 # {event_id: {"total_yes": float, "edge": float, "outcomes": [...], "title": str, "group_slug": str}}
-_macro_edge_data: dict = {}
+_macro_edge_data: dict = BoundedDict(max_size=300)
 
 
 def update_macro_edge(
@@ -42,7 +43,7 @@ def get_macro_edge_data() -> dict:
     return _macro_edge_data
 
 
-_crypto_cache = {}
+_crypto_cache = BoundedDict(max_size=50)
 _last_crypto_fetch_time = 0.0
 _crypto_fetch_lock = asyncio.Lock()
 

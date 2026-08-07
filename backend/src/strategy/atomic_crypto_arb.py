@@ -2,6 +2,7 @@ import time
 import random
 from src.strategy.base import BaseStrategy
 from src.events import PriceUpdateEvent, SignalEvent
+from src.utils.bounded_dict import BoundedTimeDict
 
 
 class AtomicCryptoArbStrategy(BaseStrategy):
@@ -34,6 +35,8 @@ class AtomicCryptoArbStrategy(BaseStrategy):
         self.cooldown_seconds = 4.0
 
         self._pending_signals = []
+        # Telegram alert cooldowns — auto-expire after 1h
+        self._last_telegram_alert = BoundedTimeDict(max_size=200, ttl_seconds=3600)
 
         # High-fidelity stats
         self.total_bundles_sent = 0
@@ -128,18 +131,13 @@ class AtomicCryptoArbStrategy(BaseStrategy):
                 try:
                     from src.telegram_bot import telegram_bot
                     if telegram_bot.enabled:
-                        now_ts = time.time()
-                        last_alert = getattr(self, '_last_telegram_alert', {}).get(event.symbol, 0)
-                        if now_ts - last_alert > 3600:  # 1 hour cooldown per symbol
-                            telegram_bot.send_opportunity(
-                                event=f"Crypto Intraday: {event.symbol}",
-                                edge=gross_profit * 100,
-                                platform_a="Limitless (YES)",
-                                platform_b="Limitless (NO)"
-                            )
-                            if not hasattr(self, '_last_telegram_alert'):
-                                self._last_telegram_alert = {}
-                            self._last_telegram_alert[event.symbol] = now_ts
+                        telegram_bot.send_opportunity(
+                            event=f"Crypto Intraday: {event.symbol}",
+                            edge=gross_profit * 100,
+                            platform_a="Limitless (YES)",
+                            platform_b="Limitless (NO)",
+                            event_id=event.symbol
+                        )
                 except Exception:
                     pass
                 return None

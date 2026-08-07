@@ -28,6 +28,7 @@ from src.strategy.market_pairs import (
 )
 from src.events import PriceUpdateEvent, SignalEvent
 from src.strategy.sports_arb import _globally_claimed_events
+from src.utils.bounded_dict import BoundedTimeDict
 
 
 class CrossPlatformArbitrageStrategy(BaseStrategy):
@@ -47,11 +48,13 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         max_exposure_per_platform_pct: float = 0.20,
         db=None,
         worker_id: str = "worker_2",
+        observation_only: bool = False,
     ):
         super().__init__(symbol)
         self.feeder_type = feeder_type.lower()
         self.min_edge_pct = min_edge_pct
         self.position_size_pct = position_size_pct
+        self.observation_only = observation_only
         self.position_size_usd = float(
             os.getenv(
                 "CROSS_ARB_POSITION_SIZE_USD",
@@ -107,11 +110,11 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
         # 1×N state
         self._arb_groups = {}
         self._pending_signals = []
-        self._last_exit_time = {}
+        self._last_exit_time = BoundedTimeDict(max_size=200, ttl_seconds=3600)
 
-        # Exposure tracking
-        self._open_exposure_by_event = {}   # event_id -> total USD exposed
-        self._open_exposure_by_platform = {}  # platform -> total USD exposed
+        # Exposure tracking — auto-expire stale entries after 1h
+        self._open_exposure_by_event = BoundedTimeDict(max_size=200, ttl_seconds=3600)
+        self._open_exposure_by_platform = BoundedTimeDict(max_size=50, ttl_seconds=3600)
 
         self.teorical_probability = 0.50
         self.edge = 0.0
@@ -226,6 +229,84 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
                     position_size_usd=self.position_size_usd,
                 )
 
+        # Scan ALL pairs in the tracker for cross-platform opportunities
+        # (not just self.event_id which only covers one market)
+        opportunities = self._tracker.scan_all_pairs(min_edge_pct=self.min_edge_pct)
+        for opp in opportunities:
+            if opp.get("event_id") in _globally_claimed_events:
+                continue
+
+            from src.engine.friction_guard import friction_guard
+            is_profitable, net_edge, _, friction_details = friction_guard.validate_arbitrage_profitability(
+                leg1_feeder=opp["buy_platform"],
+                leg2_feeder=opp["hedge_platform"],
+                gross_edge_pct=opp["edge_pct"],
+                position_size_usd=self.position_size_usd,
+            )
+            if not is_profitable:
+                continue
+
+            if self.db:
+                self.db.log(
+                    "INFO",
+                    f"[Cross-Platform ARB] {opp['event_id']} | "
+                    f"Edge: {opp['edge_pct']:.2%} Net: {net_edge:.2%} | "
+                    f"Buy: {opp['buy_platform']} {opp['buy_side']} @{opp['buy_ask']:.4f} | "
+                    f"Hedge: {opp['hedge_platform']} {opp['hedge_side']} @{opp['hedge_ask']:.4f}",
+                    self.worker_id,
+                )
+
+            # If observation_only, just log and continue scanning
+            if self.observation_only:
+                continue
+
+            # Execute: buy on one platform, hedge on the other
+            self.last_arbitrage_opportunity = opp
+            self.edge = opp["edge_pct"]
+            event_id = opp["event_id"]
+
+            buy_ask = opp["buy_ask"]
+            hedge_ask = opp["hedge_ask"]
+            position_size = min(self.position_size_usd, opp.get("buy_depth", self.position_size_usd))
+
+            can_open, limit_msg = self._can_open_position(event_id, opp["buy_platform"], position_size)
+            if not can_open:
+                if self.db:
+                    self.db.log("WARNING", f"[Cross-Arb] {limit_msg}", self.worker_id)
+                continue
+
+            buy_qty = position_size / buy_ask if buy_ask > 0 else 0
+            hedge_qty = position_size / hedge_ask if hedge_ask > 0 else 0
+            if buy_qty <= 0 or hedge_qty <= 0:
+                continue
+
+            self._record_exposure(event_id, opp["buy_platform"], position_size)
+            self.last_position = "BUY"
+            self.entry_price = buy_ask
+            self.entry_time = asyncio.get_event_loop().time()
+
+            leg1_signal = SignalEvent(
+                symbol=opp.get("buy_market", self.symbol),
+                side="BUY",
+                price=buy_ask,
+                reason=f"Cross-Platform Arb Leg 1: {opp['buy_side']} @{opp['buy_platform']} edge={opp['edge_pct']:.2%}",
+                amount=buy_qty,
+                position_id=None,
+                position_size_usd=position_size,
+            )
+            leg2_signal = SignalEvent(
+                symbol=opp.get("hedge_market", self.symbol),
+                side="BUY",
+                price=hedge_ask,
+                reason=f"Cross-Platform Arb Leg 2: {opp['hedge_side']} @{opp['hedge_platform']} edge={opp['edge_pct']:.2%}",
+                amount=hedge_qty,
+                position_id=None,
+                position_size_usd=position_size,
+            )
+            self._pending_signals = [leg2_signal]
+            return leg1_signal
+
+        # Also check single-event cross-platform if event_id is set
         if self.event_id:
             both = self._tracker.get_both_books(self.event_id)
             has_kalshi = both.get("kalshi") is not None

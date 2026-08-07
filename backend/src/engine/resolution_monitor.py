@@ -40,6 +40,8 @@ class ResolutionMonitor:
     def __init__(self, db, worker_id: str):
         self.db = db
         self.worker_id = worker_id
+        # Track already-resolved market slugs to prevent duplicate alerts
+        self._already_resolved: set = set()
     
     async def check_open_positions(self) -> List[ResolvedMarket]:
         """
@@ -118,6 +120,10 @@ class ResolutionMonitor:
         """
         Verifica si un mercado resolvió consultando la API de Limitless.
         """
+        # Skip if already resolved and notified
+        if market_slug in self._already_resolved:
+            return None
+
         from limitless_sdk.api import HttpClient
         from limitless_sdk.markets import MarketFetcher
         from limitless_sdk.types.api_tokens import HMACCredentials
@@ -173,12 +179,15 @@ class ResolutionMonitor:
                     f"[ResolutionMonitor] Mercado resuelto: {market_slug} → {winning_outcome}",
                     self.worker_id,
                 )
+                # Mark as resolved to prevent duplicate alerts
+                self._already_resolved.add(market_slug)
                 try:
                     from src.telegram_bot import telegram_bot
                     if telegram_bot.enabled:
                         telegram_bot.send_alert(
                             "profit" if winning_outcome in ("YES", "NO") else "info",
-                            f"<b>Evento Resuelto</b>\n<b>Mercado:</b> {market_slug}\n<b>Resultado Ganador:</b> {winning_outcome}"
+                            f"<b>Evento Resuelto</b>\n<b>Mercado:</b> {market_slug}\n<b>Resultado Ganador:</b> {winning_outcome}",
+                            event_id=market_slug
                         )
                 except Exception:
                     pass

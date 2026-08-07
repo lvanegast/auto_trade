@@ -14,6 +14,7 @@ from typing import Optional, Dict, List
 from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
 from src.engine.latency_tracker import latency_tracker
+from src.utils.bounded_dict import BoundedDict
 
 
 class LimitlessWebSocketFeeder(BaseFeeder):
@@ -32,7 +33,7 @@ class LimitlessWebSocketFeeder(BaseFeeder):
         self.ws_client = None
         self._ws_task = None
         self._market_slugs: List[str] = []
-        self._last_prices: Dict[str, dict] = {}
+        self._last_prices: Dict[str, dict] = BoundedDict(max_size=200)
         
     async def start(self):
         """Inicia el feeder WebSocket."""

@@ -1,8 +1,10 @@
 from datetime import datetime, timezone
+from uuid import uuid4
 
 
 class TradingEvent:
-    def __init__(self, event_type: str, timestamp: datetime | None = None):
+    def __init__(self, event_type: str, timestamp: datetime | None = None, event_id: str = None):
+        self.event_id = event_id or uuid4().hex[:16]
         self.event_type = event_type
         # El timestamp pertenece al dato de mercado, no al navegador que lo
         # renderiza. Usar UTC evita mezclar horas locales/naive entre el

@@ -11,6 +11,7 @@ import time
 from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
 from src.limitless_price_cache import async_get_limitless_executable_price
+from src.utils.event_id import make_match_event_id
 
 
 class MultiPlatformFeeder(BaseFeeder):
@@ -135,10 +136,8 @@ class MultiPlatformFeeder(BaseFeeder):
                             book = await async_get_limitless_executable_price(sub_slug)
                             if not book:
                                 continue
-                            # Usar nombre normalizado como event_id para emparejar con Kalshi
-                            normalized_title = self._normalize_match_name(title)
-                            outcome_id = self._normalize_match_name(sub_title)
-                            event_id = f"match_{normalized_title}__{outcome_id}"
+                            # Use shared canonical event_id for cross-platform matching
+                            event_id = make_match_event_id(title, sub_title)
                             self._tracker.update_book(
                                 event_id=event_id,
                                 platform="limitless",
@@ -164,8 +163,8 @@ class MultiPlatformFeeder(BaseFeeder):
                     book = await async_get_limitless_executable_price(slug)
                     if not book:
                         continue
-                    normalized_title = self._normalize_match_name(title)
-                    event_id = f"match_{normalized_title}__yes"
+                    # Use shared canonical event_id for cross-platform matching
+                    event_id = make_match_event_id(title, f"{title} YES")
                     self._tracker.update_book(
                         event_id=event_id,
                         platform="limitless",
@@ -185,16 +184,45 @@ class MultiPlatformFeeder(BaseFeeder):
 
         if ll_updated > 0:
             print(f"[MultiPlatform-Limitless] Updated {ll_updated} markets in tracker")
+            # Emit a PriceUpdateEvent to trigger Worker 2's strategy
+            # Use the first market's price as a reference tick
+            if markets:
+                first = markets[0]
+                first_slug = first.slug if hasattr(first, "slug") else ""
+                first_prices = getattr(first, "prices", None) or [0.5]
+                price = float(first_prices[0]) if first_prices else 0.5
+                event = PriceUpdateEvent(
+                    symbol=f"multi_platform_tick",
+                    price=price,
+                    ask=price,
+                    bid=price,
+                )
+                await self.queue.put(event)
 
     def _normalize_match_name(self, title: str) -> str:
         """Normaliza nombre de match para emparejar Limitless y Kalshi."""
         import re
-        # Convertir a minúsculas, quitar puntos, comas
         normalized = title.lower().strip()
+        
+        # Quitar prefijos comunes como 'FRND, ', 'FRIENDLIES - ', etc.
+        if "," in normalized:
+            normalized = normalized.split(",")[-1].strip()
+        if ":" in normalized:
+            normalized = normalized.split(":")[-1].strip()
+            
         normalized = normalized.replace(".", "").replace(",", "")
-        # Quitar "vs." o "vs"
         normalized = normalized.replace("vs.", "vs")
-        # Quitar espacios extra
+        
+        # Traducción / homologación de sinónimos de equipos comunes
+        synonyms = {
+            "münchen": "munich",
+            "muenchen": "munich",
+            "bayern münchen": "bayern munich",
+            "bayern muenchen": "bayern munich",
+        }
+        for k, v in synonyms.items():
+            normalized = normalized.replace(k, v)
+
         normalized = re.sub(r'\s+', ' ', normalized)
 
         # Separar por "vs" y ordenar equipos alfabéticamente
@@ -202,15 +230,12 @@ class MultiPlatformFeeder(BaseFeeder):
         if len(parts) == 2:
             team_a = parts[0].strip()
             team_b = parts[1].strip()
-            # Ordenar alfabéticamente para que el orden sea consistente
             if team_a > team_b:
                 team_a, team_b = team_b, team_a
-            # Reemplazar espacios por guiones en cada equipo
             team_a = team_a.replace(" ", "-")
             team_b = team_b.replace(" ", "-")
             normalized = f"{team_a}-vs-{team_b}"
         else:
-            # Reemplazar espacios por guiones
             normalized = normalized.replace(" ", "-")
 
         return normalized
@@ -278,7 +303,8 @@ class MultiPlatformFeeder(BaseFeeder):
                                     bid_depth = sum(float(b.get("size", 0)) for b in bids[:5])
                                     ask_depth = sum(float(a.get("size", 0)) for a in asks[:5])
 
-                                    event_id = f"polymarket_{question[:50].replace(' ', '_')}"
+                                    # Use shared canonical event_id for cross-platform matching
+                                    event_id = make_match_event_id(question, question)
 
                                     self._tracker.update_book(
                                         event_id=event_id,
@@ -317,13 +343,29 @@ class MultiPlatformFeeder(BaseFeeder):
 
         key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH", "/app/arb.pem")
         api_key_id = os.getenv("KALSHI_API_KEY_ID")
+        private_key_b64 = os.getenv("KALSHI_PRIVATE_KEY_B64", "")
 
-        if not api_key_id or not os.path.exists(key_path):
+        if not api_key_id:
             print("[MultiPlatform-Kalshi] Sin credenciales, saltando...")
             return
 
-        with open(key_path, 'rb') as f:
-            private_key = serialization.load_pem_private_key(f.read(), password=None)
+        # Load private key from env var (base64-encoded PEM) or file
+        try:
+            if private_key_b64:
+                import base64
+                pem_bytes = base64.b64decode(private_key_b64)
+                private_key = serialization.load_pem_private_key(pem_bytes, password=None)
+                print("[MultiPlatform-Kalshi] Private key loaded from env var")
+            elif os.path.exists(key_path):
+                with open(key_path, 'rb') as f:
+                    private_key = serialization.load_pem_private_key(f.read(), password=None)
+                print("[MultiPlatform-Kalshi] Private key loaded from file")
+            else:
+                print("[MultiPlatform-Kalshi] Sin credenciales, saltando...")
+                return
+        except Exception as e:
+            print(f"[MultiPlatform-Kalshi] Error loading private key: {e}")
+            return
 
         def kalshi_request(method, path):
             import urllib.request
@@ -346,7 +388,25 @@ class MultiPlatformFeeder(BaseFeeder):
         while self.running:
             try:
                 # Ejecutar requests bloqueantes en un thread pool
-                series_list = ['KXATPMATCH', 'KXLOLGAME']
+                cycle_updates = 0
+                series_list = [
+                    'KXSOCCERSPREAD',  # Soccer Spreads / Friendlies
+                    'KXSOCCERMATCH',   # Soccer Matches
+                    'KXEPLMATCH',      # Premier League Matches
+                    'KXCLUBFRIENDLIES',# Club Friendlies (Bayern vs Aston Villa, etc)
+                    'KXFRIENDLIES',    # International Friendlies
+                    'KXUEFAEURO',      # UEFA Euro / Champions
+                    'KXATPMATCH',      # ATP Tennis
+                    'KXLOLGAME',       # League of Legends
+                    'KXCSGOMATCH',     # CS2
+                    'KXVALMATCH',      # Valorant
+                    'KXDOTAMATCH',     # Dota 2
+                    'KXNBA',           # NBA
+                    'KXNHL',           # NHL
+                    'KXMLB',           # MLB
+                    'KXNFL',           # NFL
+                    'KXUFCMATCH',      # UFC
+                ]
 
                 for series in series_list:
                     # Usar asyncio.to_thread para no bloquear el event loop
@@ -370,11 +430,8 @@ class MultiPlatformFeeder(BaseFeeder):
                             yes_ask_size = float(m.get('yes_ask_size_fp', 0) or 0)
 
                             if yes_ask > 0:
-                                # Usar nombre normalizado como event_id para emparejar con Limitless
-                                normalized_title = self._normalize_match_name(event_title)
-                                market_team = market_title.replace('Will ', '').split(' win the ')[0]
-                                outcome_id = self._normalize_match_name(market_team)
-                                event_id = f"match_{normalized_title}__{outcome_id}"
+                                # Use shared canonical event_id for cross-platform matching
+                                event_id = make_match_event_id(event_title, market_title)
                                 self._tracker.update_book(
                                     event_id=event_id,
                                     platform="kalshi",

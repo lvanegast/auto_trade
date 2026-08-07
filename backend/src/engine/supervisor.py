@@ -29,6 +29,7 @@ from src.feeders.limitless_sports_feeder import LimitlessSportsFeeder
 from src.feeders.limitless_ws_feeder import LimitlessWebSocketFeeder
 from src.feeders.binary_arb_feeder import LimitlessOracleFeeder
 from src.strategy.sports_arb import SportsArbitrageStrategy
+from src.strategy.cross_platform_arb import CrossPlatformArbitrageStrategy
 from src.strategy.binary_arb_strategy import OracleMomentumStrategy
 from src.strategy.market_making_strategy import MarketMakingStrategy
 from src.core.security import security_guard
@@ -338,7 +339,15 @@ class TradingWorker:
         await self._warm_up_strategy()
 
         self.engine_task = asyncio.create_task(self._event_loop())
-        self.feeder_task = asyncio.create_task(self.feeder.start())
+        try:
+            self.feeder_task = asyncio.create_task(self.feeder.start())
+            # Add error callback to catch silent feeder crashes
+            def _feeder_done(t):
+                if t.exception():
+                    self.db.log("ERROR", f"Feeder task crashed: {t.exception()}", self.worker_id)
+            self.feeder_task.add_done_callback(_feeder_done)
+        except Exception as e:
+            self.db.log("ERROR", f"Failed to create feeder task: {e}", self.worker_id)
         self.sync_task = asyncio.create_task(self._periodic_sync())
 
         # Notificar a clientes WebSocket del cambio de estado
@@ -505,6 +514,44 @@ class TradingWorker:
                     )
                     if not safe:
                         self.db.log("WARNING", f"[CIRCUIT BREAKER] {reason}", self.worker_id)
+                except Exception:
+                    pass
+
+                # Periodic memory cleanup (every 60s)
+                try:
+                    import gc
+                    import time as _time
+                    if not hasattr(self, '_last_gc_time'):
+                        self._last_gc_time = 0.0
+                    if _time.time() - self._last_gc_time > 60:
+                        self._last_gc_time = _time.time()
+                        # Cleanup BoundedTimeDicts in strategy
+                        if hasattr(self.strategy, '_last_exit_time'):
+                            self.strategy._last_exit_time.cleanup()
+                        if hasattr(self.strategy, '_last_telegram_alert'):
+                            self.strategy._last_telegram_alert.cleanup()
+                        if hasattr(self.strategy, '_last_observation_time'):
+                            self.strategy._last_observation_time.cleanup()
+                        # Flush row buffer
+                        if hasattr(self.strategy, '_flush_row_buffer'):
+                            self.strategy._flush_row_buffer()
+                        # Cleanup price cache
+                        try:
+                            from src.limitless_price_cache import _cache
+                            _cache.cleanup()
+                        except Exception:
+                            pass
+                        # Force garbage collection
+                        gc.collect()
+                        # Prune old DB logs (every 6 hours)
+                        if not hasattr(self, '_last_log_prune'):
+                            self._last_log_prune = 0.0
+                        if _time.time() - self._last_log_prune > 21600:
+                            self._last_log_prune = _time.time()
+                            try:
+                                self.db.prune_old_logs(days=7)
+                            except Exception:
+                                pass
                 except Exception:
                     pass
         except asyncio.CancelledError:
@@ -2297,9 +2344,13 @@ class TradingEngine:
             if w2_enabled:
                 worker2_type = os.getenv("WORKER2_FEEDER_TYPE", "multi_platform")
                 worker2 = TradingWorker("worker_2", "Cross-Platform Sports", "SPORTS", worker2_type, self.db)
-                worker2.strategy = SportsArbitrageStrategy(
-                    "SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size,
-                    db=self.db, worker_id="worker_2", cross_platform=True,
+                worker2.strategy = CrossPlatformArbitrageStrategy(
+                    "SPORTS",
+                    feeder_type=worker2_type,
+                    min_edge_pct=sports_edge,
+                    position_size_usd=sports_size,
+                    db=self.db,
+                    worker_id="worker_2",
                     observation_only=True,
                 )
                 self.workers["worker_2"] = worker2
@@ -2311,11 +2362,11 @@ class TradingEngine:
                 worker3.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_3", outcomes_count=3, observation_only=True)
                 self.workers["worker_3"] = worker3
 
-            # Worker 4: Arbitraje Deportivo 1xN (Opciones Binarias de 2 opciones en Limitless)
+            # Worker 4: Arbitraje Deportivo 1xN (todos los grupos con edge ≥ 2%)
             w4_enabled = os.getenv("WORKER4_ENABLED", "true").lower() == "true"
             if w4_enabled:
                 worker4 = TradingWorker("worker_4", "Limitless Sports (2 Opciones)", "SPORTS", "limitless_sports", self.db)
-                worker4.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_4", outcomes_count=2, observation_only=False)
+                worker4.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_4", outcomes_count=None, observation_only=False)
                 self.workers["worker_4"] = worker4
 
             # Worker 5: Oráculo HFT de Referencia Binance Spot (0 Latency Feed)

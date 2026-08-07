@@ -23,6 +23,8 @@ import os
 import time
 from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
+from limitless_sdk.market_pages import MarketPageFetcher
+from src.utils.event_id import make_match_event_id
 
 
 import time
@@ -44,6 +46,11 @@ class LimitlessSportsFeeder(BaseFeeder):
         print(
             f"[Feeder Limitless Sports] Iniciando polling cada {self.poll_interval}s..."
         )
+        try:
+            from src.api.app import db
+            db.log("INFO", f"[Feeder Limitless Sports] Iniciando polling cada {self.poll_interval}s...", "worker_3")
+        except Exception:
+            pass
         self.task = asyncio.create_task(self._run_polling())
         while self.running:
             await asyncio.sleep(1)
@@ -63,9 +70,25 @@ class LimitlessSportsFeeder(BaseFeeder):
         from limitless_sdk.market_pages import MarketPageFetcher
         from limitless_sdk.markets import MarketFetcher
 
-        http_client = HttpClient()
-        self._page_fetcher = MarketPageFetcher(http_client)
-        self._market_fetcher = MarketFetcher(http_client)
+        print(f"[Feeder Limitless Sports] _run_polling() started")
+        try:
+            from src.api.app import db
+            db.log("INFO", "[Feeder Limitless Sports] _run_polling() started", "worker_3")
+        except Exception:
+            pass
+        try:
+            http_client = HttpClient()
+            self._page_fetcher = MarketPageFetcher(http_client)
+            self._market_fetcher = MarketFetcher(http_client)
+            print(f"[Feeder Limitless Sports] HttpClient initialized successfully")
+        except Exception as e:
+            print(f"[Feeder Limitless Sports] FATAL: HttpClient init failed: {e}")
+            try:
+                from src.api.app import db
+                db.log("ERROR", f"[Feeder Limitless Sports] FATAL: HttpClient init failed: {e}", "worker_3")
+            except Exception:
+                pass
+            return
 
         try:
             while self.running:
@@ -77,7 +100,10 @@ class LimitlessSportsFeeder(BaseFeeder):
                     print(f"[Feeder Limitless Sports] Error: {e}")
                 await asyncio.sleep(self.poll_interval)
         finally:
-            await http_client.close()
+            try:
+                await http_client.close()
+            except Exception:
+                pass
 
     async def _scan_sports_markets(self):
         global _last_sports_scan_time
@@ -95,45 +121,73 @@ class LimitlessSportsFeeder(BaseFeeder):
                 markets = []
                 try:
                     async with HttpClient() as http:
-                        fetcher = MarketFetcher(http)
-                        async with latency_tracker.measure("limitless_sports", "get_active_markets") as m:
-                            resp = await fetcher.get_active_markets()
-                            m.result = resp
-                        markets = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
+                        page_fetcher = MarketPageFetcher(http)
+                        # Fetch both sports and esports pages
+                        for path in ["/sport", "/esports"]:
+                            try:
+                                async with latency_tracker.measure("limitless_sports", f"get_{path}_page") as m:
+                                    page = await page_fetcher.get_market_page_by_path(path)
+                                    m.result = page
+                                resp = await page_fetcher.get_markets(page.id, {"limit": 50})
+                                page_markets = resp.data if hasattr(resp, "data") else []
+                                markets.extend(page_markets)
+                            except Exception as pe:
+                                print(f"[Sports Feeder] Error fetching {path}: {pe}")
                 except Exception as pe:
                     if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
-                        print(f"[Sports Feeder] Error fetching active markets: {pe}")
+                        print(f"[Sports Feeder] Error fetching sports page: {pe}")
+                        try:
+                            from src.api.app import db
+                            db.log("ERROR", f"[Sports Feeder] Error fetching sports page: {pe}", "worker_3")
+                        except Exception:
+                            pass
 
-                print(f"[Sports Feeder] Fetched {len(markets)} active markets dynamically")
+                print(f"[Sports Feeder] Fetched {len(markets)} markets from /sport + /esports")
+                _stats = {"total": 0, "no_slug": 0, "crypto_filtered": 0, "group_arb": 0, "single_market": 0, "skipped": 0}
                 for m in markets:
+                    _stats["total"] += 1
                     slug = m.slug if hasattr(m, "slug") else (m.get("slug", "") if isinstance(m, dict) else "")
                     title = m.title if hasattr(m, "title") else (m.get("title", "") if isinstance(m, dict) else "")
                     if not slug:
+                        _stats["no_slug"] += 1
                         continue
 
-                    # FILTER: Only process sports markets
-                    # Skip crypto markets by checking slug for crypto keywords
-                    crypto_keywords = ["crypto", "up-or-down", "btc", "eth", "xmr", "bnb", "sol", "hype", "sui", "above-dollar", "below-dollar", "price-range"]
-                    slug_lower = slug.lower()
-                    if any(kw in slug_lower for kw in crypto_keywords):
+                    # Use categories field to filter out crypto markets (proper API field, not slug matching)
+                    categories = getattr(m, "categories", None) or []
+                    if isinstance(categories, list) and "crypto" in [c.lower() for c in categories]:
+                        _stats["crypto_filtered"] += 1
                         continue
 
                     # Extract sub-markets directly from item payload without secondary HTTP request
                     subs = getattr(m, "markets", None) or (m.get("markets") if isinstance(m, dict) else None)
                     if subs and isinstance(subs, list) and len(subs) >= 2:
+                        _stats["group_arb"] += 1
                         await self._process_group_arb(slug, title, subs)
                     else:
                         # Single / binary market directly in item
                         prices = getattr(m, "prices", None) or (m.get("prices") if isinstance(m, dict) else None)
                         if prices and len(prices) >= 2:
+                            _stats["single_market"] += 1
                             await self._process_single_market(slug, title, prices)
+                        else:
+                            _stats["skipped"] += 1
                     
                     # Delay entre mercados para evitar rate limiting
                     await asyncio.sleep(0.1)
 
-                print(f"[Sports Feeder] Scan complete: {len(markets)} markets checked")
+                print(f"[Sports Feeder] Scan complete: {len(markets)} markets checked | stats: {_stats}")
+                try:
+                    from src.api.app import db
+                    db.log("INFO", f"[Sports Feeder] Scan complete: {len(markets)} markets checked", "worker_3")
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"[Sports] Error escaneando eventos dinámicos: {e}")
+                try:
+                    from src.api.app import db
+                    db.log("ERROR", f"[Sports] Error escaneando eventos dinámicos: {e}", "worker_3")
+                except Exception:
+                    pass
 
     async def _process_group_arb(self, group_slug, group_title, subs):
         from src.strategy.cross_platform_tracker import cross_platform_tracker
@@ -207,7 +261,7 @@ class LimitlessSportsFeeder(BaseFeeder):
         if abs(edge) > 0.15:
             return
 
-        event_id = f"limitless_sport_{group_slug}"
+        event_id = make_match_event_id(group_title, group_title)
         primary_price = outcomes[0]["yes_price"]
 
         # Group data is still published to the tracker only when every outcome
@@ -217,7 +271,7 @@ class LimitlessSportsFeeder(BaseFeeder):
             if not book:
                 return
             cross_platform_tracker.update_book(
-                event_id=f"{event_id}__{outcome['slug']}",
+                event_id=make_match_event_id(group_title, outcome["title"]),
                 platform="limitless",
                 yes_bid=book["yes_bid"],
                 yes_ask=book["yes_ask"],
@@ -266,52 +320,45 @@ class LimitlessSportsFeeder(BaseFeeder):
 
     async def _process_single_market(self, slug, title, prices):
         from src.strategy.cross_platform_tracker import cross_platform_tracker
-        from src.limitless_price_cache import async_get_limitless_executable_price
+        from limitless_sdk.markets import MarketFetcher
+        from limitless_sdk.api import HttpClient
 
+        # Fetch real orderbook via SDK (not HTTP cache)
         try:
-            book = await async_get_limitless_executable_price(slug)
-            if not book:
-                return
-            yes_price = book["yes_ask"]
-            no_price = book["no_ask"]
-        except (ValueError, TypeError, IndexError):
-            return
-
-        # Check real liquidity via orderbook
-        try:
-            from limitless_sdk.markets import MarketFetcher
-            from limitless_sdk.api import HttpClient
-            
             async with HttpClient() as http:
                 fetcher = MarketFetcher(http)
                 ob = await fetcher.get_orderbook(slug)
                 bids = ob.bids if hasattr(ob, 'bids') else []
                 asks = ob.asks if hasattr(ob, 'asks') else []
                 
-                if len(bids) == 0 or len(asks) == 0:
+                if not bids or not asks:
                     return  # No real liquidity
+                
+                yes_bid = float(bids[0].price)
+                yes_ask = float(asks[0].price)
         except Exception:
-            return  # Can't verify liquidity, skip
+            return
 
-        total_yes = yes_price + no_price
-        edge = 1.0 - total_yes
+        no_ask = round(1.0 - yes_bid, 4)
+        total_yes = yes_ask + no_ask
+        edge = round(1.0 - total_yes, 4)
         if abs(edge) > 0.15:
             return
 
-        event_id = f"limitless_sport_{slug}"
+        event_id = make_match_event_id(title, title)
         cross_platform_tracker.update_book(
-            event_id=event_id,
+            event_id=make_match_event_id(title, f"{title} YES"),
             platform="limitless",
-            yes_bid=book["yes_bid"],
-            yes_ask=book["yes_ask"],
-            bid_depth=book["bid_size"],
-            ask_depth=book["ask_size"],
+            yes_bid=yes_bid,
+            yes_ask=yes_ask,
+            bid_depth=float(bids[0].size) if bids else 0,
+            ask_depth=float(asks[0].size) if asks else 0,
         )
 
         from src.strategy.sports_arb import update_sports_edge
         outcomes = [
-            {"slug": f"{slug}_YES", "title": f"{title} (YES)", "yes_price": yes_price, "no_price": no_price},
-            {"slug": f"{slug}_NO", "title": f"{title} (NO)", "yes_price": no_price, "no_price": yes_price},
+            {"slug": f"{slug}_YES", "title": f"{title} (YES)", "yes_price": yes_ask, "no_price": no_ask},
+            {"slug": f"{slug}_NO", "title": f"{title} (NO)", "yes_price": no_ask, "no_price": yes_ask},
         ]
         update_sports_edge(
             event_id=event_id,
@@ -325,8 +372,8 @@ class LimitlessSportsFeeder(BaseFeeder):
 
         event = PriceUpdateEvent(
             symbol=event_id,
-            price=yes_price,
-            ask=yes_price,
-            bid=yes_price,
+            price=yes_ask,
+            ask=yes_ask,
+            bid=yes_bid,
         )
         await self.queue.put(event)
