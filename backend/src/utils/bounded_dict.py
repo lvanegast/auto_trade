@@ -66,6 +66,10 @@ class BoundedDict:
         with self._lock:
             self._data.clear()
 
+    def __iter__(self):
+        with self._lock:
+            return iter(list(self._data.keys()))
+
     def evict_older_than(self, max_age_seconds: float, ts_key: str = "updated_at"):
         """Evict entries older than max_age_seconds based on a timestamp field."""
         cutoff = time.time() - max_age_seconds
@@ -144,3 +148,7 @@ class BoundedTimeDict:
     def clear(self):
         with self._lock:
             self._data.clear()
+
+    def __iter__(self):
+        with self._lock:
+            return iter(list(self._data.keys()))
