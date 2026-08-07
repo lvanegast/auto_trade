@@ -495,7 +495,7 @@ class TradingWorker:
                         and self.kalshi_private_key_path
                     ):
                         await self._sync_kalshi_portfolio()
-                    elif self.feeder_type in ("limitless", "limitless_sports"):
+                    elif self.feeder_type in ("kalshi", "limitless", "limitless_sports", "limitless_ws", "multi_platform", "binary_arb"):
                         await self._resolve_expired_positions_simulated()
                         await self._check_market_resolutions()
                 except Exception as e:
@@ -669,7 +669,8 @@ class TradingWorker:
             return
 
         open_pos = self.db.get_open_positions(worker_id=self.worker_id) or []
-        if not open_pos:
+        unresolved_opps = self.db.get_unresolved_opportunities(worker_id=self.worker_id) or []
+        if not open_pos and not unresolved_opps:
             return
 
         from src.engine.resolution_monitor import ResolutionMonitor
@@ -679,7 +680,7 @@ class TradingWorker:
         calculator = PnLCalculator(self.db)
 
         try:
-            resolved_markets = await monitor.check_open_positions()
+            resolved_markets = await monitor.check_open_positions_and_opportunities()
 
             for resolved in resolved_markets:
                 # Agrupar posiciones por este market
