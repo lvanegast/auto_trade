@@ -362,6 +362,7 @@ class MultiPlatformFeeder(BaseFeeder):
         while self.running:
             try:
                 # Ejecutar requests bloqueantes en un thread pool
+                cycle_updates = 0
                 series_list = [
                     'KXATPMATCH',   # ATP Tennis
                     'KXLOLGAME',    # League of Legends
