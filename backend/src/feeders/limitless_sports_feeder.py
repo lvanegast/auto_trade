@@ -123,7 +123,7 @@ class LimitlessSportsFeeder(BaseFeeder):
                         page_fetcher = MarketPageFetcher(http)
                         # Fetch the sports page specifically
                         async with latency_tracker.measure("limitless_sports", "get_sports_page") as m:
-                            sports_page = await page_fetcher.get_market_page_by_path("/sports")
+                            sports_page = await page_fetcher.get_market_page_by_path("/sport")
                             m.result = sports_page
                         # Get markets from the sports page
                         resp = await page_fetcher.get_markets(sports_page.id, {"limit": 50})
