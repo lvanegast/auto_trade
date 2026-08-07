@@ -317,13 +317,29 @@ class MultiPlatformFeeder(BaseFeeder):
 
         key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH", "/app/arb.pem")
         api_key_id = os.getenv("KALSHI_API_KEY_ID")
+        private_key_b64 = os.getenv("KALSHI_PRIVATE_KEY_B64", "")
 
-        if not api_key_id or not os.path.exists(key_path):
+        if not api_key_id:
             print("[MultiPlatform-Kalshi] Sin credenciales, saltando...")
             return
 
-        with open(key_path, 'rb') as f:
-            private_key = serialization.load_pem_private_key(f.read(), password=None)
+        # Load private key from env var (base64-encoded PEM) or file
+        try:
+            if private_key_b64:
+                import base64
+                pem_bytes = base64.b64decode(private_key_b64)
+                private_key = serialization.load_pem_private_key(pem_bytes, password=None)
+                print("[MultiPlatform-Kalshi] Private key loaded from env var")
+            elif os.path.exists(key_path):
+                with open(key_path, 'rb') as f:
+                    private_key = serialization.load_pem_private_key(f.read(), password=None)
+                print("[MultiPlatform-Kalshi] Private key loaded from file")
+            else:
+                print("[MultiPlatform-Kalshi] Sin credenciales, saltando...")
+                return
+        except Exception as e:
+            print(f"[MultiPlatform-Kalshi] Error loading private key: {e}")
+            return
 
         def kalshi_request(method, path):
             import urllib.request
