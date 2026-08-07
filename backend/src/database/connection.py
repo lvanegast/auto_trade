@@ -1,3 +1,4 @@
+from typing import Any, Optional, Dict, List, Union
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -480,21 +481,38 @@ class DatabaseManager:
         finally:
             self._return_connection(conn)
 
-    def update_opportunity_resolution(self, opportunity_id: int, resolution: str, actual_profit: float = 0.0):
-        """Update an opportunity with its resolution outcome."""
-        query = """
-            UPDATE edge_snapshots 
-            SET resolution_status = %s, 
-                actual_profit = %s,
-                resolved_at = CURRENT_TIMESTAMP
-            WHERE id = %s
-        """
+    def update_opportunity_resolution(self, opportunity_id: Any, resolution: str, actual_profit: float = 0.0):
+        """Update an opportunity with its resolution outcome (by integer ID or string event_id)."""
+        if isinstance(opportunity_id, int):
+            query = """
+                UPDATE edge_snapshots 
+                SET resolution_status = %s, 
+                    actual_profit = %s,
+                    resolved_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """
+        else:
+            query = """
+                UPDATE edge_snapshots 
+                SET resolution_status = %s, 
+                    actual_profit = %s,
+                    resolved_at = CURRENT_TIMESTAMP
+                WHERE event_id = %s OR event_id = %s
+            """
         conn = None
         try:
             conn = self._get_connection()
             with conn.cursor() as cursor:
-                cursor.execute(query, (resolution, actual_profit, opportunity_id))
-                conn.commit()
+                if isinstance(opportunity_id, int):
+                    cursor.execute(query, (resolution, actual_profit, opportunity_id))
+                else:
+                    cursor.execute(query, (resolution, actual_profit, str(opportunity_id), f"limitless_crypto_{opportunity_id}"))
+                if not self.use_sqlite:
+                    conn.commit()
+        except Exception as e:
+            if conn and not self.use_sqlite:
+                conn.rollback()
+            print(f"[DB ERROR] Error actualizando resolucion de oportunidad: {e}")
         finally:
             self._return_connection(conn)
 
