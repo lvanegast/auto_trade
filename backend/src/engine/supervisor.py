@@ -692,11 +692,9 @@ class TradingWorker:
                     if resolved.market_slug in (p.get("symbol", "") or "")
                 ]
 
-                if not market_positions:
-                    continue
-
-                # Determinar si ganamos o perdimos
-                winning_outcome = resolved.winning_outcome
+                if market_positions:
+                    # Determinar si ganamos o perdimos
+                    winning_outcome = resolved.winning_outcome
 
                 for pos in market_positions:
                     symbol = pos.get("symbol", "")
