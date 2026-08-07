@@ -121,13 +121,17 @@ class LimitlessSportsFeeder(BaseFeeder):
                 try:
                     async with HttpClient() as http:
                         page_fetcher = MarketPageFetcher(http)
-                        # Fetch the sports page specifically
-                        async with latency_tracker.measure("limitless_sports", "get_sports_page") as m:
-                            sports_page = await page_fetcher.get_market_page_by_path("/sport")
-                            m.result = sports_page
-                        # Get markets from the sports page
-                        resp = await page_fetcher.get_markets(sports_page.id, {"limit": 50})
-                        markets = resp.data if hasattr(resp, "data") else []
+                        # Fetch both sports and esports pages
+                        for path in ["/sport", "/esports"]:
+                            try:
+                                async with latency_tracker.measure("limitless_sports", f"get_{path}_page") as m:
+                                    page = await page_fetcher.get_market_page_by_path(path)
+                                    m.result = page
+                                resp = await page_fetcher.get_markets(page.id, {"limit": 50})
+                                page_markets = resp.data if hasattr(resp, "data") else []
+                                markets.extend(page_markets)
+                            except Exception as pe:
+                                print(f"[Sports Feeder] Error fetching {path}: {pe}")
                 except Exception as pe:
                     if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
                         print(f"[Sports Feeder] Error fetching sports page: {pe}")
@@ -137,7 +141,7 @@ class LimitlessSportsFeeder(BaseFeeder):
                         except Exception:
                             pass
 
-                print(f"[Sports Feeder] Fetched {len(markets)} sports markets from /sports page")
+                print(f"[Sports Feeder] Fetched {len(markets)} markets from /sport + /esports")
                 _stats = {"total": 0, "no_slug": 0, "crypto_filtered": 0, "group_arb": 0, "single_market": 0, "skipped": 0}
                 for m in markets:
                     _stats["total"] += 1
