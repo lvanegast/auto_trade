@@ -13,7 +13,6 @@ import time
 from typing import Optional, Dict, List
 from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
-from src.engine.latency_tracker import latency_tracker
 from src.utils.bounded_dict import BoundedDict
 
 
@@ -90,9 +89,16 @@ class LimitlessWebSocketFeeder(BaseFeeder):
             # Suscribirse a mercados activos
             await self._subscribe_to_markets()
             
-            # Mantener conexión viva
+            # Mantener conexión viva y re-suscribir a nuevos mercados activos cada 60s
+            last_sub_time = time.time()
             while self.running:
-                await asyncio.sleep(1)
+                await asyncio.sleep(5)
+                if time.time() - last_sub_time > 60:
+                    last_sub_time = time.time()
+                    try:
+                        await self._subscribe_to_markets()
+                    except Exception as e_resub:
+                        print(f"[Feeder Limitless WS] Error re-suscribiendo mercados: {e_resub}")
                 
         except asyncio.CancelledError:
             print(f"[Feeder Limitless WS] Tarea cancelada")
@@ -132,11 +138,11 @@ class LimitlessWebSocketFeeder(BaseFeeder):
             async with HttpClient() as http:
                 page_fetcher = MarketPageFetcher(http)
                 crypto_page_id = "5e76699e-8763-4c91-85de-3efeb064efec"
-                resp = await page_fetcher.get_markets(crypto_page_id, {"limit": 10})
+                resp = await page_fetcher.get_markets(crypto_page_id, {"limit": 20})
                 markets = resp.data if hasattr(resp, "data") else []
                 
                 slugs = []
-                for m in markets[:5]:  # Limitar a 5 mercados
+                for m in markets[:15]:
                     slug = m.slug if hasattr(m, "slug") else ""
                     if slug:
                         slugs.append(slug)
@@ -177,6 +183,7 @@ class LimitlessWebSocketFeeder(BaseFeeder):
                 return
             
             # Registrar latencia del WebSocket (instantánea)
+            from src.engine.latency_tracker import latency_tracker
             latency_ms = (time.time() - start_time) * 1000
             latency_tracker._record(type('Measurement', (), {
                 'platform': 'limitless',
@@ -231,6 +238,7 @@ class LimitlessWebSocketFeeder(BaseFeeder):
             mid_price = (best_bid + best_ask) / 2.0
             
             # Registrar latencia
+            from src.engine.latency_tracker import latency_tracker
             latency_ms = (time.time() - start_time) * 1000
             latency_tracker._record(type('Measurement', (), {
                 'platform': 'limitless',
