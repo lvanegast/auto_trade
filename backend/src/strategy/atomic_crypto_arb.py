@@ -129,6 +129,23 @@ class AtomicCryptoArbStrategy(BaseStrategy):
                         self.worker_id,
                     )
                 try:
+                    if self.db and hasattr(self.db, "record_opportunity"):
+                        self.db.record_opportunity({
+                            "platform_a": "limitless",
+                            "platform_b": "limitless",
+                            "event_id": event.symbol,
+                            "event_title": f"Crypto Intraday: {event.symbol}",
+                            "gross_edge_pct": gross_profit * 100,
+                            "net_edge_pct": gross_profit * 100,
+                            "platform_a_yes_ask": my_ask_yes,
+                            "platform_b_no_ask": my_ask_no,
+                            "platform_a_depth": 10.0,
+                            "platform_b_depth": 10.0,
+                            "liquidity_verified": True,
+                            "viable": True,
+                            "entry_price": total_cost,
+                            "expected_profit": gross_profit * self.position_size_usd,
+                        })
                     from src.telegram_bot import telegram_bot
                     if telegram_bot.enabled:
                         telegram_bot.send_opportunity(
