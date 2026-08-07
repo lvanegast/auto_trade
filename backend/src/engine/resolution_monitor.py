@@ -43,33 +43,41 @@ class ResolutionMonitor:
         # Track already-resolved market slugs to prevent duplicate alerts
         self._already_resolved: set = set()
     
-    async def check_open_positions(self) -> List[ResolvedMarket]:
+    async def check_open_positions_and_opportunities(self) -> List[ResolvedMarket]:
         """
-        Verifica todas las posiciones abiertas y detecta resoluciones.
-        
-        Returns:
-            Lista de mercados que resolvieron desde la última verificación
+        Verifica tanto posiciones abiertas como oportunidades registradas sin resolver.
         """
         resolved_markets = []
         
-        # Obtener posiciones abiertas del worker
-        open_positions = self.db.get_open_positions(worker_id=self.worker_id)
+        # 1. Obtener posiciones abiertas
+        open_positions = self.db.get_open_positions(worker_id=self.worker_id) or []
         
-        if not open_positions:
+        # 2. Obtener oportunidades registradas sin resolver
+        unresolved_opps = []
+        try:
+            if hasattr(self.db, "get_pending_opportunities"):
+                unresolved_opps = self.db.get_pending_opportunities() or []
+        except Exception as e:
+            print(f"[ResolutionMonitor Error] {e}")
+
+        if not open_positions and not unresolved_opps:
             return resolved_markets
-        
-        # Agrupar por market_slug (canasta)
+
         market_groups = {}
         for pos in open_positions:
-            # Extraer market_slug del symbol (formato: platform_event_slug)
-            symbol = pos.get("symbol", "")
+            symbol = pos.get("symbol", "") if isinstance(pos, dict) else (pos[2] if len(pos) > 2 else "")
             market_slug = self._extract_market_slug(symbol)
             if market_slug:
                 if market_slug not in market_groups:
                     market_groups[market_slug] = []
                 market_groups[market_slug].append(pos)
-        
-        # Verificar cada mercado
+
+        for opp in unresolved_opps:
+            event_id = opp.get("event_id", "") if isinstance(opp, dict) else (opp[1] if len(opp) > 1 else "")
+            market_slug = self._extract_market_slug(event_id)
+            if market_slug and market_slug not in market_groups:
+                market_groups[market_slug] = []
+
         for market_slug, positions in market_groups.items():
             try:
                 resolved = await self._check_market_resolution(market_slug, positions)
@@ -81,8 +89,11 @@ class ResolutionMonitor:
                     f"[ResolutionMonitor] Error verificando {market_slug}: {e}",
                     self.worker_id,
                 )
-        
+
         return resolved_markets
+
+    async def check_open_positions(self) -> List[ResolvedMarket]:
+        return await self.check_open_positions_and_opportunities()
     
     def _extract_market_slug(self, symbol: str) -> Optional[str]:
         """
@@ -97,7 +108,7 @@ class ResolutionMonitor:
             return None
         
         # Remover prefijos de plataforma
-        prefixes = ["limitless_sport_", "polymarket_", "limitless_"]
+        prefixes = ["limitless_sport_", "polymarket_", "limitless_crypto_", "limitless_"]
         slug = symbol
         for prefix in prefixes:
             if slug.startswith(prefix):
@@ -107,7 +118,6 @@ class ResolutionMonitor:
         # Remover sufijo de outcome (_YES, _NO, _outcome_slug)
         parts = slug.rsplit("_", 1)
         if len(parts) > 1:
-            # Check if last part looks like an outcome
             last = parts[-1].upper()
             if last in ("YES", "NO") or last.startswith("0X"):
                 slug = parts[0]
@@ -120,7 +130,6 @@ class ResolutionMonitor:
         """
         Verifica si un mercado resolvió consultando la API de Limitless.
         """
-        # Skip if already resolved and notified
         if market_slug in self._already_resolved:
             return None
 
@@ -131,11 +140,9 @@ class ResolutionMonitor:
         api_key = os.getenv("LIMITLESS_API_KEY")
         api_secret = os.getenv("LIMITLESS_API_SECRET")
         
-        if not api_key or not api_secret:
-            return None
-        
         async with HttpClient() as http:
-            http.set_hmac_credentials(HMACCredentials(token_id=api_key, secret=api_secret))
+            if api_key and api_secret:
+                http.set_hmac_credentials(HMACCredentials(token_id=api_key, secret=api_secret))
             fetcher = MarketFetcher(http)
             
             try:
@@ -181,6 +188,12 @@ class ResolutionMonitor:
                 )
                 # Mark as resolved to prevent duplicate alerts
                 self._already_resolved.add(market_slug)
+                try:
+                    if hasattr(self.db, "update_opportunity_resolution"):
+                        self.db.update_opportunity_resolution(market_slug, f"resolved_{winning_outcome}")
+                except Exception:
+                    pass
+
                 try:
                     from src.telegram_bot import telegram_bot
                     if telegram_bot.enabled:
