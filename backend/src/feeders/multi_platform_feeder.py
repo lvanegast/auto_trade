@@ -184,6 +184,20 @@ class MultiPlatformFeeder(BaseFeeder):
 
         if ll_updated > 0:
             print(f"[MultiPlatform-Limitless] Updated {ll_updated} markets in tracker")
+            # Emit a PriceUpdateEvent to trigger Worker 2's strategy
+            # Use the first market's price as a reference tick
+            if markets:
+                first = markets[0]
+                first_slug = first.slug if hasattr(first, "slug") else ""
+                first_prices = getattr(first, "prices", None) or [0.5]
+                price = float(first_prices[0]) if first_prices else 0.5
+                event = PriceUpdateEvent(
+                    symbol=f"multi_platform_tick",
+                    price=price,
+                    ask=price,
+                    bid=price,
+                )
+                await self.queue.put(event)
 
     def _normalize_match_name(self, title: str) -> str:
         """Normaliza nombre de match para emparejar Limitless y Kalshi."""
