@@ -130,7 +130,7 @@ class MultiPlatformFeeder(BaseFeeder):
                 if ts_str.isdigit():
                     ts_val = int(ts_str)
                     expiration_s = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
-                    if time.time() > expiration_s or (expiration_s - time.time()) > 172800:
+                    if (time.time() - expiration_s) > 86400 or (expiration_s - time.time()) > 172800:
                         continue
             except Exception:
                 pass
