@@ -665,11 +665,14 @@ class TradingWorker:
         Verifica mercados abiertos contra la API de Limitless para detectar resoluciones reales.
         Usa ResolutionMonitor + PnLCalculator para calcular P&L por canasta.
         """
-        if self.execution_type == "simulation":
-            return
 
         open_pos = self.db.get_open_positions(worker_id=self.worker_id) or []
-        unresolved_opps = self.db.get_unresolved_opportunities(worker_id=self.worker_id) or []
+        unresolved_opps = []
+        try:
+            if hasattr(self.db, "get_pending_opportunities"):
+                unresolved_opps = self.db.get_pending_opportunities() or []
+        except Exception:
+            pass
         if not open_pos and not unresolved_opps:
             return
 
