@@ -43,6 +43,7 @@ def normalize_outcome(outcome: str) -> str:
     Handles platform-specific formats:
         Kalshi: "Will SC Freiburg win the match?" → "sc-freiburg"
         Kalshi: "SC Freiburg wins by over 1.5 runs" → "sc-freiburg"
+        Kalshi: "Ben Shelton win the Bergs vs Shelton: Round of 32 match?" → "ben-shelton"
         Limitless: "SC Freiburg" → "sc-freiburg"
         Limitless: "3+ total goals" → "3+-total-goals"
         Polymarket: "Will SC Freiburg win?" → "sc-freiburg"
@@ -57,20 +58,26 @@ def normalize_outcome(outcome: str) -> str:
             normalized = normalized[len(prefix):]
             break
     
-    # Strip common suffixes
-    for suffix in [
-        " win the match?",
-        " win the match",
-        " win?",
-        " win",
-        " wins",
-        " won",
-        " to win",
-        " winning",
-    ]:
-        if normalized.endswith(suffix):
-            normalized = normalized[:-len(suffix)]
-            break
+    # Strip everything after " win the " (Kalshi long format)
+    # e.g. "ben shelton win the bergs vs shelton: round of 32 match?" → "ben shelton"
+    win_the_match = re.match(r'^(.+?)\s+win\s+the\s+', normalized)
+    if win_the_match:
+        normalized = win_the_match.group(1)
+    else:
+        # Strip shorter suffixes
+        for suffix in [
+            " win the match?",
+            " win the match",
+            " win?",
+            " win",
+            " wins",
+            " won",
+            " to win",
+            " winning",
+        ]:
+            if normalized.endswith(suffix):
+                normalized = normalized[:-len(suffix)]
+                break
     
     # Strip "wins by..." suffix
     normalized = re.sub(r'\s+wins?\s+by\s+.*$', '', normalized)
