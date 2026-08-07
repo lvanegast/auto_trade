@@ -1612,12 +1612,12 @@ async def get_opportunity_tracking():
         "pending": len(opportunities),
         "opportunities": [
             {
-                "id": o[0],
-                "event_id": o[1],
-                "event_title": o[2],
-                "edge_pct": o[3],
-                "entry_price": o[4],
-                "timestamp": str(o[6]) if o[6] else None,
+                "id": o["id"],
+                "event_id": o["event_id"],
+                "event_title": o["event_title"],
+                "edge_pct": o["edge_pct"],
+                "entry_price": o["entry_price"],
+                "timestamp": str(o["timestamp"]) if o.get("timestamp") else None,
             }
             for o in opportunities
         ]
