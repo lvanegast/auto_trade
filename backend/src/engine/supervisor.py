@@ -695,7 +695,8 @@ class TradingWorker:
         try:
             stale_marked = 0
             if hasattr(self.db, "mark_stale_pending_opportunities"):
-                stale_marked = self.db.mark_stale_pending_opportunities(24)
+                stale_hours = int(os.getenv("OPPORTUNITY_STALE_HOURS", "6"))
+                stale_marked = self.db.mark_stale_pending_opportunities(stale_hours)
             if stale_marked:
                 self.db.log(
                     "INFO",

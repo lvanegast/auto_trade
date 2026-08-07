@@ -39,6 +39,8 @@ class ResolutionMonitor:
 
     # Class-level set: persiste entre instancias (se crea una instancia por ciclo
     # de sync), evita alertas duplicadas por worker y entre workers.
+    # No se descartan slugs: el cap es tan alto que en la práctica es permanente,
+    # para que un mercado ya resuelto NUNCA vuelva a generar una alerta.
     _already_resolved: set = set()
 
     def __init__(self, db, worker_id: str):
@@ -47,10 +49,13 @@ class ResolutionMonitor:
 
     @classmethod
     def _mark_resolved(cls, market_slug: str):
-        """Marca un market como resuelto, con límite de tamaño para evitar OOM."""
+        """Marca un market como resuelto. El set persiste para el proceso."""
         cls._already_resolved.add(market_slug)
-        if len(cls._already_resolved) > 1000:
-            cls._already_resolved = set(list(cls._already_resolved)[-500:])
+        # Límite defensivo de memoria: 50k slugs (~MBs), muy por encima del
+        # volumen real diario. Antes este cap (1000→500) hacía que slugs viejos
+        # fueran re-detectados → mensajes de resolución duplicados.
+        if len(cls._already_resolved) > 50000:
+            cls._already_resolved = set(list(cls._already_resolved)[-40000:])
 
     async def check_open_positions_and_opportunities(self) -> List[ResolvedMarket]:
         """

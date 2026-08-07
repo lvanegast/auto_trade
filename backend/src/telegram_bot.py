@@ -12,6 +12,7 @@ import os
 import json
 import asyncio
 import time
+import threading
 import urllib.request
 from datetime import datetime
 from src.utils.bounded_dict import BoundedTimeDict
@@ -26,6 +27,13 @@ class TelegramBot:
         # Dedup: event_ids that already received an opportunity alert.
         # Auto-expire after 24h so old events don't permanently block.
         self._sent_event_alerts = BoundedTimeDict(max_size=500, ttl_seconds=86400)
+        # Dedup de resultados de resolución: un mismo evento solo se informa UNA vez
+        # (TTL 30 días — estos mercados no re-resuelven en la práctica).
+        self._sent_resolution_alerts = BoundedTimeDict(max_size=5000, ttl_seconds=2592000)
+        # Rate limit global de envíos: evita spam de mensajes.
+        self._min_send_interval = float(os.getenv("TELEGRAM_MIN_INTERVAL_SECONDS", "5"))
+        self._next_allowed_send = 0.0
+        self._send_lock = threading.Lock()
         # Polling state
         self._last_update_id = 0
         self._polling_task = None
@@ -205,6 +213,14 @@ class TelegramBot:
         """Send a message to the configured chat."""
         if not self.enabled:
             return False
+
+        # Rate limit: skip envíos más frecuentes que el intervalo mínimo.
+        # Se implementa como "skip" (no sleep) para no bloquear el event loop.
+        now = time.time()
+        with self._send_lock:
+            if now < self._next_allowed_send:
+                return False
+            self._next_allowed_send = now + self._min_send_interval
         
         try:
             data = json.dumps({
@@ -238,6 +254,13 @@ class TelegramBot:
     def clear_alerted(self, event_id: str):
         """Clear an event_id after resolution — allows new alert if event reopens."""
         self._sent_event_alerts.discard(event_id)
+
+    def has_resolution_alerted(self, event_id: str) -> bool:
+        """True si ya se envió el resultado de resolución para este evento."""
+        return self._sent_resolution_alerts.get(event_id) is not None
+
+    def mark_resolution_alerted(self, event_id: str):
+        self._sent_resolution_alerts[event_id] = time.time()
 
     def send_alert(self, alert_type: str, message: str, event_id: str = None):
         """Send a formatted alert. If event_id is provided, deduplicates."""
@@ -308,7 +331,14 @@ class TelegramBot:
         if event_ref.startswith("limitless_crypto_"):
             event_ref = event_ref[len("limitless_crypto_"):]
             
-        # Clear dedup memory for this event
+        # Dedup de resolución: un mismo evento solo se informa UNA vez.
+        # Evita mensajes repetidos con el mismo código cuando el mercado se re-verifica.
+        if event_id:
+            if self.has_resolution_alerted(event_id):
+                return False
+            self.mark_resolution_alerted(event_id)
+
+        # Clear opportunity dedup memory for this event (permite re-alertar si reabre)
         if event_id:
             self.clear_alerted(event_id)
 
