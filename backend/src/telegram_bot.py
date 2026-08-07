@@ -302,7 +302,7 @@ class TelegramBot:
 <b>Hora:</b> {datetime.now().strftime("%H:%M:%S")}"""
         return self.send_message(text)
     
-    def send_opportunity_resolution(self, event_id: str, event_title: str, winning_outcome: str, entry_price: float, expected_profit: float):
+    def send_opportunity_resolution(self, event_id: str, event_title: str, winning_outcome: str, entry_price: float, expected_profit: float, position_won: bool = None, position_pnl: float = None):
         """Send a dedicated resolution report showing if the paper trade / fish opportunity won or lost."""
         event_ref = event_id if event_id else "N/A"
         if event_ref.startswith("limitless_crypto_"):
@@ -312,10 +312,14 @@ class TelegramBot:
         if event_id:
             self.clear_alerted(event_id)
 
-        # An opportunity is profitable if the total basket cost was < 1.00 (which is guaranteed for arb)
-        # Winning outcome is YES or NO when event resolves
-        is_hit = winning_outcome in ("YES", "NO")
-        icon = "🎉 <b>[ACIERTO]</b>" if is_hit else "❌ <b>[SIN RESOLVER / SPLIT]</b>"
+        # Si conocemos si nuestra pata ganó, mostrarlo con precisión
+        if position_won is not None:
+            icon = "💰 <b>[GANASTE]</b>" if position_won else "📉 <b>[PERDISTE]</b>"
+            pnl_line = f"<b>P&L:</b> {'+' if position_pnl and position_pnl > 0 else ''}${position_pnl:.4f}"
+        else:
+            is_hit = winning_outcome in ("YES", "NO")
+            icon = "🎉 <b>[ACIERTO]</b>" if is_hit else "❌ <b>[SIN RESOLVER / SPLIT]</b>"
+            pnl_line = f"<b>Ganancia Teórica ($1.00 - Costo):</b> +${expected_profit:.4f}"
         
         text = f"""🏁 <b>Resultado del Evento</b>
 
@@ -324,7 +328,7 @@ class TelegramBot:
 <b>Evento:</b> {event_title or event_ref}
 <b>Resultado Ganador:</b> {winning_outcome}
 <b>Costo de Entrada:</b> ${entry_price:.4f}
-<b>Ganancia Teórica ($1.00 - Costo):</b> +${expected_profit:.4f}
+{pnl_line}
 <b>Hora de Cierre:</b> {datetime.now().strftime("%H:%M:%S")}"""
         return self.send_message(text)
     

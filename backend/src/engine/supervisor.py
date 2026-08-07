@@ -505,7 +505,7 @@ class TradingWorker:
                         and self.kalshi_private_key_path
                     ):
                         await self._sync_kalshi_portfolio()
-                    elif self.feeder_type in ("kalshi", "limitless", "limitless_sports", "limitless_ws", "multi_platform", "binary_arb"):
+                    elif self.feeder_type in ("kalshi", "limitless", "limitless_sports", "limitless_ws", "multi_platform", "binary_arb", "resolution_sniper"):
                         await self._resolve_expired_positions_simulated()
                         await self._check_market_resolutions()
                 except Exception as e:

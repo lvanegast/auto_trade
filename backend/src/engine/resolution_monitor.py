@@ -36,13 +36,22 @@ class ResolutionMonitor:
         for market in resolved:
             # Process resolved market
     """
-    
+
+    # Class-level set: persiste entre instancias (se crea una instancia por ciclo
+    # de sync), evita alertas duplicadas por worker y entre workers.
+    _already_resolved: set = set()
+
     def __init__(self, db, worker_id: str):
         self.db = db
         self.worker_id = worker_id
-        # Track already-resolved market slugs to prevent duplicate alerts
-        self._already_resolved: set = set()
-    
+
+    @classmethod
+    def _mark_resolved(cls, market_slug: str):
+        """Marca un market como resuelto, con límite de tamaño para evitar OOM."""
+        cls._already_resolved.add(market_slug)
+        if len(cls._already_resolved) > 1000:
+            cls._already_resolved = set(list(cls._already_resolved)[-500:])
+
     async def check_open_positions_and_opportunities(self) -> List[ResolvedMarket]:
         """
         Verifica tanto posiciones abiertas como oportunidades registradas sin resolver.
@@ -112,7 +121,7 @@ class ResolutionMonitor:
             return None
         
         # Remover prefijos de plataforma
-        prefixes = ["limitless_sport_", "polymarket_", "limitless_crypto_", "limitless_"]
+        prefixes = ["limitless_sniper_", "limitless_sport_", "polymarket_", "limitless_crypto_", "limitless_"]
         slug = symbol
         for prefix in prefixes:
             if slug.startswith(prefix):
@@ -190,11 +199,16 @@ class ResolutionMonitor:
                     f"[ResolutionMonitor] Mercado resuelto: {market_slug} → {winning_outcome}",
                     self.worker_id,
                 )
-                # Mark as resolved to prevent duplicate alerts
-                self._already_resolved.add(market_slug)
+                # Mark as resolved to prevent duplicate alerts (class-level, capped)
+                self._mark_resolved(market_slug)
+                db_event_id = (
+                    opp_data.get("event_id", market_slug)
+                    if isinstance(opp_data, dict)
+                    else (opp_data[1] if isinstance(opp_data, (tuple, list)) and len(opp_data) > 1 else market_slug)
+                )
                 try:
                     if hasattr(self.db, "update_opportunity_resolution"):
-                        self.db.update_opportunity_resolution(market_slug, f"resolved_{winning_outcome}")
+                        self.db.update_opportunity_resolution(db_event_id, f"resolved_{winning_outcome}")
                 except Exception:
                     pass
 
@@ -204,13 +218,40 @@ class ResolutionMonitor:
                         entry_price = float(opp_data.get("entry_price", 0.95) if isinstance(opp_data, dict) else (opp_data[4] if isinstance(opp_data, (tuple, list)) and len(opp_data) > 4 else 0.95))
                         expected_profit = 1.0 - entry_price if entry_price < 1.0 else 0.05
                         event_title = opp_data.get("event_title", market_slug) if isinstance(opp_data, dict) else (opp_data[2] if isinstance(opp_data, (tuple, list)) and len(opp_data) > 2 else market_slug)
-                        
+
+                        # Determinar si NUESTRA pata ganó o perdió (posición real o YES del sniper)
+                        position_won = None
+                        position_pnl = None
+                        if positions:
+                            pnl = 0.0
+                            any_known = False
+                            for p in positions:
+                                if not isinstance(p, dict):
+                                    continue
+                                symbol = p.get("symbol", "")
+                                amount = float(p.get("amount", 0) or 0)
+                                pos_entry = float(p.get("entry_price", 0) or 0)
+                                is_no = symbol.upper().endswith("_NO")
+                                pos_outcome = "NO" if is_no else "YES"
+                                won = pos_outcome == winning_outcome
+                                any_known = True
+                                pnl += amount * (1.0 - pos_entry) if won else -amount * pos_entry
+                            if any_known:
+                                position_won = pnl > 0
+                                position_pnl = pnl
+                        else:
+                            # Oportunidad de observación: el sniper compra YES siempre
+                            position_won = (winning_outcome == "YES")
+                            position_pnl = (1.0 - entry_price) if position_won else -entry_price
+
                         telegram_bot.send_opportunity_resolution(
-                            event_id=market_slug,
+                            event_id=db_event_id,
                             event_title=event_title,
                             winning_outcome=winning_outcome,
                             entry_price=entry_price,
-                            expected_profit=expected_profit
+                            expected_profit=expected_profit,
+                            position_won=position_won,
+                            position_pnl=position_pnl,
                         )
                 except Exception as e_tg:
                     print(f"[ResolutionMonitor TG Error] {e_tg}")

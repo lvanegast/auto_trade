@@ -14,6 +14,15 @@ from src.limitless_price_cache import async_get_limitless_executable_price
 from src.utils.event_id import make_match_event_id
 
 
+# Estado global del circuit-breaker de Kalshi (compartido entre ciclos del feeder)
+_kalshi_429_streak = 0
+_kalshi_pause_until = 0.0
+
+
+class KalshiRateLimited(Exception):
+    """Kalshi devolvió HTTP 429 Too Many Requests tras agotar reintentos."""
+
+
 class MultiPlatformFeeder(BaseFeeder):
     """
     Feeder que conecta a múltiples plataformas de prediction markets.
@@ -379,25 +388,41 @@ class MultiPlatformFeeder(BaseFeeder):
             print(f"[MultiPlatform-Kalshi] Error loading private key: {e}")
             return
 
-        def kalshi_request(method, path):
+        def kalshi_request(method, path, retries=3):
             import urllib.request
+            import urllib.error
             ts = str(int(_time.time() * 1000))
             msg = f'{ts}{method}{path}'.encode()
             sig = private_key.sign(msg, padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH), hashes.SHA256())
-            req = urllib.request.Request('https://external-api.kalshi.com' + path, method=method, headers={
-                'User-Agent': 'M',
-                'KALSHI-ACCESS-KEY': api_key_id,
-                'KALSHI-ACCESS-SIGNATURE': base64.b64encode(sig).decode(),
-                'KALSHI-ACCESS-TIMESTAMP': ts,
-            })
-            with urllib.request.urlopen(req, timeout=15) as r:
-                return json.loads(r.read())
+            for attempt in range(retries):
+                try:
+                    req = urllib.request.Request('https://external-api.kalshi.com' + path, method=method, headers={
+                        'User-Agent': 'M',
+                        'KALSHI-ACCESS-KEY': api_key_id,
+                        'KALSHI-ACCESS-SIGNATURE': base64.b64encode(sig).decode(),
+                        'KALSHI-ACCESS-TIMESTAMP': ts,
+                    })
+                    with urllib.request.urlopen(req, timeout=15) as r:
+                        return json.loads(r.read())
+                except urllib.error.HTTPError as e:
+                    if e.code == 429 and attempt < retries - 1:
+                        # Backoff exponencial: 2s, 4s
+                        _time.sleep(2 ** (attempt + 1))
+                        continue
+                    if e.code == 429:
+                        raise KalshiRateLimited()
+                    raise
 
         print("[MultiPlatform-Kalshi] Conectado a Kalshi API")
         self._kalshi_connected = True
 
         markets_updated = 0
         while self.running:
+            # Circuit-breaker: si hubo 429 repetidos, pausar el loop de Kalshi
+            global _kalshi_429_streak, _kalshi_pause_until
+            if _time.time() < _kalshi_pause_until:
+                await asyncio.sleep(min(5.0, _kalshi_pause_until - _time.time()))
+                continue
             try:
                 # Ejecutar requests bloqueantes en un thread pool
                 cycle_updates = 0
@@ -421,13 +446,36 @@ class MultiPlatformFeeder(BaseFeeder):
                 ]
 
                 for series in series_list:
-                    # Usar asyncio.to_thread para no bloquear el event loop
-                    events = await asyncio.to_thread(kalshi_request, 'GET', '/trade-api/v2/events?limit=10&status=open&series_ticker=' + series)
+                    if not self.running:
+                        break
+                    try:
+                        events = await asyncio.to_thread(kalshi_request, 'GET', '/trade-api/v2/events?limit=5&status=open&series_ticker=' + series)
+                    except KalshiRateLimited:
+                        _kalshi_429_streak += 1
+                        print(f"[MultiPlatform-Kalshi] 429 en serie {series} (streak={_kalshi_429_streak})")
+                        if _kalshi_429_streak >= 3:
+                            _kalshi_pause_until = _time.time() + 120
+                            print("[MultiPlatform-Kalshi] 429 repetido — pausando 120s (circuit breaker)")
+                            _kalshi_429_streak = 0
+                        break
+
+                    _kalshi_429_streak = 0
 
                     for e in events.get('events', []):
+                        if not self.running:
+                            break
                         ticker = e.get('event_ticker', '')
                         event_title = e.get('title', '')
-                        markets = await asyncio.to_thread(kalshi_request, 'GET', '/trade-api/v2/markets?limit=5&status=open&event_ticker=' + ticker)
+                        try:
+                            markets = await asyncio.to_thread(kalshi_request, 'GET', '/trade-api/v2/markets?limit=5&status=open&event_ticker=' + ticker)
+                        except KalshiRateLimited:
+                            _kalshi_429_streak += 1
+                            if _kalshi_429_streak >= 3:
+                                _kalshi_pause_until = _time.time() + 120
+                                print("[MultiPlatform-Kalshi] 429 repetido — pausando 120s (circuit breaker)")
+                                _kalshi_429_streak = 0
+                            break
+                        _kalshi_429_streak = 0
 
                         for m in markets.get('markets', []):
                             market_ticker = m.get('ticker', '')
@@ -457,6 +505,12 @@ class MultiPlatformFeeder(BaseFeeder):
                                 # Debug: print first few updates
                                 if markets_updated <= 3:
                                     print(f"[MultiPlatform-Kalshi] DEBUG: Updated {event_id} yes_bid={yes_bid} yes_ask={yes_ask}")
+
+                        # Throttle: evita ráfagas entre mercados de un evento
+                        await asyncio.sleep(0.15)
+
+                    # Throttle: evita ráfagas entre series
+                    await asyncio.sleep(0.3)
 
                 print(f"[MultiPlatform-Kalshi] Updated {cycle_updates} markets this cycle (total={markets_updated})")
 
