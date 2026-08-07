@@ -55,7 +55,17 @@ class TradingWorker:
         self.base_asset, self.quote_asset = self._parse_symbol()
 
         # Inicializar estrategia según tipo de feeder
-        if self.feeder_type in ("kalshi", "polymarket", "limitless"):
+        if self.feeder_type == "limitless_ws":
+            from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
+            self.strategy = AtomicCryptoArbStrategy(
+                self.symbol,
+                min_profit_target=float(os.getenv("CRYPTO_MAKER_EDGE", "0.01")),
+                position_size_usd=float(os.getenv("CRYPTO_MAKER_SIZE", "1.0")),
+                db=self.db,
+                worker_id=self.worker_id,
+                observation_only=True,
+            )
+        elif self.feeder_type in ("kalshi", "polymarket", "limitless"):
             min_edge = float(os.getenv("MIN_ARB_EDGE_PCT", "0.03"))
             position_size = float(os.getenv("ARB_POSITION_SIZE_PCT", "0.5"))
             self.strategy = CrossPlatformArbitrageStrategy(
