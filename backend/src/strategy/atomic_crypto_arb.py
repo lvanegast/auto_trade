@@ -105,7 +105,7 @@ class AtomicCryptoArbStrategy(BaseStrategy):
                     worker_id=self.worker_id,
                     platform_a="limitless",
                     platform_b="limitless",
-                    event_id=f"limitless_crypto_{event.symbol}",
+                    event_id=event.symbol if event.symbol.startswith("limitless_crypto_") else f"limitless_crypto_{event.symbol}",
                     event_title=event.symbol,
                     edge_pct=gross_profit,
                     gross_edge_pct=gross_profit,

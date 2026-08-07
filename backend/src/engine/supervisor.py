@@ -2348,7 +2348,7 @@ class TradingEngine:
             if w1_enabled:
                 from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
                 worker1 = TradingWorker("worker_1", "Limitless Intraday General", "ANY-INTRADAY", limitless_feeder_type, self.db)
-                worker1.strategy = AtomicCryptoArbStrategy("ANY-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=1.0, db=self.db, worker_id="worker_1", observation_only=True)
+                worker1.strategy = AtomicCryptoArbStrategy("ANY-INTRADAY", min_profit_target=float(os.getenv("CRYPTO_MAKER_EDGE_PCT", "0.015")), position_size_usd=1.0, db=self.db, worker_id="worker_1", observation_only=True)
                 self.workers["worker_1"] = worker1
 
             # Worker 2: Arbitraje Cross-Platform Deportes (Limitless vs Polymarket vs Kalshi)
@@ -2397,7 +2397,7 @@ class TradingEngine:
             if w6_enabled:
                 from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
                 worker6 = TradingWorker("worker_6", "Crypto Atomic-Arb", "BTC-INTRADAY", limitless_feeder_type, self.db)
-                worker6.strategy = AtomicCryptoArbStrategy("BTC-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=crypto_maker_size, db=self.db, worker_id="worker_6", observation_only=True)
+                worker6.strategy = AtomicCryptoArbStrategy("BTC-INTRADAY", min_profit_target=float(os.getenv("CRYPTO_MAKER_EDGE_PCT", "0.015")), position_size_usd=crypto_maker_size, db=self.db, worker_id="worker_6", observation_only=True)
                 self.workers["worker_6"] = worker6
 
             # Worker 7: Resolution Sniper (Buy near-certain markets, hold to resolution)
