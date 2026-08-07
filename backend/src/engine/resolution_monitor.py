@@ -72,15 +72,19 @@ class ResolutionMonitor:
                     market_groups[market_slug] = []
                 market_groups[market_slug].append(pos)
 
+        opp_map = {}
         for opp in unresolved_opps:
             event_id = opp.get("event_id", "") if isinstance(opp, dict) else (opp[1] if len(opp) > 1 else "")
             market_slug = self._extract_market_slug(event_id)
-            if market_slug and market_slug not in market_groups:
-                market_groups[market_slug] = []
+            if market_slug:
+                opp_map[market_slug] = opp
+                if market_slug not in market_groups:
+                    market_groups[market_slug] = []
 
         for market_slug, positions in market_groups.items():
             try:
-                resolved = await self._check_market_resolution(market_slug, positions)
+                opp_data = opp_map.get(market_slug, {})
+                resolved = await self._check_market_resolution(market_slug, positions, opp_data=opp_data)
                 if resolved:
                     resolved_markets.append(resolved)
             except Exception as e:
@@ -125,7 +129,7 @@ class ResolutionMonitor:
         return slug if slug else None
     
     async def _check_market_resolution(
-        self, market_slug: str, positions: List[Dict]
+        self, market_slug: str, positions: List[Dict], opp_data: Dict = None
     ) -> Optional[ResolvedMarket]:
         """
         Verifica si un mercado resolvió consultando la API de Limitless.
@@ -197,13 +201,19 @@ class ResolutionMonitor:
                 try:
                     from src.telegram_bot import telegram_bot
                     if telegram_bot.enabled:
-                        telegram_bot.send_alert(
-                            "profit" if winning_outcome in ("YES", "NO") else "info",
-                            f"<b>Evento Resuelto</b>\n<b>Mercado:</b> {market_slug}\n<b>Resultado Ganador:</b> {winning_outcome}",
-                            event_id=market_slug
+                        entry_price = float(opp_data.get("entry_price", 0.95) if isinstance(opp_data, dict) else (opp_data[4] if isinstance(opp_data, (tuple, list)) and len(opp_data) > 4 else 0.95))
+                        expected_profit = 1.0 - entry_price if entry_price < 1.0 else 0.05
+                        event_title = opp_data.get("event_title", market_slug) if isinstance(opp_data, dict) else (opp_data[2] if isinstance(opp_data, (tuple, list)) and len(opp_data) > 2 else market_slug)
+                        
+                        telegram_bot.send_opportunity_resolution(
+                            event_id=market_slug,
+                            event_title=event_title,
+                            winning_outcome=winning_outcome,
+                            entry_price=entry_price,
+                            expected_profit=expected_profit
                         )
-                except Exception:
-                    pass
+                except Exception as e_tg:
+                    print(f"[ResolutionMonitor TG Error] {e_tg}")
                 
                 return resolved
                 

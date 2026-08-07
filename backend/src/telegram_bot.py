@@ -302,6 +302,32 @@ class TelegramBot:
 <b>Hora:</b> {datetime.now().strftime("%H:%M:%S")}"""
         return self.send_message(text)
     
+    def send_opportunity_resolution(self, event_id: str, event_title: str, winning_outcome: str, entry_price: float, expected_profit: float):
+        """Send a dedicated resolution report showing if the paper trade / fish opportunity won or lost."""
+        event_ref = event_id if event_id else "N/A"
+        if event_ref.startswith("limitless_crypto_"):
+            event_ref = event_ref[len("limitless_crypto_"):]
+            
+        # Clear dedup memory for this event
+        if event_id:
+            self.clear_alerted(event_id)
+
+        # An opportunity is profitable if the total basket cost was < 1.00 (which is guaranteed for arb)
+        # Winning outcome is YES or NO when event resolves
+        is_hit = winning_outcome in ("YES", "NO")
+        icon = "🎉 <b>[ACIERTO]</b>" if is_hit else "❌ <b>[SIN RESOLVER / SPLIT]</b>"
+        
+        text = f"""🏁 <b>Resultado del Evento</b>
+
+{icon}
+<b>Contrato / ID:</b> <code>{event_ref}</code>
+<b>Evento:</b> {event_title or event_ref}
+<b>Resultado Ganador:</b> {winning_outcome}
+<b>Costo de Entrada:</b> ${entry_price:.4f}
+<b>Ganancia Teórica ($1.00 - Costo):</b> +${expected_profit:.4f}
+<b>Hora de Cierre:</b> {datetime.now().strftime("%H:%M:%S")}"""
+        return self.send_message(text)
+    
     def send_trade_executed(self, event: str, side: str, price: float, amount: float):
         """Send a trade execution alert."""
         text = f"""✅ <b>Trade Ejecutado</b>
