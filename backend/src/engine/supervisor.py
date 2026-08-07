@@ -29,6 +29,7 @@ from src.feeders.limitless_sports_feeder import LimitlessSportsFeeder
 from src.feeders.limitless_ws_feeder import LimitlessWebSocketFeeder
 from src.feeders.binary_arb_feeder import LimitlessOracleFeeder
 from src.strategy.sports_arb import SportsArbitrageStrategy
+from src.strategy.cross_platform_arb import CrossPlatformArbitrageStrategy
 from src.strategy.binary_arb_strategy import OracleMomentumStrategy
 from src.strategy.market_making_strategy import MarketMakingStrategy
 from src.core.security import security_guard
@@ -2343,9 +2344,13 @@ class TradingEngine:
             if w2_enabled:
                 worker2_type = os.getenv("WORKER2_FEEDER_TYPE", "multi_platform")
                 worker2 = TradingWorker("worker_2", "Cross-Platform Sports", "SPORTS", worker2_type, self.db)
-                worker2.strategy = SportsArbitrageStrategy(
-                    "SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size,
-                    db=self.db, worker_id="worker_2", cross_platform=True,
+                worker2.strategy = CrossPlatformArbitrageStrategy(
+                    "SPORTS",
+                    feeder_type=worker2_type,
+                    min_edge_pct=sports_edge,
+                    position_size_usd=sports_size,
+                    db=self.db,
+                    worker_id="worker_2",
                     observation_only=True,
                 )
                 self.workers["worker_2"] = worker2
