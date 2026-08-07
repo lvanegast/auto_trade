@@ -202,12 +202,27 @@ class MultiPlatformFeeder(BaseFeeder):
     def _normalize_match_name(self, title: str) -> str:
         """Normaliza nombre de match para emparejar Limitless y Kalshi."""
         import re
-        # Convertir a minúsculas, quitar puntos, comas
         normalized = title.lower().strip()
+        
+        # Quitar prefijos comunes como 'FRND, ', 'FRIENDLIES - ', etc.
+        if "," in normalized:
+            normalized = normalized.split(",")[-1].strip()
+        if ":" in normalized:
+            normalized = normalized.split(":")[-1].strip()
+            
         normalized = normalized.replace(".", "").replace(",", "")
-        # Quitar "vs." o "vs"
         normalized = normalized.replace("vs.", "vs")
-        # Quitar espacios extra
+        
+        # Traducción / homologación de sinónimos de equipos comunes
+        synonyms = {
+            "münchen": "munich",
+            "muenchen": "munich",
+            "bayern münchen": "bayern munich",
+            "bayern muenchen": "bayern munich",
+        }
+        for k, v in synonyms.items():
+            normalized = normalized.replace(k, v)
+
         normalized = re.sub(r'\s+', ' ', normalized)
 
         # Separar por "vs" y ordenar equipos alfabéticamente
@@ -215,15 +230,12 @@ class MultiPlatformFeeder(BaseFeeder):
         if len(parts) == 2:
             team_a = parts[0].strip()
             team_b = parts[1].strip()
-            # Ordenar alfabéticamente para que el orden sea consistente
             if team_a > team_b:
                 team_a, team_b = team_b, team_a
-            # Reemplazar espacios por guiones en cada equipo
             team_a = team_a.replace(" ", "-")
             team_b = team_b.replace(" ", "-")
             normalized = f"{team_a}-vs-{team_b}"
         else:
-            # Reemplazar espacios por guiones
             normalized = normalized.replace(" ", "-")
 
         return normalized
@@ -378,16 +390,22 @@ class MultiPlatformFeeder(BaseFeeder):
                 # Ejecutar requests bloqueantes en un thread pool
                 cycle_updates = 0
                 series_list = [
-                    'KXATPMATCH',   # ATP Tennis
-                    'KXLOLGAME',    # League of Legends
-                    'KXCSGOMATCH',  # CS2
-                    'KXVALMATCH',   # Valorant
-                    'KXDOTAMATCH',  # Dota 2
-                    'KXNBA',        # NBA
-                    'KXNHL',        # NHL
-                    'KXMLB',        # MLB
-                    'KXNFL',        # NFL
-                    'KXUFCMATCH',   # UFC
+                    'KXSOCCERSPREAD',  # Soccer Spreads / Friendlies
+                    'KXSOCCERMATCH',   # Soccer Matches
+                    'KXEPLMATCH',      # Premier League Matches
+                    'KXCLUBFRIENDLIES',# Club Friendlies (Bayern vs Aston Villa, etc)
+                    'KXFRIENDLIES',    # International Friendlies
+                    'KXUEFAEURO',      # UEFA Euro / Champions
+                    'KXATPMATCH',      # ATP Tennis
+                    'KXLOLGAME',       # League of Legends
+                    'KXCSGOMATCH',     # CS2
+                    'KXVALMATCH',      # Valorant
+                    'KXDOTAMATCH',     # Dota 2
+                    'KXNBA',           # NBA
+                    'KXNHL',           # NHL
+                    'KXMLB',           # MLB
+                    'KXNFL',           # NFL
+                    'KXUFCMATCH',      # UFC
                 ]
 
                 for series in series_list:

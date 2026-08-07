@@ -14,13 +14,30 @@ def normalize_match_name(title: str) -> str:
     Normalize a match title to a canonical slug.
     
     Examples:
-        "SC Freiburg vs Strasbourg" → "sc-freiburg-vs-strasbourg"
-        "Strasbourg vs SC Freiburg" → "sc-freiburg-vs-strasbourg"  (sorted)
-        "Natus Vincere vs G2 Esports" → "g2-esports-vs-natus-vincere"
+        "FRND, Bayern München vs Aston Villa" → "aston-villa-vs-bayern-munich"
+        "Aston Villa vs Bayern Munich" → "aston-villa-vs-bayern-munich"  (sorted)
     """
     normalized = title.lower().strip()
+    
+    # Strip common prefixes like 'FRND, ', 'FRIENDLIES - ', 'CLUB FRIENDLIES: '
+    if "," in normalized:
+        normalized = normalized.split(",")[-1].strip()
+    if ":" in normalized:
+        normalized = normalized.split(":")[-1].strip()
+        
     normalized = normalized.replace(".", "").replace(",", "")
     normalized = normalized.replace("vs.", "vs")
+    
+    # Team synonym mapping to ensure identical slugs across platforms
+    synonyms = {
+        "münchen": "munich",
+        "muenchen": "munich",
+        "bayern münchen": "bayern munich",
+        "bayern muenchen": "bayern munich",
+    }
+    for k, v in synonyms.items():
+        normalized = normalized.replace(k, v)
+
     normalized = re.sub(r'\s+', ' ', normalized)
 
     parts = normalized.split(" vs ")
@@ -50,6 +67,16 @@ def normalize_outcome(outcome: str) -> str:
     """
     normalized = outcome.lower().strip()
     normalized = normalized.replace(".", "").replace(",", "")
+    
+    synonyms = {
+        "münchen": "munich",
+        "muenchen": "munich",
+        "bayern münchen": "bayern munich",
+        "bayern muenchen": "bayern munich",
+    }
+    for k, v in synonyms.items():
+        normalized = normalized.replace(k, v)
+
     normalized = re.sub(r'\s+', ' ', normalized)
     
     # Strip Kalshi/Polymarket question prefixes
