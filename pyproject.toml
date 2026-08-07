@@ -12,6 +12,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "requests>=2.31.0",
     "trading-ig>=0.0.1",
+    "munch",
     "alpaca-py>=0.43.4",
     "websockets>=16.0",
     "cryptography>=49.0.0",

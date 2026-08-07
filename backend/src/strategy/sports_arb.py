@@ -10,12 +10,19 @@ import os
 import time
 
 import time as _time
+from collections import OrderedDict, deque
+from datetime import datetime, timedelta
+
 from src.strategy.base import BaseStrategy
 from src.events import PriceUpdateEvent, SignalEvent
 from src.utils.bounded_dict import BoundedDict, BoundedTimeDict
 
 # Shared data store: feeder writes, strategy reads (bounded to prevent OOM)
 _sports_edge_data: dict = BoundedDict(max_size=300)
+
+# Global set of claimed event_ids to prevent concurrent workers from trading the same event
+_globally_claimed_events: set = set()
+MAX_EVENTS_CLAIMED = 2000
 
 
 def update_sports_edge(
@@ -36,10 +43,6 @@ def update_sports_edge(
         "outcomes": outcomes or [],
         "group_slug": group_slug,
     }
-
-
-# Global set of claimed event_ids to prevent concurrent workers from trading the same event
-_globally_claimed_events: set = set()
 
 
 class SportsArbitrageStrategy(BaseStrategy):
@@ -101,6 +104,13 @@ class SportsArbitrageStrategy(BaseStrategy):
 
     def on_price_update(self, event: PriceUpdateEvent) -> SignalEvent | None:
         super().on_price_update(event)
+
+        # Periodic cleanup of global caches (every ~100 updates)
+        if not hasattr(self, '_update_count'):
+            self._update_count = 0
+        self._update_count = (self._update_count + 1) % 100
+        if self._update_count == 0:
+            _cleanup_global_caches()
 
         self.teorical_probability = event.price
 
@@ -334,6 +344,10 @@ class SportsArbitrageStrategy(BaseStrategy):
             "total_spend": total_spend,
             "num_sets": num_sets,
         }
+        # If claimed events set is getting too large, clear old ones
+        if len(_globally_claimed_events) > MAX_EVENTS_CLAIMED:
+            _globally_claimed_events.clear()
+
         self._pending_event_ids.add(event_id)
         _globally_claimed_events.add(event_id)
         self.total_opportunities += 1
