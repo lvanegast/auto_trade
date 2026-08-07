@@ -123,6 +123,18 @@ class MultiPlatformFeeder(BaseFeeder):
             if not slug:
                 continue
 
+            # Strict Intraday Horizon Filter: Reject events > 48h into the future
+            try:
+                parts = slug.split("-")
+                ts_str = parts[-1]
+                if ts_str.isdigit():
+                    ts_val = int(ts_str)
+                    expiration_s = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
+                    if time.time() > expiration_s or (expiration_s - time.time()) > 172800:
+                        continue
+            except Exception:
+                pass
+
             # Sub-markets (grupos)
             subs = getattr(m, "markets", None) or (m.get("markets") if isinstance(m, dict) else None)
             if subs and isinstance(subs, list) and len(subs) >= 2:

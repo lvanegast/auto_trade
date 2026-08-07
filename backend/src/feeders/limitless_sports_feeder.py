@@ -152,11 +152,19 @@ class LimitlessSportsFeeder(BaseFeeder):
                         _stats["no_slug"] += 1
                         continue
 
-                    # Use categories field to filter out crypto markets (proper API field, not slug matching)
-                    categories = getattr(m, "categories", None) or []
-                    if isinstance(categories, list) and "crypto" in [c.lower() for c in categories]:
-                        _stats["crypto_filtered"] += 1
-                        continue
+                    # Filter out long-term futures / non-intraday events (max horizon 48h)
+                    try:
+                        parts = slug.split("-")
+                        ts_str = parts[-1]
+                        if ts_str.isdigit():
+                            ts_val = int(ts_str)
+                            expiration_s = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
+                            # Reject if event expired or extends beyond 48 hours (172800 seconds)
+                            if now > expiration_s or (expiration_s - now) > 172800:
+                                _stats["skipped"] += 1
+                                continue
+                    except Exception:
+                        pass
 
                     # Extract sub-markets directly from item payload without secondary HTTP request
                     subs = getattr(m, "markets", None) or (m.get("markets") if isinstance(m, dict) else None)
