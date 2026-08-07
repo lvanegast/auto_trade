@@ -24,6 +24,7 @@ import time
 from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
 from limitless_sdk.market_pages import MarketPageFetcher
+from src.utils.event_id import make_match_event_id
 
 
 import time
@@ -260,7 +261,7 @@ class LimitlessSportsFeeder(BaseFeeder):
         if abs(edge) > 0.15:
             return
 
-        event_id = f"limitless_sport_{group_slug}"
+        event_id = make_match_event_id(group_title, group_title)
         primary_price = outcomes[0]["yes_price"]
 
         # Group data is still published to the tracker only when every outcome
@@ -270,7 +271,7 @@ class LimitlessSportsFeeder(BaseFeeder):
             if not book:
                 return
             cross_platform_tracker.update_book(
-                event_id=f"{event_id}__{outcome['slug']}",
+                event_id=make_match_event_id(group_title, outcome["title"]),
                 platform="limitless",
                 yes_bid=book["yes_bid"],
                 yes_ask=book["yes_ask"],
@@ -344,9 +345,9 @@ class LimitlessSportsFeeder(BaseFeeder):
         if abs(edge) > 0.15:
             return
 
-        event_id = f"limitless_sport_{slug}"
+        event_id = make_match_event_id(title, title)
         cross_platform_tracker.update_book(
-            event_id=event_id,
+            event_id=make_match_event_id(title, f"{title} YES"),
             platform="limitless",
             yes_bid=yes_bid,
             yes_ask=yes_ask,

@@ -121,6 +121,7 @@ class CrossPlatformTracker:
         return {
             "kalshi": self._books.get(event_id, {}).get("kalshi"),
             "limitless": self._books.get(event_id, {}).get("limitless"),
+            "polymarket": self._books.get(event_id, {}).get("polymarket"),
         }
 
     def get_all_event_ids(self) -> list[str]:

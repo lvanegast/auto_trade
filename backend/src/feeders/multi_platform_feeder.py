@@ -11,6 +11,7 @@ import time
 from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
 from src.limitless_price_cache import async_get_limitless_executable_price
+from src.utils.event_id import make_match_event_id
 
 
 class MultiPlatformFeeder(BaseFeeder):
@@ -135,10 +136,8 @@ class MultiPlatformFeeder(BaseFeeder):
                             book = await async_get_limitless_executable_price(sub_slug)
                             if not book:
                                 continue
-                            # Usar nombre normalizado como event_id para emparejar con Kalshi
-                            normalized_title = self._normalize_match_name(title)
-                            outcome_id = self._normalize_match_name(sub_title)
-                            event_id = f"match_{normalized_title}__{outcome_id}"
+                            # Use shared canonical event_id for cross-platform matching
+                            event_id = make_match_event_id(title, sub_title)
                             self._tracker.update_book(
                                 event_id=event_id,
                                 platform="limitless",
@@ -164,8 +163,8 @@ class MultiPlatformFeeder(BaseFeeder):
                     book = await async_get_limitless_executable_price(slug)
                     if not book:
                         continue
-                    normalized_title = self._normalize_match_name(title)
-                    event_id = f"match_{normalized_title}__yes"
+                    # Use shared canonical event_id for cross-platform matching
+                    event_id = make_match_event_id(title, f"{title} YES")
                     self._tracker.update_book(
                         event_id=event_id,
                         platform="limitless",
@@ -278,7 +277,8 @@ class MultiPlatformFeeder(BaseFeeder):
                                     bid_depth = sum(float(b.get("size", 0)) for b in bids[:5])
                                     ask_depth = sum(float(a.get("size", 0)) for a in asks[:5])
 
-                                    event_id = f"polymarket_{question[:50].replace(' ', '_')}"
+                                    # Use shared canonical event_id for cross-platform matching
+                                    event_id = make_match_event_id(question, question)
 
                                     self._tracker.update_book(
                                         event_id=event_id,
@@ -346,7 +346,18 @@ class MultiPlatformFeeder(BaseFeeder):
         while self.running:
             try:
                 # Ejecutar requests bloqueantes en un thread pool
-                series_list = ['KXATPMATCH', 'KXLOLGAME']
+                series_list = [
+                    'KXATPMATCH',   # ATP Tennis
+                    'KXLOLGAME',    # League of Legends
+                    'KXCSGOMATCH',  # CS2
+                    'KXVALMATCH',   # Valorant
+                    'KXDOTAMATCH',  # Dota 2
+                    'KXNBA',        # NBA
+                    'KXNHL',        # NHL
+                    'KXMLB',        # MLB
+                    'KXNFL',        # NFL
+                    'KXUFCMATCH',   # UFC
+                ]
 
                 for series in series_list:
                     # Usar asyncio.to_thread para no bloquear el event loop
@@ -370,11 +381,8 @@ class MultiPlatformFeeder(BaseFeeder):
                             yes_ask_size = float(m.get('yes_ask_size_fp', 0) or 0)
 
                             if yes_ask > 0:
-                                # Usar nombre normalizado como event_id para emparejar con Limitless
-                                normalized_title = self._normalize_match_name(event_title)
-                                market_team = market_title.replace('Will ', '').split(' win the ')[0]
-                                outcome_id = self._normalize_match_name(market_team)
-                                event_id = f"match_{normalized_title}__{outcome_id}"
+                                # Use shared canonical event_id for cross-platform matching
+                                event_id = make_match_event_id(event_title, market_title)
                                 self._tracker.update_book(
                                     event_id=event_id,
                                     platform="kalshi",
