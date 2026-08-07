@@ -315,35 +315,28 @@ class LimitlessSportsFeeder(BaseFeeder):
 
     async def _process_single_market(self, slug, title, prices):
         from src.strategy.cross_platform_tracker import cross_platform_tracker
-        from src.limitless_price_cache import async_get_limitless_executable_price
+        from limitless_sdk.markets import MarketFetcher
+        from limitless_sdk.api import HttpClient
 
+        # Fetch real orderbook via SDK (not HTTP cache)
         try:
-            book = await async_get_limitless_executable_price(slug)
-            if not book:
-                return
-            yes_price = book["yes_ask"]
-            no_price = book["no_ask"]
-        except (ValueError, TypeError, IndexError):
-            return
-
-        # Check real liquidity via orderbook
-        try:
-            from limitless_sdk.markets import MarketFetcher
-            from limitless_sdk.api import HttpClient
-            
             async with HttpClient() as http:
                 fetcher = MarketFetcher(http)
                 ob = await fetcher.get_orderbook(slug)
                 bids = ob.bids if hasattr(ob, 'bids') else []
                 asks = ob.asks if hasattr(ob, 'asks') else []
                 
-                if len(bids) == 0 or len(asks) == 0:
+                if not bids or not asks:
                     return  # No real liquidity
+                
+                yes_bid = float(bids[0].price)
+                yes_ask = float(asks[0].price)
         except Exception:
-            return  # Can't verify liquidity, skip
+            return
 
-        total_yes = yes_price + no_price
-        edge = 1.0 - total_yes
+        no_ask = round(1.0 - yes_bid, 4)
+        total_yes = yes_ask + no_ask
+        edge = round(1.0 - total_yes, 4)
         if abs(edge) > 0.15:
             return
 
@@ -351,16 +344,16 @@ class LimitlessSportsFeeder(BaseFeeder):
         cross_platform_tracker.update_book(
             event_id=event_id,
             platform="limitless",
-            yes_bid=book["yes_bid"],
-            yes_ask=book["yes_ask"],
-            bid_depth=book["bid_size"],
-            ask_depth=book["ask_size"],
+            yes_bid=yes_bid,
+            yes_ask=yes_ask,
+            bid_depth=float(bids[0].size) if bids else 0,
+            ask_depth=float(asks[0].size) if asks else 0,
         )
 
         from src.strategy.sports_arb import update_sports_edge
         outcomes = [
-            {"slug": f"{slug}_YES", "title": f"{title} (YES)", "yes_price": yes_price, "no_price": no_price},
-            {"slug": f"{slug}_NO", "title": f"{title} (NO)", "yes_price": no_price, "no_price": yes_price},
+            {"slug": f"{slug}_YES", "title": f"{title} (YES)", "yes_price": yes_ask, "no_price": no_ask},
+            {"slug": f"{slug}_NO", "title": f"{title} (NO)", "yes_price": no_ask, "no_price": yes_ask},
         ]
         update_sports_edge(
             event_id=event_id,
@@ -374,8 +367,8 @@ class LimitlessSportsFeeder(BaseFeeder):
 
         event = PriceUpdateEvent(
             symbol=event_id,
-            price=yes_price,
-            ask=yes_price,
-            bid=yes_price,
+            price=yes_ask,
+            ask=yes_ask,
+            bid=yes_bid,
         )
         await self.queue.put(event)
