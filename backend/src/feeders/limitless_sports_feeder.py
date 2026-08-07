@@ -23,6 +23,7 @@ import os
 import time
 from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
+from limitless_sdk.market_pages import MarketPageFetcher
 
 
 import time
@@ -119,21 +120,24 @@ class LimitlessSportsFeeder(BaseFeeder):
                 markets = []
                 try:
                     async with HttpClient() as http:
-                        fetcher = MarketFetcher(http)
-                        async with latency_tracker.measure("limitless_sports", "get_active_markets") as m:
-                            resp = await fetcher.get_active_markets()
-                            m.result = resp
-                        markets = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
+                        page_fetcher = MarketPageFetcher(http)
+                        # Fetch the sports page specifically
+                        async with latency_tracker.measure("limitless_sports", "get_sports_page") as m:
+                            sports_page = await page_fetcher.get_market_page_by_path("/sports")
+                            m.result = sports_page
+                        # Get markets from the sports page
+                        resp = await page_fetcher.get_markets(sports_page.id, {"limit": 50})
+                        markets = resp.data if hasattr(resp, "data") else []
                 except Exception as pe:
                     if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
-                        print(f"[Sports Feeder] Error fetching active markets: {pe}")
+                        print(f"[Sports Feeder] Error fetching sports page: {pe}")
                         try:
                             from src.api.app import db
-                            db.log("ERROR", f"[Sports Feeder] Error fetching active markets: {pe}", "worker_3")
+                            db.log("ERROR", f"[Sports Feeder] Error fetching sports page: {pe}", "worker_3")
                         except Exception:
                             pass
 
-                print(f"[Sports Feeder] Fetched {len(markets)} active markets dynamically")
+                print(f"[Sports Feeder] Fetched {len(markets)} sports markets from /sports page")
                 _stats = {"total": 0, "no_slug": 0, "crypto_filtered": 0, "group_arb": 0, "single_market": 0, "skipped": 0}
                 for m in markets:
                     _stats["total"] += 1
@@ -143,11 +147,9 @@ class LimitlessSportsFeeder(BaseFeeder):
                         _stats["no_slug"] += 1
                         continue
 
-                    # FILTER: Only process sports markets
-                    # Skip crypto markets by checking slug for crypto keywords
-                    crypto_keywords = ["crypto", "up-or-down", "btc", "eth", "xmr", "bnb", "sol", "hype", "sui", "above-dollar", "below-dollar", "price-range"]
-                    slug_lower = slug.lower()
-                    if any(kw in slug_lower for kw in crypto_keywords):
+                    # Use categories field to filter out crypto markets (proper API field, not slug matching)
+                    categories = getattr(m, "categories", None) or []
+                    if isinstance(categories, list) and "crypto" in [c.lower() for c in categories]:
                         _stats["crypto_filtered"] += 1
                         continue
 
