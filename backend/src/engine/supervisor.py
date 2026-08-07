@@ -505,9 +505,14 @@ class TradingWorker:
                         and self.kalshi_private_key_path
                     ):
                         await self._sync_kalshi_portfolio()
-                    elif self.feeder_type in ("kalshi", "limitless", "limitless_sports", "limitless_ws", "multi_platform", "binary_arb", "resolution_sniper"):
+                    elif self.feeder_type == "resolution_sniper":
+                        # Solo el Resolution Sniper ejecuta el monitor global de resoluciones.
+                        # Si todos los workers lo corrieran, cada mercado resuelto generaría
+                        # un mensaje de Telegram por worker (duplicados).
                         await self._resolve_expired_positions_simulated()
                         await self._check_market_resolutions()
+                    elif self.feeder_type in ("kalshi", "limitless", "limitless_sports", "limitless_ws", "multi_platform", "binary_arb"):
+                        await self._resolve_expired_positions_simulated()
                 except Exception as e:
                     print(f"[Sync Error] Error en sincronización periódica: {e}")
 
@@ -685,6 +690,23 @@ class TradingWorker:
             pass
         if not open_pos and not unresolved_opps:
             return
+
+        # Limpiar oportunidades viejas (solo se verifica el resultado de mercados recientes)
+        try:
+            stale_marked = 0
+            if hasattr(self.db, "mark_stale_pending_opportunities"):
+                stale_marked = self.db.mark_stale_pending_opportunities(24)
+            if stale_marked:
+                self.db.log(
+                    "INFO",
+                    f"[ResolutionMonitor] {stale_marked} oportunidades pendientes antiguas marcadas como stale",
+                    self.worker_id,
+                )
+                unresolved_opps = self.db.get_pending_opportunities() or []
+                if not open_pos and not unresolved_opps:
+                    return
+        except Exception:
+            pass
 
         from src.engine.resolution_monitor import ResolutionMonitor
         from src.engine.pnl_calculator import PnLCalculator

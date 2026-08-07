@@ -516,6 +516,38 @@ class DatabaseManager:
         finally:
             self._return_connection(conn)
 
+    def mark_stale_pending_opportunities(self, stale_hours: int = 24) -> int:
+        """Marca oportunidades pendientes viejas como 'stale' para no generar alertas duplicadas."""
+        if self.use_sqlite:
+            query = """
+                UPDATE edge_snapshots
+                SET resolution_status = 'stale', resolved_at = datetime('now')
+                WHERE resolution_status = 'pending'
+                  AND timestamp < datetime('now', '-' || ? || ' hours')
+            """
+        else:
+            query = """
+                UPDATE edge_snapshots
+                SET resolution_status = 'stale', resolved_at = CURRENT_TIMESTAMP
+                WHERE resolution_status = 'pending'
+                  AND timestamp < CURRENT_TIMESTAMP - (%s || ' hours')::interval
+            """
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(query, (stale_hours,))
+                if not self.use_sqlite:
+                    conn.commit()
+                return cursor.rowcount
+        except Exception as e:
+            if conn and not self.use_sqlite:
+                conn.rollback()
+            print(f"[DB ERROR] Error marcando oportunidades stale: {e}")
+            return 0
+        finally:
+            self._return_connection(conn)
+
     def get_pending_opportunities(self):
         """Get all opportunities that haven't been resolved yet."""
         query = """
