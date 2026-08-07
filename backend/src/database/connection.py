@@ -520,7 +520,7 @@ class DatabaseManager:
         """Get all opportunities that haven't been resolved yet."""
         query = """
             SELECT id, event_id, event_title, edge_pct, platform_a_yes_ask, 
-                   platform_b_no_ask, timestamp
+                   platform_b_no_ask, entry_price, expected_profit, timestamp
             FROM edge_snapshots 
             WHERE resolution_status = 'pending'
             ORDER BY timestamp DESC
@@ -528,7 +528,7 @@ class DatabaseManager:
         conn = None
         try:
             conn = self._get_connection()
-            with conn.cursor() as cursor:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute(query)
                 return cursor.fetchall()
         finally:
