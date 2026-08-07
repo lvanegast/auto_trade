@@ -288,9 +288,15 @@ class TelegramBot:
         if event_id:
             self.mark_alerted(event_id)
         
+        # Format clean ID display from event_id or slug
+        event_ref = event_id if event_id else "N/A"
+        if event_ref.startswith("limitless_crypto_"):
+            event_ref = event_ref[len("limitless_crypto_"):]
+            
         text = f"""🎯 <b>Oportunidad Detectada</b>
 
 <b>Evento:</b> {event}
+<b>Contrato / ID:</b> <code>{event_ref}</code>
 <b>Edge:</b> {edge:.2f}%
 <b>Plataformas:</b> {platform_a} ↔ {platform_b}
 <b>Hora:</b> {datetime.now().strftime("%H:%M:%S")}"""
