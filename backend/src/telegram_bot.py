@@ -25,12 +25,20 @@ class TelegramBot:
         self.enabled = bool(self.token and self.chat_id)
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         # Sub-salones: chats dedicados por categoría. Si no están configurados,
-        # todo cae al chat_id principal.
+        # todo cae al chat_id principal. Alternativa con topics: si TELEGRAM_GROUP_ID
+        # es un supergrupo forum, cada categoría se enruta a su topic por message_thread_id.
         self.chat_id_sports = os.getenv("TELEGRAM_CHAT_ID_SPORTS", "") or self.chat_id
         self.chat_id_crypto = os.getenv("TELEGRAM_CHAT_ID_CRYPTO", "") or self.chat_id
+        self.group_id = os.getenv("TELEGRAM_GROUP_ID", "") or self.chat_id
+        self.topic_sports = os.getenv("TELEGRAM_TOPIC_SPORTS", "")
+        self.topic_crypto = os.getenv("TELEGRAM_TOPIC_CRYPTO", "")
         self._chat_ids = {
             "sports": self.chat_id_sports,
             "crypto": self.chat_id_crypto,
+        }
+        self._topics = {
+            "sports": self.topic_sports,
+            "crypto": self.topic_crypto,
         }
         # Dedup: event_ids that already received an opportunity alert.
         # Auto-expire after 24h so old events don't permanently block.
@@ -47,6 +55,10 @@ class TelegramBot:
         self._polling_task = None
         self._db = None
         self._engine = None
+        # Reply context: set when handling a command so handlers reply in the
+        # same chat/topic the command came from.
+        self._reply_chat_id = None
+        self._reply_thread_id = None
 
     def configure(self, db, engine):
         """Set DB and engine references for command handlers."""
@@ -89,17 +101,26 @@ class TelegramBot:
                         msg = update.get("message", {})
                         chat_id = str(msg.get("chat", {}).get("id", ""))
                         text = msg.get("text", "").strip()
+                        thread_id = msg.get("message_thread_id")
+                        # Log ALL incoming messages so we can capture chat_id /
+                        # message_thread_id from group topics (setup helper).
+                        if chat_id and text:
+                            print(
+                                f"[Telegram] Msg chat={chat_id} thread={thread_id} "
+                                f"text={text[:60]!r}"
+                            )
                         # Only respond to authorized chat
                         if chat_id == self.chat_id and text.startswith("/"):
-                            await self._handle_command(text)
+                            await self._handle_command(text, message_thread_id=thread_id)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 print(f"[Telegram] Poll error: {e}")
             await asyncio.sleep(2)
 
-    async def _handle_command(self, text: str):
-        """Route commands to handlers."""
+    async def _handle_command(self, text: str, message_thread_id=None):
+        """Route commands to handlers. Replies go to the chat/topic the command
+        came from (works inside group forum topics)."""
         cmd = text.split()[0].lower().split("@")[0]  # Remove @botname if present
         handlers = {
             "/status": self._cmd_status,
@@ -111,9 +132,23 @@ class TelegramBot:
         }
         handler = handlers.get(cmd)
         if handler:
-            handler()
+            # Reply context: handlers call send_message() with no chat_id → reply
+            # in the same chat (and topic) the command arrived from.
+            self._reply_chat_id = self.chat_id
+            self._reply_thread_id = self._topic_thread_id(chat_id, message_thread_id)
+            try:
+                handler()
+            finally:
+                self._reply_chat_id = None
+                self._reply_thread_id = None
         else:
-            self.send_message(f"❓ Comando desconocido: <code>{cmd}</code>\nUsa /help para ver comandos disponibles.")
+            self._reply_chat_id = self.chat_id
+            self._reply_thread_id = self._topic_thread_id(chat_id, message_thread_id)
+            try:
+                self.send_message(f"❓ Comando desconocido: <code>{cmd}</code>\nUsa /help para ver comandos disponibles.")
+            finally:
+                self._reply_chat_id = None
+                self._reply_thread_id = None
 
     def _cmd_help(self):
         """Show available commands."""
@@ -259,12 +294,46 @@ class TelegramBot:
                 return self._chat_ids[cat]
         return self.chat_id
 
-    def send_message(self, text: str, parse_mode: str = "HTML", chat_id: str = None) -> bool:
-        """Send a message to the configured chat (or a specific chat_id)."""
+    def _resolve_target(self, category: str = None):
+        """Retorna (chat_id, message_thread_id) para una categoría.
+
+        Si hay un supergrupo forum (TELEGRAM_GROUP_ID) y el topic de la categoría
+        está configurado (TELEGRAM_TOPIC_SPORTS/CRYPTO), envía al topic del grupo.
+        Si no, usa el chat dedicado por categoría (TELEGRAM_CHAT_ID_SPORTS/CRYPTO)
+        o el chat principal como fallback.
+        """
+        cat = (category or "").lower()
+        # Topics: prioridad si el grupo es un forum y hay topic configurado.
+        if self.group_id and cat in self._topics and self._topics[cat]:
+            try:
+                thread_id = int(self._topics[cat])
+                return self.group_id, thread_id
+            except (TypeError, ValueError):
+                pass
+        return self._resolve_chat_id(category), None
+
+    def _topic_thread_id(self, chat_id: str, message_thread_id=None):
+        """Solo se usa message_thread_id si el chat es un supergrupo (forum).
+
+        En DM privado o chat normal, message_thread_id debe omitirse.
+        """
+        if message_thread_id and str(chat_id).startswith("-100"):
+            return message_thread_id
+        return None
+
+    def send_message(self, text: str, parse_mode: str = "HTML", chat_id: str = None, message_thread_id=None) -> bool:
+        """Send a message to the configured chat (or a specific chat_id/topic).
+
+        Si chat_id es None, responde en el chat/topic del comando que se está
+        manejando (reply context) o en el chat principal.
+        """
         if not self.enabled:
             return False
 
-        target = chat_id or self.chat_id
+        target = chat_id or self._reply_chat_id or self.chat_id
+        thread_id = message_thread_id
+        if thread_id is None and chat_id is None:
+            thread_id = self._reply_thread_id
 
         # Rate limit: skip envíos más frecuentes que el intervalo mínimo.
         # Se implementa como "skip" (no sleep) para no bloquear el event loop.
@@ -274,13 +343,17 @@ class TelegramBot:
                 return False
             self._next_allowed_send = now + self._min_send_interval
         
+        payload = {
+            "chat_id": target,
+            "text": text,
+            "parse_mode": parse_mode,
+            "disable_web_page_preview": True
+        }
+        if thread_id is not None:
+            payload["message_thread_id"] = thread_id
+
         try:
-            data = json.dumps({
-                "chat_id": target,
-                "text": text,
-                "parse_mode": parse_mode,
-                "disable_web_page_preview": True
-            }).encode("utf-8")
+            data = json.dumps(payload).encode("utf-8")
             
             req = urllib.request.Request(
                 f"{self.base_url}/sendMessage",
@@ -314,8 +387,9 @@ class TelegramBot:
     def mark_resolution_alerted(self, event_id: str):
         self._sent_resolution_alerts[event_id] = time.time()
 
-    def send_alert(self, alert_type: str, message: str, event_id: str = None):
-        """Send a formatted alert. If event_id is provided, deduplicates."""
+    def send_alert(self, alert_type: str, message: str, event_id: str = None, category: str = None):
+        """Send a formatted alert. If event_id is provided, deduplicates.
+        category routes the alert to the sub-room/topic (sports/crypto)."""
         # Dedup: skip if already alerted for this event (except resolution results)
         if event_id and alert_type == "opportunity":
             if self.has_been_alerted(event_id):
@@ -340,7 +414,8 @@ class TelegramBot:
         if event_id and alert_type in ("profit", "loss"):
             self.clear_alerted(event_id)
         
-        return self.send_message(text)
+        target, thread_id = self._resolve_target(category)
+        return self.send_message(text, chat_id=target, message_thread_id=thread_id)
     
     def send_daily_report(self, stats: dict):
         """Send a daily summary report."""
@@ -376,7 +451,8 @@ class TelegramBot:
 <b>Plataformas:</b> {platform_a} ↔ {platform_b}
 <b>Sala:</b> {category or 'general'}
 <b>Hora:</b> {datetime.now().strftime("%H:%M:%S")}"""
-        return self.send_message(text, chat_id=self._resolve_chat_id(category))
+        target, thread_id = self._resolve_target(category)
+        return self.send_message(text, chat_id=target, message_thread_id=thread_id)
     
     def send_opportunity_resolution(self, event_id: str, event_title: str, winning_outcome: str, entry_price: float, expected_profit: float, position_won: bool = None, position_pnl: float = None, category: str = None):
         """Send a dedicated resolution report showing if the paper trade / fish opportunity won or lost."""
@@ -414,7 +490,8 @@ class TelegramBot:
 {pnl_line}
 <b>Sala:</b> {category or 'general'}
 <b>Hora de Cierre:</b> {datetime.now().strftime("%H:%M:%S")}"""
-        return self.send_message(text, chat_id=self._resolve_chat_id(category))
+        target, thread_id = self._resolve_target(category)
+        return self.send_message(text, chat_id=target, message_thread_id=thread_id)
     
     def send_trade_executed(self, event: str, side: str, price: float, amount: float):
         """Send a trade execution alert."""

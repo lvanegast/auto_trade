@@ -407,7 +407,7 @@ class SportsArbitrageStrategy(BaseStrategy):
                     f"1x{len(outcomes)} {arb_type} Arb: {title}\n"
                     f"Edge: {self.edge:.2%} | Profit: ${profit_usd:.4f}\n"
                     f"Spend: ${total_spend:.2f} | Sets: {num_sets:.2f}",
-                    event_id=event_id)
+                    event_id=event_id, category="sports")
 
         # Queue all but first
         if len(signals) > 1:

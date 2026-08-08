@@ -24,6 +24,8 @@ Ejemplos:
 """
 
 import argparse
+import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -47,11 +49,23 @@ def _wait_port(port: int, timeout: int = 90) -> bool:
     return False
 
 
+def _railway_cmd() -> str:
+    """Resuelve el binario de la CLI de Railway (railway.cmd en Windows)."""
+    if os.name == "nt":
+        exe = shutil.which("railway.cmd")
+        if exe:
+            return exe
+        exe = shutil.which("railway")
+        if exe and exe.endswith(".cmd"):
+            return exe
+    return shutil.which("railway") or "railway"
+
+
 def _open_tunnel(port: int) -> subprocess.Popen:
     log = f"{__file__}.tunnel.log"
     proc = subprocess.Popen(
         [
-            "railway", "connect", "postgres",
+            _railway_cmd(), "connect", "postgres",
             "--environment", "production",
             "--tunnel-only", "--port", str(port),
         ],
