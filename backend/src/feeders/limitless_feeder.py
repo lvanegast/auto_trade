@@ -172,7 +172,7 @@ class LimitlessFeeder(BaseFeeder):
                         yes_price = float(prices[0]) if prices else 0.5
 
                         # Query real orderbook to get bids/asks
-                        bid, ask = yes_price, yes_price
+                        bid, ask = 0.0, 0.0
                         try:
                             async with latency_tracker.measure("limitless", "get_orderbook") as m:
                                 orderbook = await market_fetcher.get_orderbook(slug)
@@ -190,9 +190,14 @@ class LimitlessFeeder(BaseFeeder):
                                     'start_time': time.time(),
                                     'end_time': time.time(),
                                 })())
+                                continue
                             else:
-                                bid = bids[0].price if bids else yes_price
-                                ask = asks[0].price if asks else yes_price
+                                bid = bids[0].price if bids else 0.0
+                                ask = asks[0].price if asks else 0.0
+                                if bid <= 0 or ask <= 0 or ask <= bid:
+                                    # Libro inválido — no usar midpoint del listing
+                                    continue
+                                yes_price = ask
                                 
                         except asyncio.TimeoutError:
                             # Timeout = problema de red o Cloudflare
@@ -240,6 +245,9 @@ class LimitlessFeeder(BaseFeeder):
                             expiration_timestamp = market.expiration_timestamp / 1000.0
 
                         # Emit the PriceUpdateEvent with real bid and ask
+                        if bid <= 0 or ask <= 0 or ask <= bid:
+                            # Sin libro ejecutable real (timeout/error) — no emitir midpoint
+                            continue
                         event_id = f"limitless_crypto_{slug}"
                         event = PriceUpdateEvent(
                             symbol=event_id,
@@ -303,39 +311,42 @@ class LimitlessFeeder(BaseFeeder):
         total_yes = 0
         outcomes = []
         has_liquidity = False
+        from src.limitless_price_cache import async_get_limitless_executable_price
 
         for sub in subs:
-            prices = sub.prices if hasattr(sub, "prices") else [0.5, 0.5]
-            yes_price = float(prices[0]) if prices else 0.5
             sub_slug = sub.slug if hasattr(sub, "slug") else ""
             title = sub.title if hasattr(sub, "title") else ""
+            if not sub_slug:
+                continue
 
-            if yes_price > 0.01 and yes_price < 0.99:
+            # Libro EJECUTABLE real (orderbook), nunca midpoint del listing
+            book = await async_get_limitless_executable_price(sub_slug)
+            if not book:
+                continue
+            yes_ask = book["yes_ask"]
+            yes_bid = book["yes_bid"]
+            if yes_ask <= 0 or yes_bid <= 0 or yes_ask <= yes_bid:
+                continue
+
+            if yes_ask > 0.01 and yes_ask < 0.99:
                 has_liquidity = True
 
-            total_yes += yes_price
+            total_yes += yes_ask
             outcomes.append(
                 {
                     "slug": sub_slug,
                     "title": title,
-                    "yes_price": yes_price,
-                    "no_price": round(1.0 - yes_price, 6),
+                    "yes_price": yes_ask,
+                    "yes_bid": yes_bid,
+                    "no_price": round(1.0 - yes_ask, 6),
                 }
             )
 
         if not has_liquidity or len(outcomes) < 2:
-            # Fallback: just first child price
-            sub = subs[0]
-            prices = sub.prices if hasattr(sub, "prices") else [0.5, 0.5]
-            yes_price = prices[0] if len(prices) > 0 else 0.5
-            await self._emit_price(
-                sub.slug if hasattr(sub, "slug") else parent_slug, yes_price
-            )
             return
 
         edge = 1.0 - total_yes
         event_id = f"limitless_macro_{parent_slug}"
-        primary_price = outcomes[0]["yes_price"]
 
         # Store macro edge data for cross-platform arb strategy
         update_macro_edge(
@@ -355,12 +366,15 @@ class LimitlessFeeder(BaseFeeder):
                 f"{len(outcomes)} outcomes"
             )
 
-        # Emit price for strategy (uses first child's price as reference)
+        # Emit price for strategy (uses first child's real book as reference)
+        if not outcomes:
+            return
+        first = outcomes[0]
         event = PriceUpdateEvent(
             symbol=event_id,
-            price=float(primary_price),
-            ask=float(primary_price),
-            bid=float(primary_price),
+            price=float(first["yes_price"]),
+            ask=float(first["yes_price"]),
+            bid=float(first.get("yes_bid", 0.0)),
         )
         await self.queue.put(event)
 
@@ -376,11 +390,14 @@ class LimitlessFeeder(BaseFeeder):
                 m.result = orderbook
             bids = orderbook.bids if hasattr(orderbook, "bids") else []
             asks = orderbook.asks if hasattr(orderbook, "asks") else []
-            bid = bids[0].price if bids else yes_price
-            ask = asks[0].price if asks else yes_price
+            bid = bids[0].price if bids else 0.0
+            ask = asks[0].price if asks else 0.0
         except Exception:
-            bid = yes_price
-            ask = yes_price
+            bid, ask = 0.0, 0.0
+
+        if bid <= 0 or ask <= 0 or ask <= bid:
+            # Sin libro ejecutable real — no usar midpoint del listing
+            return
 
         # Update tracker global
         from src.strategy.market_pairs import get_pair_by_limitless_slug
@@ -409,18 +426,22 @@ class LimitlessFeeder(BaseFeeder):
         from limitless_sdk.api import HttpClient
         from limitless_sdk.markets import MarketFetcher
 
-        bid, ask = price, price
+        bid, ask = 0.0, 0.0
         try:
             http_client = HttpClient()
             market_fetcher = MarketFetcher(http_client)
             orderbook = await market_fetcher.get_orderbook(slug)
             bids = orderbook.bids if hasattr(orderbook, "bids") else []
             asks = orderbook.asks if hasattr(orderbook, "asks") else []
-            bid = bids[0].price if bids else price
-            ask = asks[0].price if asks else price
+            bid = bids[0].price if bids else 0.0
+            ask = asks[0].price if asks else 0.0
             await http_client.close()
         except Exception:
             pass
+
+        if bid <= 0 or ask <= 0 or ask <= bid:
+            # Sin libro ejecutable real — no usar midpoint del listing
+            return
 
         # Update tracker global
         from src.strategy.market_pairs import get_pair_by_limitless_slug

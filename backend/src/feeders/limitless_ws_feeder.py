@@ -175,11 +175,19 @@ class LimitlessWebSocketFeeder(BaseFeeder):
             
             # Extraer datos del update
             slug = data.get("slug", "")
-            price = float(data.get("price", 0.5))
-            bid = float(data.get("bid", price))
-            ask = float(data.get("ask", price))
+            price = float(data.get("price", 0.0))
+            bid_raw = data.get("bid")
+            ask_raw = data.get("ask")
             
             if not slug or price <= 0:
+                return
+
+            if bid_raw is None or ask_raw is None:
+                # Mensaje de precio sin libro ejecutable — no fabricar bid/ask
+                return
+            bid = float(bid_raw)
+            ask = float(ask_raw)
+            if bid <= 0 or ask <= 0 or ask <= bid:
                 return
             
             # Registrar latencia del WebSocket (instantánea)

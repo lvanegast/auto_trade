@@ -423,49 +423,9 @@ async def _get_depth_data(worker_id: str) -> dict:
         except Exception as e:
             print(f"[Depth API] Polymarket error: {e}, falling back.")
 
-    # Fallback for alpaca, oanda, kalshi, mock, or failed API calls
-    try:
-        last_price = 0.0
-        if len(worker.strategy.prices_df) > 0:
-            last_price = float(worker.strategy.prices_df.iloc[-1]["price"])
-        else:
-            try:
-                last_trades = db.get_trades(limit=1, worker_id=worker_id)
-                if last_trades:
-                    last_price = float(last_trades[0]["price"])
-            except Exception:
-                pass
-
-            if last_price <= 0:
-                last_price = 0.50 if feeder_type in ["kalshi", "polymarket"] else 100.0
-
-        import random
-
-        # Usar bid/ask reales del último quote si están disponibles
-        real_bid = getattr(worker, "last_bid", 0.0)
-        real_ask = getattr(worker, "last_ask", 0.0)
-        if real_bid > 0 and real_ask > 0 and real_ask > real_bid:
-            spread = real_ask - real_bid
-            mid = (real_bid + real_ask) / 2.0
-        else:
-            spread = last_price * 0.0006
-            mid = last_price
-
-        bids = []
-        asks = []
-        for i in range(1, 15):
-            bid_price = mid - spread * 0.5 - (i * spread * 0.4)
-            ask_price = mid + spread * 0.5 + (i * spread * 0.4)
-            bid_size = random.uniform(0.5, 8.0) * (1.0 + random.uniform(-0.3, 0.3))
-            ask_size = random.uniform(0.5, 8.0) * (1.0 + random.uniform(-0.3, 0.3))
-            bids.append([round(bid_price, 5), round(bid_size, 4)])
-            asks.append([round(ask_price, 5), round(ask_size, 4)])
-
-        return {"bids": bids, "asks": asks}
-
-    except Exception as e:
-        print("Error generating simulated depth:", e)
-        return {"bids": [], "asks": []}
+    # Fallback para alpaca, oanda, kalshi, mock, o failed API calls:
+    # sin book real disponible, devolver vacío. NUNCA fabricar un orderbook.
+    return {"bids": [], "asks": []}
 
 
 @app.get("/api/depth")
@@ -780,8 +740,16 @@ async def place_manual_order(request: Request, body: dict):
     price = 0.0
     if len(worker.strategy.prices_df) > 0:
         price = float(worker.strategy.prices_df.iloc[-1]["price"])
-    else:
-        price = 0.50 if worker.feeder_type == "kalshi" else 100.0
+    elif getattr(worker, "last_price", 0.0) > 0:
+        price = worker.last_price
+    elif getattr(worker, "last_ask", 0.0) > 0:
+        price = worker.last_ask
+
+    if price <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Sin precio real disponible. No se puede ejecutar una orden sin datos de mercado reales.",
+        )
 
     signal = SignalEvent(
         symbol=worker.symbol,
@@ -1291,13 +1259,10 @@ async def run_backtest_endpoint(worker_id: str = "worker_3", days: int = 7, init
                 raise ValueError("No se pudieron obtener mercados activos de Limitless SDK")
 
     except Exception as e_fetch:
-        # Fallback de seguridad en caso de timeout
-        data_source = f"Fallback Local ({e_fetch})"
-        now = dt_mod.datetime.now()
-        dates = [now - dt_mod.timedelta(minutes=i) for i in range(bars_count, 0, -1)]
-        prices = [0.48 for _ in range(bars_count)]
-        kalshi_prices = [0.48 for _ in range(bars_count)]
-        limitless_prices = [0.48 for _ in range(bars_count)]
+        raise HTTPException(
+            status_code=400,
+            detail=f"No se pudieron obtener mercados reales de Limitless SDK: {e_fetch}",
+        )
 
     df_dict = {
         "timestamp": dates,

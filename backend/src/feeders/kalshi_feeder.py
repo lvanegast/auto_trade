@@ -196,15 +196,28 @@ class KalshiFeeder(BaseFeeder):
                     'end_time': time.time(),
                 })())
                 
-                yes_bid, yes_ask = 0.50, 0.52
+                yes_bid, yes_ask = 0.0, 0.0
                 if res.status_code == 200:
                     m = res.json().get("market", {})
-                    yes_bid = float(m.get("yes_bid", 50)) / 100.0 if m.get("yes_bid") else 0.50
-                    yes_ask = float(m.get("yes_ask", 52)) / 100.0 if m.get("yes_ask") else 0.52
+                    yes_bid_raw = m.get("yes_bid")
+                    yes_ask_raw = m.get("yes_ask")
+                    if yes_bid_raw is not None and yes_ask_raw is not None:
+                        yes_bid = float(yes_bid_raw) / 100.0
+                        yes_ask = float(yes_ask_raw) / 100.0
+                    else:
+                        # API respondió pero sin libro real — NO fabricar precios.
+                        print(f"[Kalshi Feeder] API 200 sin bid/ask real para {self.symbol} — sin datos")
+                        await asyncio.sleep(2.0)
+                        continue
                 else:
                     # API falló — NO fabricar precios falsos desde Limitless
                     # Simplemente skip esta iteración y esperar al siguiente poll
                     print(f"[Kalshi Feeder] API error {res.status_code} para {self.symbol} — sin datos reales")
+                    await asyncio.sleep(2.0)
+                    continue
+                
+                if yes_bid <= 0 or yes_ask <= 0 or yes_ask < yes_bid:
+                    print(f"[Kalshi Feeder] Libro inválido para {self.symbol} (bid={yes_bid}, ask={yes_ask}) — sin datos")
                     await asyncio.sleep(2.0)
                     continue
                 

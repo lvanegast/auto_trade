@@ -56,9 +56,9 @@ class DydxFeeder(BaseFeeder):
     async def _poll_prices(self):
         import urllib.request
 
-        # Indexer público v4 de dYdX Mainnet
+        # Indexer público v4 de dYdX Mainnet — orderbook real
         ticker = f"{self.symbol}-USD"
-        url = f"https://indexer.dydx.trade/v4/perpetualMarkets?ticker={ticker}"
+        url = f"https://indexer.dydx.trade/v4/orderbooks/{ticker}"
 
         while self.running:
             try:
@@ -66,23 +66,26 @@ class DydxFeeder(BaseFeeder):
                 with urllib.request.urlopen(req, timeout=3.0) as resp:
                     if resp.status == 200:
                         data = json.loads(resp.read().decode("utf-8"))
-                        markets = data.get("markets", {})
-                        if ticker in markets:
-                            m_info = markets[ticker]
-                            price = float(m_info.get("oraclePrice", 0.0))
-                            if price > 0:
-                                bid = price * 0.9998
-                                ask = price * 1.0002
+                        bids = data.get("bids", [])
+                        asks = data.get("asks", [])
+                        if bids and asks:
+                            bid = float(bids[0][0])
+                            ask = float(asks[0][0])
+                            price = (bid + ask) / 2.0
+                        else:
+                            # Sin orderbook real — no fabricar precios
+                            await asyncio.sleep(self.interval)
+                            continue
 
-                                DydxTracker.update_price(self.symbol, price, bid, ask)
+                        DydxTracker.update_price(self.symbol, price, bid, ask)
 
-                                event = PriceUpdateEvent(
-                                    symbol=f"{self.symbol}-USD",
-                                    price=price,
-                                    bid=bid,
-                                    ask=ask
-                                )
-                                await self.queue.put(event)
+                        event = PriceUpdateEvent(
+                            symbol=f"{self.symbol}-USD",
+                            price=price,
+                            bid=bid,
+                            ask=ask
+                        )
+                        await self.queue.put(event)
             except Exception as e:
                 logger.warning(f"[Feeder dYdX v4] Reintento en {self.symbol}: {e}")
 

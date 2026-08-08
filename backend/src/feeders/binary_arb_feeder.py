@@ -187,12 +187,18 @@ async def _scan_markets(http_client, feeder):
             if now - feeder._seen_markets[slug] < feeder._cooldown:
                 continue
 
-        prices = m.prices if hasattr(m, "prices") else []
-        if not prices or len(prices) < 2:
+        # Usar libros EJECUTABLES reales (orderbook), nunca midpoints del listing
+        from src.limitless_price_cache import async_get_limitless_executable_price
+        book = await async_get_limitless_executable_price(slug)
+        if not book:
             continue
 
-        yes_price = float(prices[0])
-        no_price = float(prices[1])
+        yes_ask = book["yes_ask"]
+        yes_bid = book["yes_bid"]
+        no_ask = round(1.0 - yes_bid, 4)
+        no_bid = round(1.0 - yes_ask, 4)
+        if yes_ask <= 0 or yes_bid <= 0 or yes_ask <= yes_bid or no_ask <= 0 or no_bid <= 0 or no_ask <= no_bid:
+            continue
 
         expires_at = 0
         if hasattr(m, "expiration_timestamp") and m.expiration_timestamp:
@@ -203,7 +209,8 @@ async def _scan_markets(http_client, feeder):
             continue
 
         # ARBITRAJE PURO CUBIERTO: Comprar YES + Comprar NO simultáneamente
-        total_dual_cost = yes_price + no_price
+        # Costo ejecutable real = yes_ask + no_ask (asks de ambas piernas)
+        total_dual_cost = yes_ask + no_ask
 
         if total_dual_cost < 0.97 and total_dual_cost > 0.50:
             net_arbitrage_edge = 1.0 - total_dual_cost
@@ -221,15 +228,15 @@ async def _scan_markets(http_client, feeder):
 
             event = PriceUpdateEvent(
                 symbol=slug,
-                price=yes_price,
-                bid=yes_price,
-                ask=1.0 - no_price
+                price=yes_ask,
+                bid=yes_bid,
+                ask=yes_ask
             )
 
             event._arb_data = {
                 "type": "binary_dual_arb",
-                "yes_price": yes_price,
-                "no_price": no_price,
+                "yes_price": yes_ask,
+                "no_price": no_ask,
                 "total_cost": total_dual_cost,
                 "edge": net_arbitrage_edge,
                 "guaranteed_profit_usd": guaranteed_profit_usd,

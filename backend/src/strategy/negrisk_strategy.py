@@ -172,14 +172,22 @@ class NegRiskMultiOutcomeStrategy(BaseStrategy):
         signals = []
         per_outcome_amount = self.position_size_usd / len(outcomes) if outcomes else self.position_size_usd
 
-        for i, outcome in enumerate(outcomes):
-            if i == 0:
-                sell_price = 0.99
+        from src.feeders.limitless_feeder import get_macro_edge_data
+        macro_store = get_macro_edge_data()
+        edge_data = macro_store.get(event_id)
+        live_outcomes = (edge_data or {}).get("outcomes", [])
+
+        for outcome in outcomes:
+            slug = outcome.get("slug", event_id)
+            live = next((o for o in live_outcomes if o.get("slug") == slug), None)
+            if live and live.get("yes_bid"):
+                sell_price = float(live["yes_bid"])
             else:
-                sell_price = 0.01
+                self._pending_signals.clear()
+                return None
 
             signals.append(SignalEvent(
-                symbol=outcome.get("slug", event_id),
+                symbol=slug,
                 side="SELL",
                 price=sell_price,
                 reason=f"NegRisk exit: {reason} | {title}",

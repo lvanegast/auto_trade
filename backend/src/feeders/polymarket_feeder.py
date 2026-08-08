@@ -253,8 +253,12 @@ class PolymarketFeeder(BaseFeeder):
             self.last_book_update = ts_received
 
             current = self._last_snapshots.get(self.token_id, {})
-            best_bid = current.get("bid", price * 0.999)
-            best_ask = current.get("ask", price * 1.001)
+            if "bid" not in current or "ask" not in current or "bid" not in msg or "ask" not in msg:
+                # Sin snapshot previo ni bid/ask real en el mensaje:
+                # no fabricar book a partir del last trade (price*0.999/1.001).
+                return
+            best_bid = current.get("bid", 0.0)
+            best_ask = current.get("ask", 0.0)
 
             if "bid" in msg:
                 best_bid = float(msg["bid"])
@@ -302,25 +306,15 @@ class PolymarketFeeder(BaseFeeder):
                             data = await resp.json()
                             history = data.get("history", [])
                             if history:
-                                price = float(history[-1].get("p", 0.50))
-                                ask_price = round(min(price + 0.01, 0.99), 4)
-                                bid_price = round(max(price - 0.01, 0.01), 4)
-                                
-                                cross_platform_tracker.update_book(
-                                    event_id="polymarket_" + self.token_id,
-                                    platform="polymarket",
-                                    yes_bid=bid_price,
-                                    yes_ask=ask_price,
-                                    ts_origin=time.time(),
+                                p = history[-1].get("p")
+                                if p is None:
+                                    continue
+                                price = float(p)
+                                # prices-history solo da last trade — NO es un orderbook
+                                # ejecutable. No fabricar bid/ask; marcar degradado.
+                                self.mark_market_degraded(
+                                    "Fallback REST sin orderbook ejecutable (solo last trade)"
                                 )
-                                event = PriceUpdateEvent(
-                                    symbol=self.token_id,
-                                    price=price,
-                                    ask=ask_price,
-                                    bid=bid_price,
-                                )
-                                await self.queue.put(event)
-                                self._clear_degraded()
                 except Exception:
                     pass
                 await asyncio.sleep(2.0)

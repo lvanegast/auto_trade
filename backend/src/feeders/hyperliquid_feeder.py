@@ -60,29 +60,40 @@ class HyperliquidFeeder(BaseFeeder):
 
         url = "https://api.hyperliquid.xyz/info"
         headers = {"Content-Type": "application/json"}
-        payload = json.dumps({"type": "allMids"}).encode("utf-8")
 
         while self.running:
             try:
-                # Polling L1 rápido para obtener mids de todos los mercados
+                # Orderbook real L2 de Hyperliquid
+                payload = json.dumps({"type": "l2Book", "coin": self.symbol}).encode("utf-8")
                 req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
                 with urllib.request.urlopen(req, timeout=3.0) as resp:
                     if resp.status == 200:
                         data = json.loads(resp.read().decode("utf-8"))
-                        if isinstance(data, dict) and self.symbol in data:
-                            price = float(data[self.symbol])
-                            bid = price * 0.9998
-                            ask = price * 1.0002
+                        levels = data.get("levels", [])
+                        if len(levels) >= 2:
+                            bids = levels[0]
+                            asks = levels[1]
+                            if bids and asks:
+                                bid = float(bids[0]["px"])
+                                ask = float(asks[0]["px"])
+                                price = (bid + ask) / 2.0
+                            else:
+                                # Sin orderbook real — no fabricar precios
+                                await asyncio.sleep(self.interval)
+                                continue
+                        else:
+                            await asyncio.sleep(self.interval)
+                            continue
 
-                            HyperliquidTracker.update_price(self.symbol, price, bid, ask)
+                        HyperliquidTracker.update_price(self.symbol, price, bid, ask)
 
-                            event = PriceUpdateEvent(
-                                symbol=f"{self.symbol}-PERP",
-                                price=price,
-                                bid=bid,
-                                ask=ask
-                            )
-                            await self.queue.put(event)
+                        event = PriceUpdateEvent(
+                            symbol=f"{self.symbol}-PERP",
+                            price=price,
+                            bid=bid,
+                            ask=ask
+                        )
+                        await self.queue.put(event)
             except Exception as e:
                 logger.warning(f"[Feeder Hyperliquid] Reintento en {self.symbol}: {e}")
 
