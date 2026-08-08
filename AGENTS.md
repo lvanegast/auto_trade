@@ -267,6 +267,18 @@ Minimum edge for viability (with 0.25% friction): ≥2.25%
 | `skill-creator` | Crear nuevas skills. | Documentar workflows repetitivos. |
 | `git_commit` | Commits semánticos. | Commits con mensajes descriptivos. |
 
+## Codebase Memory MCP (codebase-memory-mcp)
+
+Servidor MCP local (single static binary, tree-sitter → grafo de conocimiento persistente en SQLite) que reduce tokens en consultas estructurales del código. Instalado y configurado como MCP de OpenCode (`codebase-memory-mcp` en `~/.config/opencode/opencode.jsonc`).
+
+- **Binario**: `C:/Users/User/.local/bin/codebase-memory-mcp.exe` (v0.9.0)
+- **Datos**: `~/.cache/codebase-memory-mcp/` (grafo por proyecto)
+- **Artifact compartible**: `.codebase-memory/graph.db.zst` en el repo (gitignored — se regenera con `cli index_repository`)
+- **Auto-index**: habilitado (`auto_index true`); reindexa con `cli index_repository --repo-path <raíz> --mode moderate`
+- **Nota**: el modo `full` crashea en este repo (worker muere en algún archivo); usar `moderate`.
+- **15 herramientas MCP**: `search_graph`, `query_graph`, `trace_path`, `get_architecture`, `get_code_snippet`, `detect_changes`, etc. Consultas estructurales (definiciones, callers/callees, importaciones) deben ir al grafo antes que a greps masivos.
+- Requiere reiniciar OpenCode para cargar el MCP en sesiones nuevas.
+
 ## Reference
 
 See `CLAUDE.md` for detailed architecture docs. See `docs/ARCHITECTURE.md` for design decisions (ADRs). See `docs/ARBITRAGE_RESEARCH.md` for full research findings.

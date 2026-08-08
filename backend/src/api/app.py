@@ -8,6 +8,7 @@ import datetime
 import hmac
 from dotenv import load_dotenv
 load_dotenv()
+import src.limitless_sdk_patch  # noqa: F401  (orderbook lastTradePrice null fix)
 from src.database import DatabaseManager
 from src.engine import TradingEngine
 from src.events import SignalEvent
@@ -1122,7 +1123,7 @@ async def get_arbitrage_opportunities():
             "outcomes": edge_info.get("outcomes", []),
         })
 
-    return {"opportunities": results, "price_map": price_map, "catalog_version": "2.0.0"}
+    return {"opportunities": results, "price_map": price_map, "catalog_version": "2.1.0"}
 
 
 @app.get("/api/opportunities")
