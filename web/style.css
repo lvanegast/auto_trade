@@ -177,6 +177,29 @@ input {
     border-color: rgba(0, 230, 255, 0.2);
 }
 
+/* Sub-salas: selector de categoría (Deportes / Crypto) */
+.room-btn {
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+}
+
+.room-btn:hover {
+    color: var(--text-primary);
+}
+
+.room-btn.active {
+    color: var(--primary);
+    background: rgba(0, 230, 255, 0.12);
+    border-color: rgba(0, 230, 255, 0.25);
+}
+
 /* Ticker values */
 .header-middle {
     display: flex;

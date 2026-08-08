@@ -96,7 +96,15 @@ Event flow: Feeder → `PriceUpdateEvent` → Queue → `TradingWorker._process_
 | `GET /api/trades` | Historial de trades |
 | `GET /api/positions` | Posiciones abiertas/cerradas |
 | `GET /api/arbitrage` | Oportunidades de arbitraje detectadas |
+| `GET /api/observation/performance` | **Paper PnL** de oportunidades en observación (sin trades reales), filtrable por `category=sports|crypto` |
 | `POST /api/position/close` | Cerrar posición manualmente |
+
+## Sub-salas (Deportes vs Crypto)
+
+- **Dashboard**: selector de sala (Todos/Deportes/Crypto) en el panel Arbitraje filtra `market_prices` y oportunidades por `category`.
+- **Telegram**: `TELEGRAM_CHAT_ID_SPORTS` y `TELEGRAM_CHAT_ID_CRYPTO` enrutan oportunidades y resoluciones a chats dedicados (fallback: `TELEGRAM_CHAT_ID`). Las estrategias pasan `category="sports"|"crypto"` a `send_opportunity`/`send_opportunity_resolution`.
+- **Paper PnL**: `get_observation_performance()` en `connection.py` calcula PnL hipotético desde `edge_snapshots` (entry_price + resolución real): 1xN garantizado (payout $1.00 o $(N-1)) vs direccional (sniper YES). Asume fills a precio de book, no descuenta gas/fees (friction va por `friction_guard`). Sirve para medir la DETECCIÓN, no la ejecución.
+- Las oportunidades se etiquetan con `category` (sports/crypto), `direction` (BUY_ALL_YES_1XN/BUY_ALL_NO_1XN/SNIPER_YES) y `outcomes_count` al registrarse en `edge_snapshots`.
 
 ## Bugs Corregidos (Agosto 2026)
 

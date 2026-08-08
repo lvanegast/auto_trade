@@ -24,6 +24,14 @@ class TelegramBot:
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
         self.enabled = bool(self.token and self.chat_id)
         self.base_url = f"https://api.telegram.org/bot{self.token}"
+        # Sub-salones: chats dedicados por categoría. Si no están configurados,
+        # todo cae al chat_id principal.
+        self.chat_id_sports = os.getenv("TELEGRAM_CHAT_ID_SPORTS", "") or self.chat_id
+        self.chat_id_crypto = os.getenv("TELEGRAM_CHAT_ID_CRYPTO", "") or self.chat_id
+        self._chat_ids = {
+            "sports": self.chat_id_sports,
+            "crypto": self.chat_id_crypto,
+        }
         # Dedup: event_ids that already received an opportunity alert.
         # Auto-expire after 24h so old events don't permanently block.
         self._sent_event_alerts = BoundedTimeDict(max_size=500, ttl_seconds=86400)
@@ -209,10 +217,24 @@ class TelegramBot:
         except Exception as e:
             self.send_message(f"⚠️ Error: {e}")
 
-    def send_message(self, text: str, parse_mode: str = "HTML") -> bool:
-        """Send a message to the configured chat."""
+    def _resolve_chat_id(self, category: str = None) -> str:
+        """Retorna el chat_id correspondiente a la categoría (sub-sala).
+
+        sports -> TELEGRAM_CHAT_ID_SPORTS (fallback: TELEGRAM_CHAT_ID)
+        crypto -> TELEGRAM_CHAT_ID_CRYPTO (fallback: TELEGRAM_CHAT_ID)
+        """
+        if category:
+            cat = category.lower()
+            if cat in self._chat_ids and self._chat_ids[cat]:
+                return self._chat_ids[cat]
+        return self.chat_id
+
+    def send_message(self, text: str, parse_mode: str = "HTML", chat_id: str = None) -> bool:
+        """Send a message to the configured chat (or a specific chat_id)."""
         if not self.enabled:
             return False
+
+        target = chat_id or self.chat_id
 
         # Rate limit: skip envíos más frecuentes que el intervalo mínimo.
         # Se implementa como "skip" (no sleep) para no bloquear el event loop.
@@ -224,7 +246,7 @@ class TelegramBot:
         
         try:
             data = json.dumps({
-                "chat_id": self.chat_id,
+                "chat_id": target,
                 "text": text,
                 "parse_mode": parse_mode,
                 "disable_web_page_preview": True
@@ -303,8 +325,8 @@ class TelegramBot:
 <b>Errores:</b> {stats.get('errors', 0)}"""
         return self.send_message(text)
     
-    def send_opportunity(self, event: str, edge: float, platform_a: str, platform_b: str, event_id: str = None):
-        """Send an opportunity alert with dedup."""
+    def send_opportunity(self, event: str, edge: float, platform_a: str, platform_b: str, event_id: str = None, category: str = None):
+        """Send an opportunity alert with dedup, routed to the category sub-room."""
         # Dedup check
         if event_id and self.has_been_alerted(event_id):
             return False
@@ -322,10 +344,11 @@ class TelegramBot:
 <b>Contrato / ID:</b> <code>{event_ref}</code>
 <b>Edge:</b> {edge:.2f}%
 <b>Plataformas:</b> {platform_a} ↔ {platform_b}
+<b>Sala:</b> {category or 'general'}
 <b>Hora:</b> {datetime.now().strftime("%H:%M:%S")}"""
-        return self.send_message(text)
+        return self.send_message(text, chat_id=self._resolve_chat_id(category))
     
-    def send_opportunity_resolution(self, event_id: str, event_title: str, winning_outcome: str, entry_price: float, expected_profit: float, position_won: bool = None, position_pnl: float = None):
+    def send_opportunity_resolution(self, event_id: str, event_title: str, winning_outcome: str, entry_price: float, expected_profit: float, position_won: bool = None, position_pnl: float = None, category: str = None):
         """Send a dedicated resolution report showing if the paper trade / fish opportunity won or lost."""
         event_ref = event_id if event_id else "N/A"
         if event_ref.startswith("limitless_crypto_"):
@@ -359,8 +382,9 @@ class TelegramBot:
 <b>Resultado Ganador:</b> {winning_outcome}
 <b>Costo de Entrada:</b> ${entry_price:.4f}
 {pnl_line}
+<b>Sala:</b> {category or 'general'}
 <b>Hora de Cierre:</b> {datetime.now().strftime("%H:%M:%S")}"""
-        return self.send_message(text)
+        return self.send_message(text, chat_id=self._resolve_chat_id(category))
     
     def send_trade_executed(self, event: str, side: str, price: float, amount: float):
         """Send a trade execution alert."""

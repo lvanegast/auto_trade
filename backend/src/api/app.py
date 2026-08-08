@@ -1632,6 +1632,20 @@ async def get_opportunity_tracking():
     }
 
 
+@app.get("/api/observation/performance")
+async def get_observation_performance(
+    category: str = None,
+    limit: int = 500,
+):
+    """Paper PnL de oportunidades en observación (sin trades reales).
+
+    Calcula cuánto se habría ganado/perdido si las oportunidades detectadas se
+    hubieran ejecutado, usando entry_price y la resolución real del mercado.
+    Filtrable por sala: category=sports | crypto | todos.
+    """
+    return db.get_observation_performance(category=category, limit=limit)
+
+
 @app.post("/api/opportunities/{opp_id}/resolve")
 async def resolve_opportunity(opp_id: int, resolution: str, actual_profit: float = 0.0):
     """Mark an opportunity as resolved (won/lost) with actual profit."""

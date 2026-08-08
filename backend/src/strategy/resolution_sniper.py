@@ -162,13 +162,16 @@ class ResolutionSniperStrategy(BaseStrategy):
                 "platform_b_depth": 0,
                 "liquidity_verified": True,
                 "viable": self.edge >= 0.02,
+                "category": "crypto",
+                "direction": "SNIPER_YES",
+                "outcomes_count": 2,
                 "entry_price": yes_price,
                 "expected_profit": self.edge * self.position_size_usd,
             })
             # Telegram alert for sniper opportunities (deduplicated via event_id)
             from src.telegram_bot import telegram_bot
             if telegram_bot.enabled and self.edge >= 0.02:
-                telegram_bot.send_opportunity(title, self.edge * 100, "Limitless", "Crypto", event_id=event_id)
+                telegram_bot.send_opportunity(title, self.edge * 100, "Limitless", "Crypto", event_id=event_id, category="crypto")
 
         if self.db:
             self.db.log(

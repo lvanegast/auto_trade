@@ -223,6 +223,8 @@ class ResolutionMonitor:
                         entry_price = float(opp_data.get("entry_price", 0.95) if isinstance(opp_data, dict) else (opp_data[4] if isinstance(opp_data, (tuple, list)) and len(opp_data) > 4 else 0.95))
                         expected_profit = 1.0 - entry_price if entry_price < 1.0 else 0.05
                         event_title = opp_data.get("event_title", market_slug) if isinstance(opp_data, dict) else (opp_data[2] if isinstance(opp_data, (tuple, list)) and len(opp_data) > 2 else market_slug)
+                        # Determinar sala (sports vs crypto) por el event_id
+                        category = "crypto" if ("up-or-down" in market_slug or market_slug.startswith("limitless_sniper_") or "crypto" in market_slug.lower()) else "sports"
 
                         # Determinar si NUESTRA pata ganó o perdió (posición real o YES del sniper)
                         position_won = None
@@ -257,6 +259,7 @@ class ResolutionMonitor:
                             expected_profit=expected_profit,
                             position_won=position_won,
                             position_pnl=position_pnl,
+                            category=category,
                         )
                 except Exception as e_tg:
                     print(f"[ResolutionMonitor TG Error] {e_tg}")

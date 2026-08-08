@@ -2625,6 +2625,30 @@ function selectArbitrageEvent(eventId, eventLabel) {
     }
 }
 
+let arbitrageRoom = "all"; // all | sports | crypto
+
+function setArbitrageRoom(room) {
+    arbitrageRoom = room;
+    document.querySelectorAll(".room-btn").forEach(btn => {
+        btn.classList.toggle("active", btn.dataset.room === room);
+    });
+    fetchArbitrageData();
+}
+
+function matchesArbitrageRoom(category) {
+    if (arbitrageRoom === "all") return true;
+    const cat = (category || "").toLowerCase();
+    if (arbitrageRoom === "sports") return cat === "sports" || cat === "deportes" || cat === "match";
+    if (arbitrageRoom === "crypto") return cat === "crypto" || cat === "cryptocurrency";
+    return true;
+}
+
+function oppCategory(opp) {
+    if (opp && opp.category) return opp.category;
+    const eid = (opp && opp.event_id) || "";
+    return eid.startsWith("match_") ? "sports" : "crypto";
+}
+
 function renderArbitragePanel(data) {
     const { opportunities, market_prices, active_pairs_count } = data;
 
@@ -2632,7 +2656,10 @@ function renderArbitragePanel(data) {
     const grid = document.getElementById("arb-market-grid");
     if (grid && market_prices) {
         let html = "";
+        let roomCount = 0;
         for (const [eventId, info] of Object.entries(market_prices)) {
+            if (!matchesArbitrageRoom(info.category)) continue;
+            roomCount++;
             const kPrice = info.kalshi ? info.kalshi.price : null;
             const pPrice = info.polymarket ? info.polymarket.price : null;
             const kBid = info.kalshi ? info.kalshi.bid : null;
@@ -2680,15 +2707,20 @@ function renderArbitragePanel(data) {
             </div>`;
         }
         grid.innerHTML = html || '<div style="color:#848e9c; padding:12px; text-align:center;">No hay datos de precios disponibles. Inicie los workers de Kalshi y Polymarket.</div>';
+        const roomCountEl = document.getElementById("arb-room-count");
+        if (roomCountEl) {
+            roomCountEl.textContent = roomCount > 0 ? `${roomCount} mercados en esta sala` : "";
+        }
     }
 
     // 2. Render opportunities table
     const tbody = document.getElementById("arb-opportunities-table-body");
     if (tbody) {
-        if (opportunities && opportunities.length > 0) {
+        const roomOpps = (opportunities || []).filter(opp => matchesArbitrageRoom(oppCategory(opp)));
+        if (roomOpps.length > 0) {
             let rows = "";
             let idx = 0;
-            for (const opp of opportunities) {
+            for (const opp of roomOpps) {
                 idx++;
                 const is1xN = opp.direction && opp.direction.includes("1XN");
                 const dirColor = is1xN ? "#00e6ff" : (opp.direction.includes("KALSHI") ? "#00c8ff" : "#a03ffc");
@@ -2744,7 +2776,7 @@ function renderArbitragePanel(data) {
             const details = document.getElementById("arb-alert-details");
             if (banner && details) {
                 banner.style.display = "block";
-                const best = opportunities[0];
+                const best = roomOpps[0];
                 details.innerHTML = `
                     <strong>Mercado:</strong> ${best.event_label || best.event_id} &nbsp;|&nbsp;
                     <strong>Dirección:</strong> ${best.direction} &nbsp;|&nbsp;
@@ -3017,11 +3049,86 @@ setInterval(() => {
     const metricsPanel = document.getElementById("tab-panel-metrics");
     if (metricsPanel && !metricsPanel.classList.contains("hidden")) {
         refreshMetrics();
+        loadObservationPerformance();
     }
 }, 5000);
 
 // Run initial metrics load immediately
 refreshMetrics();
+loadObservationPerformance();
+
+// ==========================================================================
+// Rendimiento Paper (Observación) — /api/observation/performance
+// ==========================================================================
+
+async function loadObservationPerformance() {
+    const tbody = document.getElementById("paper-performance-body");
+    if (!tbody) return;
+    const cat = document.getElementById("paper-room-filter")?.value || "";
+    try {
+        const resp = await fetch(`${API_BASE}/observation/performance?limit=200${cat ? `&category=${cat}` : ""}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const summary = data.summary || {};
+        const byCategory = data.by_category || {};
+        const catKey = cat || "all";
+
+        // Summary cards
+        const totalPnl = cat === "" ? (summary.total_paper_pnl || 0)
+            : (byCategory[cat] ? byCategory[cat].total_paper_pnl : 0);
+        const totalOpps = cat === "" ? (summary.total_opportunities || 0)
+            : (byCategory[cat] ? byCategory[cat].total_opportunities : 0);
+        const winRate = cat === "" ? (summary.win_rate_pct || 0)
+            : (byCategory[cat] ? byCategory[cat].win_rate_pct : 0);
+        const wins = cat === "" ? (summary.wins || 0) : (byCategory[cat] ? byCategory[cat].wins : 0);
+        const losses = cat === "" ? (summary.losses || 0) : (byCategory[cat] ? byCategory[cat].losses : 0);
+
+        const setVal = (id, text, color) => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.textContent = text;
+                if (color) el.style.color = color;
+            }
+        };
+        const pnlColor = totalPnl > 0 ? "#02c076" : totalPnl < 0 ? "#f6465d" : "#eaecef";
+        setVal("paper-total-pnl", `${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}`, pnlColor);
+        setVal("paper-total-opps", String(totalOpps));
+        setVal("paper-win-rate", `${winRate.toFixed(1)}%`, winRate >= 60 ? "#02c076" : "#f0b90b");
+        setVal("paper-win-loss", `${wins} / ${losses}`, wins >= losses ? "#02c076" : "#f6465d");
+
+        // Table
+        const rows = data.rows || [];
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted" style="padding:24px;">Sin oportunidades registradas en observación.</td></tr>';
+            return;
+        }
+        let html = "";
+        for (const r of rows) {
+            const entry = r.entry_price != null ? parseFloat(r.entry_price) : null;
+            const pnl = r.paper_pnl != null ? parseFloat(r.paper_pnl) : null;
+            const res = r.resolution_status || "pending";
+            const resLabel = res === "pending" ? "⏳ Pendiente" : (res === "stale" ? "⏰ Stale" : res);
+            const resColor = res === "resolved_YES" ? "#02c076" : res === "resolved_NO" ? "#f6465d" : "#848e9c";
+            const pnlColor = pnl == null ? "#848e9c" : pnl > 0 ? "#02c076" : pnl < 0 ? "#f6465d" : "#eaecef";
+            const pnlText = pnl == null ? "—" : `${pnl > 0 ? "+" : ""}$${pnl.toFixed(4)}`;
+            const room = (r.category || "sports") === "crypto" ? "🪙 Crypto" : "⚽ Deportes";
+            html += `
+            <tr style="border-bottom:1px solid #2d3139;">
+                <td style="padding:8px 10px; font-size:12px; color:#eaecef; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(r.event_title || r.event_id || "").replace(/"/g, "&quot;")}">${r.event_title || r.event_id}</td>
+                <td style="padding:8px 10px; font-size:11px; text-align:center;">${room}</td>
+                <td style="padding:8px 10px; font-size:11px; text-align:center; color:#00e6ff;">${r.direction || "—"}</td>
+                <td style="padding:8px 10px; font-size:11px; text-align:center; font-family:'JetBrains Mono',monospace; color:#f0b90b;">${entry != null ? "$" + entry.toFixed(4) : "—"}</td>
+                <td style="padding:8px 10px; font-size:11px; text-align:center; color:${resColor}; font-weight:600;">${resLabel}</td>
+                <td style="padding:8px 10px; font-size:12px; text-align:center; font-family:'JetBrains Mono',monospace; font-weight:700; color:${pnlColor};">${pnlText}</td>
+            </tr>`;
+        }
+        tbody.innerHTML = html;
+    } catch (e) {
+        console.error("[Paper] Error:", e);
+    }
+}
+
+window.loadObservationPerformance = loadObservationPerformance;
 
 // ==========================================================================
 // Backtesting Execution Module

@@ -367,7 +367,14 @@
 
                         <!-- Market Prices Comparison Grid -->
                         <div style="margin-bottom: 16px;">
-                            <h4 style="font-size: 13px; font-weight: 600; color: #eaecef; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">Precios Cross-Platform (Tiempo Real)</h4>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                <h4 style="font-size: 13px; font-weight: 600; color: #eaecef; text-transform: uppercase; letter-spacing: 0.5px; margin: 0;">Precios Cross-Platform (Tiempo Real)</h4>
+                                <div class="arb-room-selector" style="display: flex; gap: 6px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 3px;">
+                                    <button class="room-btn active" data-room="all" onclick="setArbitrageRoom('all')">Todos</button>
+                                    <button class="room-btn" data-room="sports" onclick="setArbitrageRoom('sports')">⚽ Deportes</button>
+                                    <button class="room-btn" data-room="crypto" onclick="setArbitrageRoom('crypto')">🪙 Crypto</button>
+                                </div>
+                            </div>
                             <div id="arb-market-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px;">
                                 <!-- Filled by JS -->
                             </div>
@@ -375,7 +382,10 @@
 
                         <!-- Active Opportunities Table -->
                         <div>
-                            <h4 style="font-size: 13px; font-weight: 600; color: #eaecef; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">Oportunidades Activas</h4>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                <h4 style="font-size: 13px; font-weight: 600; color: #eaecef; text-transform: uppercase; letter-spacing: 0.5px; margin: 0;">Oportunidades Activas</h4>
+                                <span id="arb-room-count" style="font-size: 11px; color: #848e9c;"></span>
+                            </div>
                             <div class="table-scroller">
                                 <table class="trading-table">
                                     <thead>
@@ -540,6 +550,58 @@
                         <div style="background: rgba(139, 92, 246, 0.08); border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 8px; padding: 14px;">
                             <div style="font-size: 12px; font-weight: 600; color: #8b5cf6; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px;">Progreso de Validación Paper → Real</div>
                             <div id="validation-progress-bars"></div>
+                        </div>
+
+                        <!-- Paper PnL: Observación (sin trades reales) -->
+                        <div style="background: rgba(0, 230, 255, 0.06); border: 1px solid rgba(0, 230, 255, 0.25); border-radius: 8px; padding: 14px; margin-top: 16px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                <span style="font-size: 12px; font-weight: 600; color: #00e6ff; text-transform: uppercase; letter-spacing: 0.5px;">📋 Rendimiento Paper (Observación)</span>
+                                <div style="display: flex; gap: 6px; align-items: center;">
+                                    <select id="paper-room-filter" onchange="loadObservationPerformance()" style="background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #eaecef; padding: 5px 10px; border-radius: 6px; font-size: 12px;">
+                                        <option value="">Todas las salas</option>
+                                        <option value="sports">⚽ Deportes</option>
+                                        <option value="crypto">🪙 Crypto</option>
+                                    </select>
+                                    <button onclick="loadObservationPerformance()" style="background: rgba(0,230,255,0.15); border: 1px solid #00e6ff; color: #00e6ff; padding: 5px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600;">Refresh</button>
+                                </div>
+                            </div>
+                            <div id="paper-performance-summary" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px;">
+                                <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px;">
+                                    <div style="font-size: 10px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px;">Paper P&L Total</div>
+                                    <div id="paper-total-pnl" style="font-size: 20px; font-weight: 700; color: #eaecef;">—</div>
+                                </div>
+                                <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px;">
+                                    <div style="font-size: 10px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px;">Oportunidades</div>
+                                    <div id="paper-total-opps" style="font-size: 20px; font-weight: 700; color: #eaecef;">—</div>
+                                </div>
+                                <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px;">
+                                    <div style="font-size: 10px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px;">Win Rate</div>
+                                    <div id="paper-win-rate" style="font-size: 20px; font-weight: 700; color: #02c076;">—</div>
+                                </div>
+                                <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px;">
+                                    <div style="font-size: 10px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px;">Ganadas / Perdidas</div>
+                                    <div id="paper-win-loss" style="font-size: 20px; font-weight: 700; color: #eaecef;">—</div>
+                                </div>
+                            </div>
+                            <div class="table-scroller" style="max-height: 260px; overflow-y: auto;">
+                                <table class="trading-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Evento</th>
+                                            <th>Sala</th>
+                                            <th>Dirección</th>
+                                            <th>Entry</th>
+                                            <th>Resolución</th>
+                                            <th>Paper P&L</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="paper-performance-body">
+                                        <tr>
+                                            <td colspan="6" class="text-center text-muted" style="padding: 24px;">Cargando rendimiento paper...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </div>

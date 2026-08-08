@@ -278,6 +278,7 @@ class SportsArbitrageStrategy(BaseStrategy):
                 "limitless", "kalshi", abs(self.edge), self.position_size_usd
             )
             if self.db:
+                direction_label = "BUY_ALL_YES_1XN" if arb_type == "YES" else "BUY_ALL_NO_1XN"
                 self.db.record_edge_snapshot({
                     "event_id": event_id,
                     "event_title": title,
@@ -287,6 +288,9 @@ class SportsArbitrageStrategy(BaseStrategy):
                     "platform_b_no_ask": 0.0,
                     "liquidity_verified": True,
                     "viable": is_profitable,
+                    "category": "sports",
+                    "direction": direction_label,
+                    "outcomes_count": len(outcomes),
                 })
                 self.db.log(
                     "INFO",
@@ -309,13 +313,16 @@ class SportsArbitrageStrategy(BaseStrategy):
                     "platform_b_depth": 0,
                     "liquidity_verified": True,
                     "viable": is_profitable,
+                    "category": "sports",
+                    "direction": direction_label,
+                    "outcomes_count": len(outcomes),
                     "entry_price": total_cost,
                     "expected_profit": net_edge * self.position_size_usd,
                 })
                 # Telegram alert for cross-platform opportunities (once per event per hour)
                 from src.telegram_bot import telegram_bot
                 if telegram_bot.enabled and net_edge >= 0.02:
-                    telegram_bot.send_opportunity(title, net_edge * 100, "Limitless", "Kalshi", event_id=event_id)
+                    telegram_bot.send_opportunity(title, net_edge * 100, "Limitless", "Kalshi", event_id=event_id, category="sports")
             return None
 
         expected_profit = (1.0 - total_cost) if arb_type == "YES" else ((len(outcomes) - 1.0) - total_cost)

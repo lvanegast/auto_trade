@@ -265,7 +265,10 @@ class DatabaseManager:
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS execution_latency_ms NUMERIC(10, 2);",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS net_pnl NUMERIC(18, 8);",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS leg_id VARCHAR(20);",
-            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_hedge_price NUMERIC(18, 8);",
+            "            ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_hedge_price NUMERIC(18, 8);",
+            "ALTER TABLE edge_snapshots ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'sports';",
+            "ALTER TABLE edge_snapshots ADD COLUMN IF NOT EXISTS direction VARCHAR(40);",
+            "ALTER TABLE edge_snapshots ADD COLUMN IF NOT EXISTS outcomes_count INTEGER DEFAULT 0;",
         ]
 
         conn = None
@@ -418,8 +421,9 @@ class DatabaseManager:
             INSERT INTO edge_snapshots
             (platform_a, platform_b, event_id, event_title, edge_pct,
              gross_edge_pct, platform_a_yes_ask, platform_b_no_ask,
-             platform_a_depth, platform_b_depth, liquidity_verified, viable)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             platform_a_depth, platform_b_depth, liquidity_verified, viable,
+             category, direction, outcomes_count)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         conn = None
         try:
@@ -438,6 +442,9 @@ class DatabaseManager:
                     snapshot.get("platform_b_depth", 0.0),
                     snapshot.get("liquidity_verified", False),
                     snapshot.get("viable", False),
+                    snapshot.get("category", "sports"),
+                    snapshot.get("direction", ""),
+                    snapshot.get("outcomes_count", 0),
                 ))
                 conn.commit()
         finally:
@@ -461,8 +468,9 @@ class DatabaseManager:
             (platform_a, platform_b, event_id, event_title, edge_pct,
              gross_edge_pct, platform_a_yes_ask, platform_b_no_ask,
              platform_a_depth, platform_b_depth, liquidity_verified, viable,
-             resolution_status, entry_price, expected_profit)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             resolution_status, entry_price, expected_profit,
+             category, direction, outcomes_count)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """
         conn = None
@@ -485,6 +493,9 @@ class DatabaseManager:
                     "pending",  # resolution_status
                     opportunity.get("entry_price", 0.0),
                     opportunity.get("expected_profit", 0.0),
+                    opportunity.get("category", "sports"),
+                    opportunity.get("direction", ""),
+                    opportunity.get("outcomes_count", 0),
                 ))
                 row = cursor.fetchone()
                 conn.commit()
@@ -522,7 +533,8 @@ class DatabaseManager:
                         edge_pct=%s, gross_edge_pct=%s, platform_a_yes_ask=%s,
                         platform_b_no_ask=%s, platform_a_depth=%s,
                         platform_b_depth=%s, liquidity_verified=%s, viable=%s,
-                        entry_price=%s, expected_profit=%s
+                        entry_price=%s, expected_profit=%s,
+                        category=%s, direction=%s, outcomes_count=%s
                     WHERE event_id=%s
                     """,
                     (
@@ -539,6 +551,9 @@ class DatabaseManager:
                         opportunity.get("viable", False),
                         opportunity.get("entry_price", 0.0),
                         opportunity.get("expected_profit", 0.0),
+                        opportunity.get("category", "sports"),
+                        opportunity.get("direction", ""),
+                        opportunity.get("outcomes_count", 0),
                         event_id,
                     ),
                 )
@@ -1160,3 +1175,150 @@ class DatabaseManager:
             return []
         finally:
             self._return_connection(conn)
+
+    def get_observation_performance(self, category: str = None, limit: int = 500):
+        """Paper PnL de oportunidades en observación (sin trades reales).
+
+        Calcula el PnL hipotético de cada oportunidad registrada en edge_snapshots
+        usando el entry_price y la resolución real del mercado:
+          - Arbitraje 1xN garantizado: si se compró TODO el paquete por entry_price,
+            al settlement recibe $1.00 (BUY_ALL_YES) o $(N-1) (BUY_ALL_NO), por lo que
+            el PnL paper = (payout - entry_price) y es GARANTIZADO si los fills pasan.
+          - Estrategias direccionales (sniper/resolution): el PnL depende del outcome
+            ganador (resolved_YES / resolved_NO).
+
+        El paper PnL asume fills a precios de book y no descuenta gas/fees (friction se
+        evalúa por separado en friction_guard). Sirve para medir el RENDIMIENTO de la
+        detección: cuánto se habría ganado/perdido si se hubiera ejecutado.
+        """
+        query = """
+            SELECT id, worker_id, event_id, event_title, category, direction,
+                   outcomes_count, edge_pct, entry_price, expected_profit,
+                   resolution_status, actual_profit, timestamp, resolved_at
+            FROM edge_snapshots
+            WHERE 1=1
+        """
+        params = []
+        if category:
+            query += " AND category = %s"
+            params.append(category)
+        query += " ORDER BY id DESC LIMIT %s;"
+        params.append(limit)
+
+        rows = []
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, tuple(params))
+                rows = cursor.fetchall()
+        except Exception as e:
+            print(f"[DB ERROR] Error obteniendo observation performance: {e}")
+            return {"rows": [], "summary": {}, "by_category": {}}
+        finally:
+            self._return_connection(conn)
+
+        def _paper_pnl(row):
+            resolution = row.get("resolution_status") or "pending"
+            entry = float(row.get("entry_price") or 0.0)
+            direction = row.get("direction") or ""
+            outcome_count = int(row.get("outcomes_count") or 0)
+            if entry <= 0:
+                return None
+
+            # Estrategias direccionales (resolution sniper compra YES ~0.95-0.98):
+            # gana $1 si YES resuelve, pierde todo si NO.
+            if direction in ("BUY_YES", "SNIPER_YES", "") and resolution == "resolved_YES":
+                return 1.0 - entry
+            if direction in ("BUY_YES", "SNIPER_YES", "") and resolution == "resolved_NO":
+                return -entry
+
+            # Arbitraje 1xN garantizado: comprar todo el paquete a entry_price.
+            if direction in ("BUY_ALL_YES", "BUY_ALL_YES_1XN"):
+                payout = 1.0
+                return payout - entry
+            if direction in ("BUY_ALL_NO", "BUY_ALL_NO_1XN"):
+                # Comprar NO de N outcomes: pagan (N-1) outcomes -> $(N-1)
+                if outcome_count > 0:
+                    payout = outcome_count - 1
+                    return payout - entry
+                return None
+
+            # Fallback genérico: si no se conoce la dirección, solo arbitrajes con
+            # entry_price < $1 (dual YES+NO intra-platform paga $1 al settlement).
+            if entry < 1.0 and resolution == "resolved_YES":
+                return 1.0 - entry
+            if entry < 1.0 and resolution == "resolved_NO":
+                return -entry
+            return None
+
+        enriched = []
+        summary = {
+            "total_opportunities": 0,
+            "resolved": 0,
+            "pending": 0,
+            "wins": 0,
+            "losses": 0,
+            "total_paper_pnl": 0.0,
+            "avg_edge_pct": 0.0,
+            "win_rate_pct": 0.0,
+        }
+        by_category = {}
+
+        for row in rows:
+            resolution = row.get("resolution_status") or "pending"
+            entry = float(row.get("entry_price") or 0.0)
+            cat = row.get("category") or "sports"
+            pnl = _paper_pnl(row)
+
+            item = dict(row)
+            item["paper_pnl"] = pnl
+            item["paper_pnl_per_contract"] = pnl if pnl is not None else None
+            enriched.append(item)
+
+            if cat not in by_category:
+                by_category[cat] = {
+                    "total_opportunities": 0,
+                    "resolved": 0,
+                    "pending": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "total_paper_pnl": 0.0,
+                    "avg_edge_pct": 0.0,
+                    "win_rate_pct": 0.0,
+                }
+            c = by_category[cat]
+            c["total_opportunities"] += 1
+            if resolution == "pending":
+                c["pending"] += 1
+            else:
+                c["resolved"] += 1
+                if pnl is not None:
+                    if pnl > 0:
+                        c["wins"] += 1
+                    elif pnl < 0:
+                        c["losses"] += 1
+                    c["total_paper_pnl"] += pnl
+            edge_val = float(row.get("edge_pct") or 0.0)
+            c["avg_edge_pct"] += edge_val
+
+            summary["total_opportunities"] += 1
+            if resolution == "pending":
+                summary["pending"] += 1
+            else:
+                summary["resolved"] += 1
+                if pnl is not None:
+                    if pnl > 0:
+                        summary["wins"] += 1
+                    elif pnl < 0:
+                        summary["losses"] += 1
+                    summary["total_paper_pnl"] += pnl
+            summary["avg_edge_pct"] += edge_val
+
+        for bucket in (summary, *by_category.values()):
+            if bucket["total_opportunities"] > 0:
+                bucket["avg_edge_pct"] = bucket["avg_edge_pct"] / bucket["total_opportunities"]
+            decided = bucket["wins"] + bucket["losses"]
+            bucket["win_rate_pct"] = (bucket["wins"] / decided * 100) if decided else 0.0
+
+        return {"rows": enriched, "summary": summary, "by_category": by_category}

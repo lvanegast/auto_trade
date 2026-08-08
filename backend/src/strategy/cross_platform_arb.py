@@ -258,6 +258,29 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
 
             # If observation_only, just log and continue scanning
             if self.observation_only:
+                if self.db and hasattr(self.db, "record_opportunity"):
+                    try:
+                        self.db.record_opportunity({
+                            "platform_a": opp["buy_platform"],
+                            "platform_b": opp["hedge_platform"],
+                            "event_id": opp["event_id"],
+                            "event_title": opp.get("event_title", opp["event_id"]),
+                            "gross_edge_pct": opp["edge_pct"] * 100,
+                            "net_edge_pct": net_edge * 100,
+                            "platform_a_yes_ask": opp["buy_ask"],
+                            "platform_b_no_ask": opp["hedge_ask"],
+                            "platform_a_depth": opp.get("buy_depth", 0),
+                            "platform_b_depth": opp.get("hedge_depth", 0),
+                            "liquidity_verified": True,
+                            "viable": net_edge >= 0.02,
+                            "category": "sports",
+                            "direction": "BUY_ALL_NO_1XN",
+                            "outcomes_count": 2,
+                            "entry_price": opp["buy_ask"] + opp["hedge_ask"],
+                            "expected_profit": net_edge * self.position_size_usd,
+                        })
+                    except Exception:
+                        pass
                 if net_edge >= 0.02:
                     from src.telegram_bot import telegram_bot
                     telegram_bot.send_opportunity(
@@ -266,6 +289,7 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
                         opp["buy_platform"],
                         opp["hedge_platform"],
                         event_id=opp["event_id"],
+                        category="sports",
                     )
                 continue
 

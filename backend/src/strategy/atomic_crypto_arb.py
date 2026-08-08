@@ -135,6 +135,9 @@ class AtomicCryptoArbStrategy(BaseStrategy):
                     "platform_b_depth": 10.0,
                     "liquidity_verified": True,
                     "viable": True,
+                    "category": "crypto",
+                    "direction": "BUY_ALL_YES_1XN",
+                    "outcomes_count": 2,
                     "entry_price": total_cost,
                     "expected_profit": gross_profit * self.position_size_usd,
                 })
@@ -158,7 +161,8 @@ class AtomicCryptoArbStrategy(BaseStrategy):
                             edge=gross_profit * 100,
                             platform_a="Limitless (YES)",
                             platform_b="Limitless (NO)",
-                            event_id=event.symbol
+                            event_id=event.symbol,
+                            category="crypto"
                         )
                 except Exception:
                     pass
