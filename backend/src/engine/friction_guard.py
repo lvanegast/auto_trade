@@ -35,6 +35,11 @@ class ExecutionFrictionGuard:
                 "gas_fee_usd": 0.00,     # CEX, no gas
                 "slippage_pct": 0.0015,
             },
+            "sx_bet": {
+                "commission_pct": 0.00,  # 0% maker y taker en singles (SX Bet)
+                "gas_fee_usd": 0.005,    # Settlement on-chain USDC
+                "slippage_pct": 0.002,
+            },
             "alpaca": {
                 "commission_pct": 0.0025,
                 "gas_fee_usd": 0.00,

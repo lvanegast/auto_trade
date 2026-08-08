@@ -259,7 +259,7 @@ def get_dynamic_pairs_from_tracker(min_platforms: int = 2) -> list[dict]:
     pairs = []
     for event_id in cross_platform_tracker.get_all_event_ids():
         books = cross_platform_tracker.get_both_books(event_id)
-        present = [p for p in ("limitless", "kalshi", "polymarket") if books.get(p)]
+        present = [p for p in ("limitless", "kalshi", "polymarket", "sx_bet") if books.get(p)]
         if len(present) >= min_platforms:
             pairs.append({
                 "event_id": event_id,

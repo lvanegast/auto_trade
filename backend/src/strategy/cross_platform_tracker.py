@@ -118,11 +118,7 @@ class CrossPlatformTracker:
         return self._books.get(event_id, {}).get(platform)
 
     def get_both_books(self, event_id: str) -> dict:
-        return {
-            "kalshi": self._books.get(event_id, {}).get("kalshi"),
-            "limitless": self._books.get(event_id, {}).get("limitless"),
-            "polymarket": self._books.get(event_id, {}).get("polymarket"),
-        }
+        return dict(self._books.get(event_id, {}))
 
     def get_all_event_ids(self) -> list[str]:
         return list(self._books.keys())
@@ -142,8 +138,8 @@ class CrossPlatformTracker:
         """
         Calcula arbitraje usando precios EJECUTABLES (ask para comprar).
 
-        Compara TODAS las plataformas presentes (kalshi, limitless, polymarket)
-        por pares y devuelve la mejor oportunidad de arbitraje cruzado:
+        Compara TODAS las plataformas presentes (kalshi, limitless, polymarket,
+        sx_bet, ...) por pares y devuelve la mejor oportunidad de arbitraje cruzado:
 
           - Puedo comprar YES al ask de la plataforma A
           - Puedo comprar NO al ask de la plataforma B
@@ -152,7 +148,7 @@ class CrossPlatformTracker:
         El edge = 1.0 - (yes_ask_A + no_ask_B)
         """
         books = self._books.get(event_id, {})
-        platforms = [p for p in ("kalshi", "limitless", "polymarket") if p in books]
+        platforms = [p for p in books if p != "oracle"]
         if len(platforms) < 2:
             return None
 

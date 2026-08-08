@@ -38,6 +38,7 @@ class MultiPlatformFeeder(BaseFeeder):
         self._limitless_connected = False
         self._polymarket_connected = False
         self._kalshi_connected = False
+        self._sx_bet_connected = False
 
         # Importar tracker aquí para asegurar que usamos la misma instancia
         from src.strategy.cross_platform_tracker import cross_platform_tracker
@@ -45,7 +46,7 @@ class MultiPlatformFeeder(BaseFeeder):
 
     async def start(self):
         self.running = True
-        print("[MultiPlatform] Iniciando conexiones a Limitless, Polymarket y Kalshi...")
+        print("[MultiPlatform] Iniciando conexiones a Limitless, Polymarket, Kalshi y SX Bet...")
         self.task = asyncio.create_task(self._run_all_connections())
         while self.running:
             await asyncio.sleep(1)
@@ -60,12 +61,13 @@ class MultiPlatformFeeder(BaseFeeder):
                 pass
 
     async def _run_all_connections(self):
-        """Ejecuta las 3 conexiones en paralelo."""
+        """Ejecuta las 4 conexiones en paralelo."""
         try:
             await asyncio.gather(
                 self._run_limitless(),
                 self._run_polymarket(),
                 self._run_kalshi(),
+                self._run_sx_bet(),
                 return_exceptions=True,
             )
         except Exception as e:
@@ -576,6 +578,208 @@ class MultiPlatformFeeder(BaseFeeder):
         self._kalshi_connected = False
 
     # ============================================================
+    # SX BET (api.sx.bet) — exchange binario de deportes en USDC
+    # ============================================================
+    # SX Bet es un exchange P2P de deportes: cada mercado tiene exactamente
+    # 2 outcomes (outcomeOneName / outcomeTwoName) y cada orden es una compra
+    # de UNO de ellos (isMakerBettingOutcomeOne). El "lay" de Betfair equivale
+    # aquí a comprar el outcome contrario → encaja 1:1 con el modelo YES/NO.
+    #
+    # Conversión de precios (ver docs oficiales orderbook-core):
+    #   - percentageOdds es la cuota IMPLÍCITA del maker, escala 1e20.
+    #   - El taker recibe el outcome contrario a takerOdds = 1 - p/1e20.
+    #   - Best ask para outcome 1: fill del maker de outcome 2 con MAX p.
+    #   - Best bid para outcome 1: fill del maker de outcome 1 con MAX p.
+    #   - Liquidez del taker: (totalBetSize - fillAmount - pendingFillAmount)
+    #       * 1e20 / percentageOdds - (totalBetSize - fillAmount - pendingFillAmount)
+    # Comisión: 0% maker y taker en singles. Settlement on-chain USDC.
+    #
+    # Market types relevantes (moneyline = equivalente a winner de Limitless):
+    #   52  = "12" (moneyline, sin empate)
+    #   226 = "12 Including Overtime"
+    _SX_BET_BASE = "https://api.sx.bet"
+    _SX_BET_MONEYLINE_TYPES = (52, 226)
+    _SX_BET_SCALE = 10 ** 20
+
+    async def _run_sx_bet(self):
+        """Conecta a SX Bet (api.sx.bet) y alimenta el tracker con mercados
+        moneyline binarios (deportes match-level). Sin API key para reads."""
+        import json
+        import urllib.request
+        import urllib.error
+
+        def fetch_json(url, timeout=15):
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        print("[MultiPlatform-SXBet] Conectando a SX Bet (api.sx.bet)...")
+        self._sx_bet_connected = True
+
+        while self.running:
+            try:
+                cycle_updates = 0
+                # 1. Mercados activos (moneyline)
+                markets_url = (
+                    f"{self._SX_BET_BASE}/markets/active?pageSize=100"
+                    f"&gameTime={int(time.time())}"
+                )
+                resp = await asyncio.to_thread(fetch_json, markets_url)
+                markets = (resp.get("data", {}) or {}).get("markets", []) or []
+
+                # 2. Filtrar solo moneyline binario y en ventana de 48h
+                candidates = []
+                for m in markets:
+                    mtype = m.get("type")
+                    if mtype not in self._SX_BET_MONEYLINE_TYPES:
+                        continue
+                    status = m.get("status", "")
+                    if status and status != "ACTIVE":
+                        continue
+                    game_time = m.get("gameTime") or 0
+                    if game_time and (abs(time.time() - game_time) > 172800):
+                        continue
+                    candidates.append(m)
+
+                if candidates:
+                    # 3. Orderbooks de cada mercado (agrupados para reducir llamadas)
+                    batch = [c["marketHash"] for c in candidates if c.get("marketHash")]
+                    if batch:
+                        try:
+                            ob_url = (
+                                f"{self._SX_BET_BASE}/orders?marketHashes={','.join(batch)}"
+                                f"&perPage=1000"
+                            )
+                            ob_resp = await asyncio.to_thread(fetch_json, ob_url)
+                            orders = ob_resp.get("data", []) or []
+                        except Exception as e:
+                            orders = []
+                            print(f"[MultiPlatform-SXBet] Orderbook error: {type(e).__name__}: {e}")
+
+                        by_market: dict = {}
+                        for o in orders:
+                            by_market.setdefault(o.get("marketHash"), []).append(o)
+
+                        for m in candidates:
+                            mhash = m.get("marketHash")
+                            m_orders = by_market.get(mhash, [])
+                            if not m_orders:
+                                continue
+                            book = self._sx_bet_build_book(m, m_orders)
+                            if book is None:
+                                continue
+                            for event_id in book["event_ids"]:
+                                self._tracker.update_book(
+                                    event_id=event_id,
+                                    platform="sx_bet",
+                                    yes_bid=book["book"]["yes_bid"],
+                                    yes_ask=book["book"]["yes_ask"],
+                                    no_bid=book["book"]["no_bid"],
+                                    no_ask=book["book"]["no_ask"],
+                                    bid_depth=book["book"]["bid_depth"],
+                                    ask_depth=book["book"]["ask_depth"],
+                                    ts_origin=time.time(),
+                                )
+                                cycle_updates += 1
+
+                if cycle_updates > 0:
+                    print(f"[MultiPlatform-SXBet] Updated {cycle_updates} moneyline markets in tracker")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[MultiPlatform-SXBet] Error: {type(e).__name__}: {e}")
+
+            await asyncio.sleep(self.poll_interval)
+
+        self._sx_bet_connected = False
+
+    def _sx_bet_build_book(self, market: dict, orders: list) -> dict | None:
+        """Construye el book ejecutable YES/NO de un mercado moneyline de SX Bet.
+
+        Un mercado moneyline tiene outcomeOneName = equipo/player 1 (YES) y
+        outcomeTwoName = equipo/player 2 (NO).
+
+        Rules (orderbook-core):
+          - Maker con isMakerBettingOutcomeOne=True  → apostó outcome 1 (YES)
+          - Maker con isMakerBettingOutcomeOne=False → apostó outcome 2 (NO)
+          - El taker que llena al maker apuesta el outcome CONTRARIO.
+          - Llenar un maker de NO → yo compro YES a (1 - p_no/1e20).
+          - Llenar un maker de YES → yo compro NO a (1 - p_yes/1e20).
+
+        Best executable:
+          - yes_ask = 1 - max(p_no)  (el maker de NO más agresivo me vende YES más barato)
+          - yes_bid = 1 - max(p_yes) (el maker de YES más agresivo me paga NO más alto)
+        """
+        outcome_one = (market.get("outcomeOneName") or "").strip()
+        outcome_two = (market.get("outcomeTwoName") or "").strip()
+        if not outcome_one or not outcome_two:
+            return None
+
+        best_p_yes = None   # makers apostando outcome 1 (compro NO)
+        best_p_no = None    # makers apostando outcome 2 (compro YES)
+        depth_yes = 0.0
+        depth_no = 0.0
+
+        for o in orders:
+            status = o.get("orderStatus", "ACTIVE")
+            if status and status != "ACTIVE":
+                continue
+            try:
+                p = float(o.get("percentageOdds")) / self._SX_BET_SCALE
+                total = float(o.get("totalBetSize") or 0)
+                filled = float(o.get("fillAmount") or 0)
+                pending = float(o.get("pendingFillAmount") or 0)
+            except (TypeError, ValueError):
+                continue
+            if p <= 0 or p >= 1:
+                continue
+            remaining_taker = 0.0
+            if total - filled - pending > 0 and p > 0:
+                # remainingTakerSpace = remaining * 1e20 / percentageOdds - remaining
+                # percentageOdds = p * 1e20 → remaining/p - remaining
+                remaining_taker = (total - filled - pending) / p - (total - filled - pending)
+                remaining_taker = remaining_taker / 1_000_000.0  # USDC: 6 decimales → USD
+
+            if o.get("isMakerBettingOutcomeOne") is True:
+                if best_p_yes is None or p > best_p_yes:
+                    best_p_yes = p
+                    depth_yes = remaining_taker
+            else:
+                if best_p_no is None or p > best_p_no:
+                    best_p_no = p
+                    depth_no = remaining_taker
+
+        if best_p_yes is None or best_p_no is None:
+            return None
+
+        yes_ask = round(1.0 - best_p_no, 4)
+        yes_bid = round(1.0 - best_p_yes, 4)
+        if yes_ask <= 0 or yes_bid <= 0 or yes_ask <= yes_bid:
+            return None
+
+        no_bid = round(1.0 - yes_ask, 4)
+        no_ask = round(1.0 - yes_bid, 4)
+
+        # Event ID canónico: reconstruimos el título del match (mismo formato
+        # que Limitless para moneyline: "Liudmila Samsonova vs Elena Rybakina")
+        # y publicamos la representación winner (match_X__X-yes) que es la que
+        # usa Limitless para tenis, más la representación por equipo.
+        match_title = f"{outcome_one} vs {outcome_two}"
+        event_ids = [
+            make_match_event_id(match_title, f"{match_title} YES"),
+            make_match_event_id(match_title, outcome_one),
+        ]
+        book = {
+            "yes_bid": yes_bid,
+            "yes_ask": yes_ask,
+            "no_bid": no_bid,
+            "no_ask": no_ask,
+            "bid_depth": depth_yes,
+            "ask_depth": depth_no,
+        }
+        return {"event_ids": event_ids, "book": book}
+
+    # ============================================================
     # STATUS
     # ============================================================
     def get_status(self) -> dict:
@@ -584,4 +788,5 @@ class MultiPlatformFeeder(BaseFeeder):
             "limitless": self._limitless_connected,
             "polymarket": self._polymarket_connected,
             "kalshi": self._kalshi_connected,
+            "sx_bet": self._sx_bet_connected,
         }
