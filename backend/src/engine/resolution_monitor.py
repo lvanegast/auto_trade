@@ -89,7 +89,14 @@ class ResolutionMonitor:
         opp_map = {}
         for opp in unresolved_opps:
             event_id = opp.get("event_id", "") if isinstance(opp, dict) else (opp[1] if len(opp) > 1 else "")
-            market_slug = self._extract_market_slug(event_id)
+            # Si la oportunidad guardó su market_slug real (ej. group_slug de
+            # Limitless para sports), úsalo directamente. El event_id canónico
+            # (match_*) NO es un slug consultable en la API.
+            market_slug = None
+            if isinstance(opp, dict) and opp.get("market_slug"):
+                market_slug = opp.get("market_slug")
+            if not market_slug:
+                market_slug = self._extract_market_slug(event_id)
             if market_slug:
                 opp_map[market_slug] = opp
                 if market_slug not in market_groups:
@@ -247,9 +254,25 @@ class ResolutionMonitor:
                                 position_won = pnl > 0
                                 position_pnl = pnl
                         else:
-                            # Oportunidad de observación: el sniper compra YES siempre
-                            position_won = (winning_outcome == "YES")
-                            position_pnl = (1.0 - entry_price) if position_won else -entry_price
+                            # Oportunidad de observación: el PnL paper depende de
+                            # la dirección (sniper YES vs 1xN garantizado).
+                            direction = opp_data.get("direction", "") if isinstance(opp_data, dict) else ""
+                            outcome_count = int(opp_data.get("outcomes_count", 0) or 0) if isinstance(opp_data, dict) else 0
+                            if direction in ("BUY_ALL_YES", "BUY_ALL_YES_1XN"):
+                                payout = 1.0
+                            elif direction in ("BUY_ALL_NO", "BUY_ALL_NO_1XN") and outcome_count > 0:
+                                payout = outcome_count - 1
+                            else:
+                                payout = None
+                            if payout is not None:
+                                # 1xN garantizado: gana el arbitraje cuando el
+                                # mercado resuelve (payout > entry garantizado).
+                                position_pnl = payout - entry_price
+                                position_won = position_pnl > 0
+                            else:
+                                # Sniper: compra YES ~0.97-0.98
+                                position_won = (winning_outcome == "YES")
+                                position_pnl = (1.0 - entry_price) if position_won else -entry_price
 
                         telegram_bot.send_opportunity_resolution(
                             event_id=db_event_id,

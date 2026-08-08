@@ -269,6 +269,7 @@ class DatabaseManager:
             "ALTER TABLE edge_snapshots ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'sports';",
             "ALTER TABLE edge_snapshots ADD COLUMN IF NOT EXISTS direction VARCHAR(40);",
             "ALTER TABLE edge_snapshots ADD COLUMN IF NOT EXISTS outcomes_count INTEGER DEFAULT 0;",
+            "ALTER TABLE edge_snapshots ADD COLUMN IF NOT EXISTS market_slug VARCHAR(255);",
         ]
 
         conn = None
@@ -469,8 +470,8 @@ class DatabaseManager:
              gross_edge_pct, platform_a_yes_ask, platform_b_no_ask,
              platform_a_depth, platform_b_depth, liquidity_verified, viable,
              resolution_status, entry_price, expected_profit,
-             category, direction, outcomes_count)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             category, direction, outcomes_count, market_slug)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """
         conn = None
@@ -496,6 +497,7 @@ class DatabaseManager:
                     opportunity.get("category", "sports"),
                     opportunity.get("direction", ""),
                     opportunity.get("outcomes_count", 0),
+                    opportunity.get("market_slug", ""),
                 ))
                 row = cursor.fetchone()
                 conn.commit()
@@ -534,7 +536,8 @@ class DatabaseManager:
                         platform_b_no_ask=%s, platform_a_depth=%s,
                         platform_b_depth=%s, liquidity_verified=%s, viable=%s,
                         entry_price=%s, expected_profit=%s,
-                        category=%s, direction=%s, outcomes_count=%s
+                        category=%s, direction=%s, outcomes_count=%s,
+                        market_slug=%s
                     WHERE event_id=%s
                     """,
                     (
@@ -554,6 +557,7 @@ class DatabaseManager:
                         opportunity.get("category", "sports"),
                         opportunity.get("direction", ""),
                         opportunity.get("outcomes_count", 0),
+                        opportunity.get("market_slug", ""),
                         event_id,
                     ),
                 )
@@ -653,7 +657,8 @@ class DatabaseManager:
         """Get all opportunities that haven't been resolved yet."""
         query = """
             SELECT id, event_id, event_title, edge_pct, platform_a_yes_ask, 
-                   platform_b_no_ask, entry_price, expected_profit, timestamp
+                   platform_b_no_ask, entry_price, expected_profit, timestamp,
+                   market_slug, category, direction, outcomes_count
             FROM edge_snapshots 
             WHERE resolution_status = 'pending'
             ORDER BY timestamp DESC

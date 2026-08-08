@@ -318,6 +318,7 @@ class SportsArbitrageStrategy(BaseStrategy):
                     "outcomes_count": len(outcomes),
                     "entry_price": total_cost,
                     "expected_profit": net_edge * self.position_size_usd,
+                    "market_slug": edge_data.get("group_slug", ""),
                 })
                 # Telegram alert for cross-platform opportunities (once per event per hour)
                 from src.telegram_bot import telegram_bot
