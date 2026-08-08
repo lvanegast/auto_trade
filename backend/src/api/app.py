@@ -8,6 +8,7 @@ import datetime
 import hmac
 from dotenv import load_dotenv
 load_dotenv()
+import src.limitless_sdk_patch  # noqa: F401  (orderbook lastTradePrice null fix)
 from src.database import DatabaseManager
 from src.engine import TradingEngine
 from src.events import SignalEvent
@@ -1082,6 +1083,7 @@ async def get_arbitrage_opportunities():
         both = cross_platform_tracker.get_both_books(pair["event_id"])
         kalshi_book = both.get("kalshi") or {}
         limitless_book = both.get("limitless") or {}
+        polymarket_book = both.get("polymarket") or {}
         price_map[pair["event_id"]] = {
             "event_label": pair["event_label"],
             "category": pair["category"],
@@ -1094,6 +1096,11 @@ async def get_arbitrage_opportunities():
                 "price": limitless_book.get("yes_ask", 0.0),
                 "bid": limitless_book.get("yes_bid", 0.0),
                 "ask": limitless_book.get("yes_ask", 0.0),
+            },
+            "polymarket": {
+                "price": polymarket_book.get("yes_ask", 0.0),
+                "bid": polymarket_book.get("yes_bid", 0.0),
+                "ask": polymarket_book.get("yes_ask", 0.0),
             },
         }
 
@@ -1122,7 +1129,7 @@ async def get_arbitrage_opportunities():
             "outcomes": edge_info.get("outcomes", []),
         })
 
-    return {"opportunities": results, "price_map": price_map, "catalog_version": "2.0.0"}
+    return {"opportunities": results, "price_map": price_map, "catalog_version": "2.1.0"}
 
 
 @app.get("/api/opportunities")
@@ -1612,12 +1619,12 @@ async def get_opportunity_tracking():
         "pending": len(opportunities),
         "opportunities": [
             {
-                "id": o[0],
-                "event_id": o[1],
-                "event_title": o[2],
-                "edge_pct": o[3],
-                "entry_price": o[4],
-                "timestamp": str(o[6]) if o[6] else None,
+                "id": o["id"],
+                "event_id": o["event_id"],
+                "event_title": o["event_title"],
+                "edge_pct": o["edge_pct"],
+                "entry_price": o["entry_price"],
+                "timestamp": str(o["timestamp"]) if o.get("timestamp") else None,
             }
             for o in opportunities
         ]

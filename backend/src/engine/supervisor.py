@@ -55,7 +55,17 @@ class TradingWorker:
         self.base_asset, self.quote_asset = self._parse_symbol()
 
         # Inicializar estrategia según tipo de feeder
-        if self.feeder_type in ("kalshi", "polymarket", "limitless"):
+        if self.feeder_type == "limitless_ws":
+            from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
+            self.strategy = AtomicCryptoArbStrategy(
+                self.symbol,
+                min_profit_target=float(os.getenv("CRYPTO_MAKER_EDGE", "0.01")),
+                position_size_usd=float(os.getenv("CRYPTO_MAKER_SIZE", "1.0")),
+                db=self.db,
+                worker_id=self.worker_id,
+                observation_only=True,
+            )
+        elif self.feeder_type in ("kalshi", "polymarket", "limitless"):
             min_edge = float(os.getenv("MIN_ARB_EDGE_PCT", "0.03"))
             position_size = float(os.getenv("ARB_POSITION_SIZE_PCT", "0.5"))
             self.strategy = CrossPlatformArbitrageStrategy(
@@ -495,9 +505,14 @@ class TradingWorker:
                         and self.kalshi_private_key_path
                     ):
                         await self._sync_kalshi_portfolio()
-                    elif self.feeder_type in ("kalshi", "limitless", "limitless_sports", "limitless_ws", "multi_platform", "binary_arb"):
+                    elif self.feeder_type == "resolution_sniper":
+                        # Solo el Resolution Sniper ejecuta el monitor global de resoluciones.
+                        # Si todos los workers lo corrieran, cada mercado resuelto generaría
+                        # un mensaje de Telegram por worker (duplicados).
                         await self._resolve_expired_positions_simulated()
                         await self._check_market_resolutions()
+                    elif self.feeder_type in ("kalshi", "limitless", "limitless_sports", "limitless_ws", "multi_platform", "binary_arb"):
+                        await self._resolve_expired_positions_simulated()
                 except Exception as e:
                     print(f"[Sync Error] Error en sincronización periódica: {e}")
 
@@ -665,13 +680,34 @@ class TradingWorker:
         Verifica mercados abiertos contra la API de Limitless para detectar resoluciones reales.
         Usa ResolutionMonitor + PnLCalculator para calcular P&L por canasta.
         """
-        if self.execution_type == "simulation":
-            return
 
         open_pos = self.db.get_open_positions(worker_id=self.worker_id) or []
-        unresolved_opps = self.db.get_unresolved_opportunities(worker_id=self.worker_id) or []
+        unresolved_opps = []
+        try:
+            if hasattr(self.db, "get_pending_opportunities"):
+                unresolved_opps = self.db.get_pending_opportunities() or []
+        except Exception:
+            pass
         if not open_pos and not unresolved_opps:
             return
+
+        # Limpiar oportunidades viejas (solo se verifica el resultado de mercados recientes)
+        try:
+            stale_marked = 0
+            if hasattr(self.db, "mark_stale_pending_opportunities"):
+                stale_hours = int(os.getenv("OPPORTUNITY_STALE_HOURS", "6"))
+                stale_marked = self.db.mark_stale_pending_opportunities(stale_hours)
+            if stale_marked:
+                self.db.log(
+                    "INFO",
+                    f"[ResolutionMonitor] {stale_marked} oportunidades pendientes antiguas marcadas como stale",
+                    self.worker_id,
+                )
+                unresolved_opps = self.db.get_pending_opportunities() or []
+                if not open_pos and not unresolved_opps:
+                    return
+        except Exception:
+            pass
 
         from src.engine.resolution_monitor import ResolutionMonitor
         from src.engine.pnl_calculator import PnLCalculator
@@ -689,11 +725,9 @@ class TradingWorker:
                     if resolved.market_slug in (p.get("symbol", "") or "")
                 ]
 
-                if not market_positions:
-                    continue
-
-                # Determinar si ganamos o perdimos
-                winning_outcome = resolved.winning_outcome
+                if market_positions:
+                    # Determinar si ganamos o perdimos
+                    winning_outcome = resolved.winning_outcome
 
                 for pos in market_positions:
                     symbol = pos.get("symbol", "")

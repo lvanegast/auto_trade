@@ -159,8 +159,8 @@ class LimitlessSportsFeeder(BaseFeeder):
                         if ts_str.isdigit():
                             ts_val = int(ts_str)
                             expiration_s = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
-                            # Reject if event expired or extends beyond 48 hours (172800 seconds)
-                            if now > expiration_s or (expiration_s - now) > 172800:
+                            # Allow matches starting up to 48h in future, or started within last 24h (live/in-play)
+                            if (now - expiration_s) > 86400 or (expiration_s - now) > 172800:
                                 _stats["skipped"] += 1
                                 continue
                     except Exception:

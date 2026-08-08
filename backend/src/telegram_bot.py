@@ -12,6 +12,7 @@ import os
 import json
 import asyncio
 import time
+import threading
 import urllib.request
 from datetime import datetime
 from src.utils.bounded_dict import BoundedTimeDict
@@ -26,6 +27,13 @@ class TelegramBot:
         # Dedup: event_ids that already received an opportunity alert.
         # Auto-expire after 24h so old events don't permanently block.
         self._sent_event_alerts = BoundedTimeDict(max_size=500, ttl_seconds=86400)
+        # Dedup de resultados de resolución: un mismo evento solo se informa UNA vez
+        # (TTL 30 días — estos mercados no re-resuelven en la práctica).
+        self._sent_resolution_alerts = BoundedTimeDict(max_size=5000, ttl_seconds=2592000)
+        # Rate limit global de envíos: evita spam de mensajes.
+        self._min_send_interval = float(os.getenv("TELEGRAM_MIN_INTERVAL_SECONDS", "5"))
+        self._next_allowed_send = 0.0
+        self._send_lock = threading.Lock()
         # Polling state
         self._last_update_id = 0
         self._polling_task = None
@@ -205,6 +213,14 @@ class TelegramBot:
         """Send a message to the configured chat."""
         if not self.enabled:
             return False
+
+        # Rate limit: skip envíos más frecuentes que el intervalo mínimo.
+        # Se implementa como "skip" (no sleep) para no bloquear el event loop.
+        now = time.time()
+        with self._send_lock:
+            if now < self._next_allowed_send:
+                return False
+            self._next_allowed_send = now + self._min_send_interval
         
         try:
             data = json.dumps({
@@ -238,6 +254,13 @@ class TelegramBot:
     def clear_alerted(self, event_id: str):
         """Clear an event_id after resolution — allows new alert if event reopens."""
         self._sent_event_alerts.discard(event_id)
+
+    def has_resolution_alerted(self, event_id: str) -> bool:
+        """True si ya se envió el resultado de resolución para este evento."""
+        return self._sent_resolution_alerts.get(event_id) is not None
+
+    def mark_resolution_alerted(self, event_id: str):
+        self._sent_resolution_alerts[event_id] = time.time()
 
     def send_alert(self, alert_type: str, message: str, event_id: str = None):
         """Send a formatted alert. If event_id is provided, deduplicates."""
@@ -300,6 +323,43 @@ class TelegramBot:
 <b>Edge:</b> {edge:.2f}%
 <b>Plataformas:</b> {platform_a} ↔ {platform_b}
 <b>Hora:</b> {datetime.now().strftime("%H:%M:%S")}"""
+        return self.send_message(text)
+    
+    def send_opportunity_resolution(self, event_id: str, event_title: str, winning_outcome: str, entry_price: float, expected_profit: float, position_won: bool = None, position_pnl: float = None):
+        """Send a dedicated resolution report showing if the paper trade / fish opportunity won or lost."""
+        event_ref = event_id if event_id else "N/A"
+        if event_ref.startswith("limitless_crypto_"):
+            event_ref = event_ref[len("limitless_crypto_"):]
+            
+        # Dedup de resolución: un mismo evento solo se informa UNA vez.
+        # Evita mensajes repetidos con el mismo código cuando el mercado se re-verifica.
+        if event_id:
+            if self.has_resolution_alerted(event_id):
+                return False
+            self.mark_resolution_alerted(event_id)
+
+        # Clear opportunity dedup memory for this event (permite re-alertar si reabre)
+        if event_id:
+            self.clear_alerted(event_id)
+
+        # Si conocemos si nuestra pata ganó, mostrarlo con precisión
+        if position_won is not None:
+            icon = "💰 <b>[GANASTE]</b>" if position_won else "📉 <b>[PERDISTE]</b>"
+            pnl_line = f"<b>P&L:</b> {'+' if position_pnl and position_pnl > 0 else ''}${position_pnl:.4f}"
+        else:
+            is_hit = winning_outcome in ("YES", "NO")
+            icon = "🎉 <b>[ACIERTO]</b>" if is_hit else "❌ <b>[SIN RESOLVER / SPLIT]</b>"
+            pnl_line = f"<b>Ganancia Teórica ($1.00 - Costo):</b> +${expected_profit:.4f}"
+        
+        text = f"""🏁 <b>Resultado del Evento</b>
+
+{icon}
+<b>Contrato / ID:</b> <code>{event_ref}</code>
+<b>Evento:</b> {event_title or event_ref}
+<b>Resultado Ganador:</b> {winning_outcome}
+<b>Costo de Entrada:</b> ${entry_price:.4f}
+{pnl_line}
+<b>Hora de Cierre:</b> {datetime.now().strftime("%H:%M:%S")}"""
         return self.send_message(text)
     
     def send_trade_executed(self, event: str, side: str, price: float, amount: float):

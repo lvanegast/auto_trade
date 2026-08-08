@@ -36,3 +36,6 @@ scratch/
 # Agents Local Skills
 .agents/
 edge_snapshots.jsonl
+
+# Codebase Memory MCP (reindexable artifact)
+.codebase-memory/

@@ -111,6 +111,12 @@ class BoundedTimeDict:
             self._data.move_to_end(key)
             return value
 
+    def __getitem__(self, key: str) -> Any:
+        value = self.get(key)
+        if value is None:
+            raise KeyError(key)
+        return value
+
     def __contains__(self, key: str) -> bool:
         return self.get(key) is not None
 

@@ -1,3 +1,4 @@
+from typing import Any, Optional, Dict, List, Union
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -443,7 +444,18 @@ class DatabaseManager:
             self._return_connection(conn)
 
     def record_opportunity(self, opportunity: dict) -> int:
-        """Record a detected opportunity and return its ID for tracking."""
+        """Record a detected opportunity and return its ID for tracking.
+
+        Dedup por event_id: si el mercado ya existe, se actualiza la fila en vez de
+        insertar duplicados (antes se insertaba una fila nueva por cada scan).
+        """
+        event_id = opportunity.get("event_id", "")
+        if event_id:
+            existing_id = self._find_opportunity_id(event_id)
+            if existing_id is not None:
+                self._refresh_opportunity(opportunity, event_id)
+                return existing_id
+
         query = """
             INSERT INTO edge_snapshots 
             (platform_a, platform_b, event_id, event_title, edge_pct,
@@ -480,21 +492,145 @@ class DatabaseManager:
         finally:
             self._return_connection(conn)
 
-    def update_opportunity_resolution(self, opportunity_id: int, resolution: str, actual_profit: float = 0.0):
-        """Update an opportunity with its resolution outcome."""
-        query = """
-            UPDATE edge_snapshots 
-            SET resolution_status = %s, 
-                actual_profit = %s,
-                resolved_at = CURRENT_TIMESTAMP
-            WHERE id = %s
-        """
+    def _find_opportunity_id(self, event_id: str) -> int | None:
+        """Retorna el id de la fila existente para event_id (cualquier estado)."""
         conn = None
         try:
             conn = self._get_connection()
             with conn.cursor() as cursor:
-                cursor.execute(query, (resolution, actual_profit, opportunity_id))
-                conn.commit()
+                cursor.execute(
+                    "SELECT id FROM edge_snapshots WHERE event_id = %s ORDER BY id DESC LIMIT 1",
+                    (event_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                return row.get("id") if isinstance(row, dict) else row[0]
+        finally:
+            self._return_connection(conn)
+
+    def _refresh_opportunity(self, opportunity: dict, event_id: str):
+        """Actualiza los datos de una oportunidad existente sin tocar resolution_status."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE edge_snapshots SET
+                        platform_a=%s, platform_b=%s, event_title=%s,
+                        edge_pct=%s, gross_edge_pct=%s, platform_a_yes_ask=%s,
+                        platform_b_no_ask=%s, platform_a_depth=%s,
+                        platform_b_depth=%s, liquidity_verified=%s, viable=%s,
+                        entry_price=%s, expected_profit=%s
+                    WHERE event_id=%s
+                    """,
+                    (
+                        opportunity.get("platform_a", "limitless"),
+                        opportunity.get("platform_b", "kalshi"),
+                        opportunity.get("event_title", ""),
+                        opportunity.get("net_edge_pct", 0.0),
+                        opportunity.get("gross_edge_pct", 0.0),
+                        opportunity.get("platform_a_yes_ask", 0.0),
+                        opportunity.get("platform_b_no_ask", 0.0),
+                        opportunity.get("platform_a_depth", 0.0),
+                        opportunity.get("platform_b_depth", 0.0),
+                        opportunity.get("liquidity_verified", False),
+                        opportunity.get("viable", False),
+                        opportunity.get("entry_price", 0.0),
+                        opportunity.get("expected_profit", 0.0),
+                        event_id,
+                    ),
+                )
+                if not self.use_sqlite:
+                    conn.commit()
+        except Exception as e:
+            if conn and not self.use_sqlite:
+                conn.rollback()
+            print(f"[DB ERROR] Error actualizando oportunidad existente: {e}")
+        finally:
+            self._return_connection(conn)
+
+    def update_opportunity_resolution(self, opportunity_id: Any, resolution: str, actual_profit: float = 0.0):
+        """Update an opportunity with its resolution outcome (by integer ID or string event_id).
+
+        En el caso string, además del match exacto se marca TODAS las filas cuyo
+        event_id contenga el market_slug (sin prefijo de plataforma), para que
+        prefijos distintos (limitless_sniper_ / limitless_sport_ / limitless_crypto_)
+        del mismo mercado queden resueltos y salgan de la cola de pending.
+        """
+        if isinstance(opportunity_id, int):
+            query = """
+                UPDATE edge_snapshots 
+                SET resolution_status = %s, 
+                    actual_profit = %s,
+                    resolved_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """
+            params = (resolution, actual_profit, opportunity_id)
+        else:
+            raw = str(opportunity_id)
+            slug = self._strip_platform_prefix(raw)
+            query = """
+                UPDATE edge_snapshots 
+                SET resolution_status = %s, 
+                    actual_profit = %s,
+                    resolved_at = CURRENT_TIMESTAMP
+                WHERE event_id = %s OR event_id LIKE %s
+            """
+            params = (resolution, actual_profit, raw, f"%{slug}%")
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(query, params)
+                if not self.use_sqlite:
+                    conn.commit()
+        except Exception as e:
+            if conn and not self.use_sqlite:
+                conn.rollback()
+            print(f"[DB ERROR] Error actualizando resolucion de oportunidad: {e}")
+        finally:
+            self._return_connection(conn)
+
+    @staticmethod
+    def _strip_platform_prefix(value: str) -> str:
+        """Elimina el prefijo de plataforma de un event_id para obtener el slug."""
+        for prefix in ("limitless_sniper_", "limitless_sport_", "limitless_crypto_",
+                       "polymarket_", "limitless_"):
+            if value.startswith(prefix):
+                return value[len(prefix):]
+        return value
+
+    def mark_stale_pending_opportunities(self, stale_hours: int = 24) -> int:
+        """Marca oportunidades pendientes viejas como 'stale' para no generar alertas duplicadas."""
+        if self.use_sqlite:
+            query = """
+                UPDATE edge_snapshots
+                SET resolution_status = 'stale', resolved_at = datetime('now')
+                WHERE resolution_status = 'pending'
+                  AND timestamp < datetime('now', '-' || ? || ' hours')
+            """
+        else:
+            query = """
+                UPDATE edge_snapshots
+                SET resolution_status = 'stale', resolved_at = CURRENT_TIMESTAMP
+                WHERE resolution_status = 'pending'
+                  AND timestamp < CURRENT_TIMESTAMP - (%s || ' hours')::interval
+            """
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(query, (stale_hours,))
+                if not self.use_sqlite:
+                    conn.commit()
+                return cursor.rowcount
+        except Exception as e:
+            if conn and not self.use_sqlite:
+                conn.rollback()
+            print(f"[DB ERROR] Error marcando oportunidades stale: {e}")
+            return 0
         finally:
             self._return_connection(conn)
 
@@ -502,7 +638,7 @@ class DatabaseManager:
         """Get all opportunities that haven't been resolved yet."""
         query = """
             SELECT id, event_id, event_title, edge_pct, platform_a_yes_ask, 
-                   platform_b_no_ask, timestamp
+                   platform_b_no_ask, entry_price, expected_profit, timestamp
             FROM edge_snapshots 
             WHERE resolution_status = 'pending'
             ORDER BY timestamp DESC
@@ -510,7 +646,7 @@ class DatabaseManager:
         conn = None
         try:
             conn = self._get_connection()
-            with conn.cursor() as cursor:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute(query)
                 return cursor.fetchall()
         finally:

@@ -7,7 +7,7 @@ Versión: incluye regla de resolución exacta, zona horaria, umbral, moneda y re
 Una similitud de títulos NO basta para cubrir arbitraje: la resolución debe ser idéntica.
 """
 
-CATALOG_VERSION = "2.0.0"
+CATALOG_VERSION = "2.1.0"
 
 MARKET_PAIRS = [
     {
@@ -224,8 +224,72 @@ def get_pair_by_event_id(event_id: str) -> dict | None:
     return None
 
 
+def _event_id_to_label(event_id: str) -> str:
+    """Convierte un event_id canónico (match_<slug>__<outcome>) en una etiqueta legible."""
+    if event_id.startswith("match_"):
+        body = event_id[len("match_"):]
+        if "__" in body:
+            match_part, outcome_part = body.split("__", 1)
+        else:
+            match_part, outcome_part = body, ""
+        label = match_part.replace("-", " ").strip()
+        if outcome_part:
+            label += f" → {outcome_part.replace('-', ' ').strip()}"
+        return label.title()
+    return event_id
+
+
+def get_dynamic_pairs_from_tracker(min_platforms: int = 2) -> list[dict]:
+    """
+    Genera pares dinámicamente desde los event_ids reales del tracker cross-platform.
+
+    Un par dinámico es cualquier evento que tenga libros ejecutables en
+    `min_platforms` plataformas simultáneamente. Esto reemplaza la dependencia
+    del catálogo estático hardcodeado: si un evento existe de verdad con liquidez
+    en dos plataformas, aparece automáticamente como candidato de arbitraje.
+
+    Devuelve:
+        Lista de pares con la misma estructura que MARKET_PAIRS (sin resolución verificada).
+    """
+    try:
+        from src.strategy.cross_platform_tracker import cross_platform_tracker
+    except Exception:
+        return []
+
+    pairs = []
+    for event_id in cross_platform_tracker.get_all_event_ids():
+        books = cross_platform_tracker.get_both_books(event_id)
+        present = [p for p in ("limitless", "kalshi", "polymarket") if books.get(p)]
+        if len(present) >= min_platforms:
+            pairs.append({
+                "event_id": event_id,
+                "event_label": _event_id_to_label(event_id),
+                "kalshi_ticker": None,
+                "limitless_slug": None,
+                "limitless_group_slug": None,
+                "category": "sports",
+                "expiration": None,
+                "resolution": {},
+                "resolution_family": None,
+                "dynamic": True,
+                "platforms_present": present,
+            })
+    return pairs
+
+
 def get_active_pairs() -> list[dict]:
-    return [p for p in MARKET_PAIRS if p["limitless_slug"] is not None]
+    """
+    Devuelve los pares candidatos a arbitraje: catálogo estático (pares macro
+    verificados con regla de resolución) + pares dinámicos derivados del tracker
+    en tiempo real. Un event_id solo aparece una vez (prioriza la versión estática).
+    """
+    merged: dict[str, dict] = {}
+    for p in MARKET_PAIRS:
+        if p["limitless_slug"] is not None:
+            merged[p["event_id"]] = p
+    for p in get_dynamic_pairs_from_tracker(min_platforms=2):
+        merged.setdefault(p["event_id"], p)
+    return list(merged.values())
 
 
 def get_fed_pairs() -> list[dict]:

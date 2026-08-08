@@ -1,7 +1,7 @@
 # Arbitrage Research - Prediction Markets 2026
 
-> **Fecha**: Agosto 2, 2026
-> **Fuentes**: arXiv papers, GitHub repos (pmxt, HarrierOnChain, radioman), PolyTest, CuteMarkets, Dune Analytics, PredictionAuthority, CF Benchmarks, Limitless Docs, Kalshi Docs
+> **Fecha**: Agosto 8, 2026 (actualizado)
+> **Fuentes**: arXiv papers, GitHub repos (pmxt, HarrierOnChain, radioman), PolyTest, CuteMarkets, Dune Analytics, PredictionAuthority, CF Benchmarks, Limitless Docs, Kalshi Docs, docs.polymarket.us, IBKR Campus
 
 ---
 
@@ -20,6 +20,12 @@
 | **Cross-platform price deviation** | **2-4% average** | Gebele & Matthes (2026) |
 | **Polymarket NBA arb median return** | **101 bps** | Cheng et al. (2026) |
 | **Binance-Polymarket pricing gap** | **5.6-6.3 pp** | Portnaya (2026) |
+| **Polymarket $40M extraído (on-chain)** | $40M | Saguillo et al. (2025) |
+| **Bookmaker-vs-exchange arb (fútbol)** | 19.2% de partidos | Franck (2013) |
+| **Arb sportsbook-vs-sportsbook (NBA)** | 4.52% del tiempo, ~13s | Princeton (2025) |
+| **Cross-platform deviation (persistente)** | 2-4% | Gebele & Matthes (2026) |
+| **Kalshi underreaction (0.64-por-1)** | drift predecible | Angelini & De Angelis (2026) |
+| **Makers > Takers (Betfair)** | positivos | Whelan (2025) |
 
 ---
 
@@ -84,6 +90,66 @@
 ---
 
 ### Paper 5: Markets Are Not Random, They Are Hard to Predict (Noguer i Alonso, Jun 2026)
+
+### Paper 6: Unravelling the Probabilistic Forest: Arbitrage in Prediction Markets (Saguillo et al., Oct 2025)
+**AFT 2025 / arXiv:2508.03474** | [PDF](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.AFT.2025.27)
+
+**Key findings:**
+- Dos formas de arbitraje en Polymarket: **Market Rebalancing** (intra-market, un solo condition) y **Combinatorial** (inter-market, varios conditions)
+- Evidencia empírica on-chain: **~$40M de beneficio real extraído** por arbitrageurs durante el periodo medido
+- Reduce el problema O(2^(n+m)) de comparar mercados relacionados con heurística (timeliness, similitud tópica, combinaciones)
+
+**Implication for our project:** Confirma con datos de ejecución real que ambos tipos de arb existen y son explotados. El rebalancing intra-market (comprar el conjunto de outcomes < $1) es exactamente nuestro 1xN intra-platform.
+
+---
+
+### Paper 7: Agreeing to Disagree: The Economics of Betting Exchanges (Whelan, Sep 2025)
+**CEPR DP20633** | [PDF](https://cepr.org/system/files/publication-files/DP20633.pdf)
+
+**Key findings:**
+- Análisis de >200K partidos de fútbol de Betfair (order book completo 1s, 2022-2024)
+- **Los Makers (los que postean límites) ganan más que los Takers (los que aceptan)**
+- Los longshots pierden sistemáticamente conforme avanza el partido (efecto "Yogi Berra"): los Takers sobreestiman las remontadas tardías
+- Profits pequeños pero significativos para Takers en favoritos durante la 2ª mitad
+
+**Implication for our project:** Valida empíricamente la estrategia maker de Limitless (0% fees + rebates): postear quotes gana más que cruzar el spread. También refuerza el Resolution Sniper: comprar favoritos (YES ~0.95-0.98) cerca del final captura la ineficiencia de los que sobrepagan remontadas.
+
+---
+
+### Paper 8: Inter-Market Arbitrage in Betting (Franck, 2013 — Economica)
+**DOI: 10.1111/ecca.12009**
+
+**Key findings:**
+- Apostar combinado en **bookmaker + betting exchange** da retorno positivo garantizado en el **19.2%** de los partidos de las top-5 ligas europeas
+- Todos los bookmakers analizados ofrecían posiciones de arbitraje frecuentemente y con márgenes negativos
+
+**Implication for our project:** El arbitraje cruzado entre estructuras de mercado distintas (dealer vs exchange) es real y frecuente en fútbol. Sugiere que añadir un sportsbook/exchange (Betfair, Novig, ProphetX) como tercera plataforma ampliaría las oportunidades de Worker 2.
+
+---
+
+### Paper 9: When Do Markets Fully Process Public Information? (Angelini & De Angelis, Jun 2026)
+**arXiv:2606.07811**
+
+**Key findings:**
+- Mercados NBA de Kalshi: los precios responden a información pública en la dirección correcta pero **solo 0.64-por-1** del cambio que debería ocurrir (underreaction)
+- El ajuste incompleto **predice drift** en los minutos siguientes, especialmente en mercados con poca liquidez
+- No es explotable neto de bid-ask, pero valida el lead-lag (Worker 5) como señal
+
+**Implication for our project:** Los deportes en vivo tienen underreaction predecible. Un oráculo (Binance/play-by-play) + entrada en mercados de baja liquidez puede capturar drift, aunque el paper advierte que el bid-ask lo consume.
+
+---
+
+### Paper 10: Exploiting Arbitrage Opportunities in Live Sports Betting (Princeton Thesis, Apr 2025)
+**Princeton University**
+
+**Key findings:**
+- FanDuel vs BetMGM en NBA: el arbitraje existe pero es **raro y efímero** — presente solo **4.52%** del tiempo de juego, con duración media de **~13 segundos**
+- Limitaciones prácticas: bloqueos de odds, restricciones geográficas (no se puede apostar en 2 estados a la vez), riesgo de cuenta
+
+**Implication for our project:** El arb bookmaker-vs-bookmaker es de latencia ~13s. Nuestro foco en exchanges con API pública (no sportsbooks con scrape) evita las restricciones de geolocalización y bloques de odds.
+
+---
+
 **arXiv:2606.08209** | [PDF](https://arxiv.org/pdf/2606.08209)
 
 **Key findings:**
@@ -264,6 +330,67 @@
 
 ---
 
+## Polymarket US (QCX/AEC) — DEPORTES MATCH-LEVEL (Agosto 2026)
+
+> **ACTUALIZACIÓN CRÍTICA**: Nuestra conclusión anterior de que "Polymarket no tiene mercados match-level para ligas US" quedó **OBSOLETA** (dic 2025).
+
+### Estado
+
+- **Polymarket US** (QCX LLC / Aristotle Exchange Clearing, CFTC DCM) lanzado **dic-2025**, catálogo sports-first.
+- Volumen junio-2026: **$3.04B** (Polymarket internacional: $10.26B).
+- Deportes con **partidos individuales** (match-level) y API pública:
+  **NFL, NBA, MLB, NHL, MLS, UFC, CBB, CFB, UCL, EPL, ATP, WTA**.
+- Tipos de mercado por partido: **Moneyline, Spread, Total, Props** (+ en MLB first-5/first-inning, sub-periodos NBA, etc.).
+- **Mismo settlement source** que Limitless (proveedores Sportradar/Stats Perform, feeds oficiales) → candidato real para Worker 2.
+
+### API (documentada en docs.polymarket.us)
+
+| Endpoint | Uso |
+|---|---|
+| `GET https://gateway.polymarket.us/v2/leagues/{nfl,nba,mlb,...}/events?active=true&closed=false` | Eventos con partidos y markets |
+| `GET https://gateway.polymarket.us/v1/sports/teams?filters.league=nfl` | Teams/leagues |
+| `POST https://api.preprod.polymarketexchange.com/v1/refdata/instruments` | Instrumentos (estado OPEN, series) |
+| CLOB `/book` | Orderbooks |
+
+- **Metadatos clave por instrumento** (NO parsear symbol/slug — no es contrato público):
+  - `event_id` — slug canónico del partido, **compartido por todos los markets del juego** (nuestro matcheo ideal)
+  - `event_external_id_sportradar` — game ID de Sportradar
+  - `market_sport_type` — identifica el tipo (ej. `_team_full_game_winner`)
+  - `outcome_strike` — línea/handicap
+  - `long_participant_id` / `short_participant_id` — equipos canónicos
+- **Verificado**: `gateway.polymarket.us/v2/leagues/nfl/events` responde **HTTP 200** desde nuestro entorno (sin bloqueo 403, a diferencia de Polymarket.com).
+
+### Implicación
+
+- Reabre **Worker 2 (cross-platform sports)**: Limitless vs Polymarket US sobre los MISMOS partidos (mismo settlement).
+- Kalshi también lista deportes match-level (NFL/NBA/MLB) → **triangulación a 3 plataformas** para el mismo partido.
+- El `event_id` compartido de Polymarket US resuelve parte del problema de matcheo semántico.
+
+---
+
+## Plataformas con API pública (no cubiertas previamente)
+
+| Plataforma | Tipo | Settlement | API | Notas |
+|---|---|---|---|---|
+| **Polymarket US (AEC/QCX)** | DCM CFTC | USD | gateway.polymarket.us, refdata, CLOB | **Deportes match-level** (ver arriba) |
+| **Robinhood Event Contracts** | Distribuidor | USD | vía Kalshi | Ruta al book de Kalshi |
+| **IBKR Prediction Markets** | Broker | USD | Web API + Python TWS | Unifica **Kalshi + CME + ForecastEx** |
+| **ForecastEx** | DCM CFTC (NYSE) | USD | IBKR CPAPI/TWS | Macro/econ; **cupón 3.13% APY** sobre posiciones |
+| **CME Event Contracts** | DCM | USD | IBKR | Diarios sobre futuros |
+| **Novig** | Sports exchange P2P | USD | API (verificar) | Sin vig; $75M Series B feb-2026 |
+| **ProphetX** | Sports exchange | USD | API (verificar) | Limit-order, sharp-friendly |
+| **Drift Bet** | On-chain (Solana) | USDC | API | — |
+| **OG.com** | Esports | USD/crypto | API (verificar) | — |
+
+### ForecastEx / CME vía IBKR (detalles)
+
+- Descubrimiento: `GET https://api.ibkr.com/v1/api/iserver/secdef/search?symbol=FF` → conid → `secdef/strikes` → `secdef/info` (pares Call/Yes y Put/No).
+- Market data: `/iserver/marketdata/snapshot` y websocket.
+- **ForecastEx no se puede vender (solo comprar)**; para salir se compra el opuesto y IBKR netea. CME sí se compra y vende.
+- Fees: más competitivo en posiciones grandes.
+
+---
+
 ## Cross-Platform Sports Arbitrage (VIABLE)
 
 ### Why Sports Works
@@ -344,16 +471,17 @@ For events with N outcomes:
 
 ## Project Worker Configuration
 
-### Current: `pure_arbitrage` Profile (6 Workers)
+### Real (Agosto 2026, verificada en `/api/workers` de producción)
 
 | Worker | Name | Symbol | Feeder | Strategy | Purpose |
 |--------|------|--------|--------|----------|---------|
-| **Worker 1** | Crypto Spot-Arb HFT | `BTC-INTRADAY` | `limitless` | `PolymarketSpotArbStrategy` | Crypto binary option spot arb on Limitless |
-| **Worker 2** | Cross-Platform Sports | `SPORTS` | `limitless_sports` | `SportsArbitrageStrategy` | Cross-platform sports arb (Limitless vs others) |
-| **Worker 3** | Limitless Sports (3 Opciones) | `SPORTS` | `limitless_sports` | `SportsArbitrageStrategy` | Sports arb on 3-outcome events |
-| **Worker 4** | Limitless Sports (2 Opciones) | `SPORTS` | `limitless_sports` | `SportsArbitrageStrategy` | Sports arb on 2-outcome events |
-| **Worker 5** | Binance HFT Oracle | `BTCUSDT` | `binance` | `LeadLagArbitrageStrategy` | Binance spot price as HFT reference oracle |
-| **Worker 6** | Crypto Atomic-Arb | `BTC-INTRADAY` | `limitless` | `AtomicCryptoArbStrategy` | Atomic multicall/bundle arb on Base L2 |
+| **Worker 2** | Cross-Platform Sports | `SPORTS` | `multi_platform` | `CrossPlatformArbitrageStrategy` | Limitless vs Kalshi (multi_platform feeder) |
+| **Worker 3** | Limitless Sports (3 Opciones) | `SPORTS` | `limitless_sports` | `SportsArbitrageStrategy` | Sports arb 3-outcome intra-platform |
+| **Worker 4** | Limitless Sports Maker | `SPORTS` | (maker) | `maker_making` / MarketMaking | Postear quotes 0% fees |
+| **Worker 5** | Binance HFT Oracle | `BTCUSDT` | `binance` | `LeadLagArbitrageStrategy` | Binance spot como oráculo lead-lag |
+| **Worker 7** | Resolution Sniper | — | — | `ResolutionSniperStrategy` | Comprar YES ~0.95-0.98 pre-settlement |
+
+> **Nota**: La config de template (`pure_arbitrage`, 6 workers) NO coincide con producción. No existen Worker 1 ni Worker 6 en el despliegue real. `ALLOWED_REAL_WORKERS` vacío → todos en observación (sin ejecución real).
 
 ### Strategy Assignment Logic
 
@@ -395,21 +523,22 @@ For events with N outcomes:
 
 ### Immediate
 
-- [ ] Fix AtomicCryptoArbStrategy (bid/ask confusion)
-- [ ] Clean up phantom positions in worker_6
-- [ ] Verify sports arb fills are realistic
+- [ ] **Implementar feeder de Polymarket US (gateway.polymarket.us) para Worker 2** — ya responde HTTP 200; matcheo por `event_id` compartido
+- [ ] Verificar que `limitless_ws_feeder` sobrevive el cambio de auth HMAC (`lmts-api-key`/`lmts-timestamp`/`lmts-signature`) — la API key estática está deprecada
+- [ ] Fix AtomicCryptoArbStrategy (bid/ask confusion) — solo si se reactiva w6
+- [ ] Clean up phantom positions en worker_6 (si aplica)
 
 ### Short-term
 
-- [ ] Implement orderbook depth fetching from Limitless API
-- [ ] Add realistic fill simulation (walk the book)
-- [ ] Reject trades when spread too wide or insufficient depth
+- [ ] Triangular **Limitless + Kalshi + Polymarket US** para el mismo partido (mismo settlement) en Worker 2
+- [ ] Evaluar IBKR/ForecastEx como tercera fuente para macro (cupón 3.13% APY sobre posiciones)
+- [ ] Monitorizar Novig / ProphetX / Robinhood Event Contracts cuando abran API estable
 
 ### Long-term
 
-- [ ] Add Kalshi integration for hourly/daily crypto arb
-- [ ] Expand sports arb to more platforms
-- [ ] Build cross-platform arb scanner for sports events
+- [ ] Explorar arb combinatorio intra-market (Saguillo: rebalancing + combinatorial) sobre el catálogo de Limitless
+- [ ] Estudiar maker rewards de Limitless para postear quotes (Whelan: makers > takers)
+- [ ] Backtesting con eventos reales de 2026 (Homerun: ventana de fill ±2s)
 
 ---
 
@@ -422,3 +551,10 @@ For events with N outcomes:
 - Kalshi Docs: https://kalshi.com/
 - CF Benchmarks: https://www.cfbenchmarks.com/data/indices/BRTI
 - Dune Analytics: https://dune.com/blog/polymarket-fast-markets
+- Polymarket US docs: https://docs.polymarket.us/ (gateway.polymarket.us, v1/sports, refdata)
+- IBKR Prediction Markets (Kalshi/CME/ForecastEx): https://www.interactivebrokers.com/campus/
+- Saguillo et al. (2025): https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.AFT.2025.27
+- Whelan (2025) CEPR DP20633: https://cepr.org/publications/dp20633
+- Franck (2013): https://onlinelibrary.wiley.com/doi/10.1111/ecca.12009
+- Angelini & De Angelis (2026): https://arxiv.org/abs/2606.07811
+- Princeton (2025): https://www.princeton.edu/
