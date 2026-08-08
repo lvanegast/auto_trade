@@ -142,82 +142,65 @@ class CrossPlatformTracker:
         """
         Calcula arbitraje usando precios EJECUTABLES (ask para comprar).
 
-        Para un contrato binario YES/NO:
+        Compara TODAS las plataformas presentes (kalshi, limitless, polymarket)
+        por pares y devuelve la mejor oportunidad de arbitraje cruzado:
+
           - Puedo comprar YES al ask de la plataforma A
           - Puedo comprar NO al ask de la plataforma B
           - Si yes_ask_A + no_ask_B < 1.0, hay arbitraje garantizado
 
         El edge = 1.0 - (yes_ask_A + no_ask_B)
         """
-        both = self.get_both_books(event_id)
-        kalshi = both["kalshi"]
-        limitless = both["limitless"]
-
-        if kalshi is None or limitless is None:
+        books = self._books.get(event_id, {})
+        platforms = [p for p in ("kalshi", "limitless", "polymarket") if p in books]
+        if len(platforms) < 2:
             return None
 
         now = time.time()
         if max_staleness_ms is None:
             max_staleness_ms = float(os.getenv("CROSS_ARB_MAX_STALENESS_MS", "5000"))
-        k_age_ms = (now - kalshi["ts_local"]) * 1000
-        l_age_ms = (now - limitless["ts_local"]) * 1000
-
-        if k_age_ms > max_staleness_ms or l_age_ms > max_staleness_ms:
-            return None
-
-        k_yes_ask = kalshi["yes_ask"]
-        k_no_ask = kalshi["no_ask"]
-        l_yes_ask = limitless["yes_ask"]
-        l_no_ask = limitless["no_ask"]
-
-        # Escenario 1: Comprar YES en Kalshi (ask) + NO en Limitless (ask)
-        cost_1 = k_yes_ask + l_no_ask
-        edge_1 = 1.0 - cost_1
-
-        # Escenario 2: Comprar YES en Limitless (ask) + NO en Kalshi (ask)
-        cost_2 = l_yes_ask + k_no_ask
-        edge_2 = 1.0 - cost_2
 
         best = None
-        if edge_1 >= edge_2 and edge_1 >= min_edge_pct:
-            best = {
-                "direction": "BUY_YES_KALSHI_BUY_NO_LIMITLESS",
-                "buy_platform": "kalshi",
-                "buy_side": "YES",
-                "buy_ask": k_yes_ask,
-                "hedge_platform": "limitless",
-                "hedge_side": "NO",
-                "hedge_ask": l_no_ask,
-                "total_cost": cost_1,
-                "guaranteed_profit": edge_1,
-                "edge_pct": edge_1,
-                "buy_depth": kalshi["ask_depth"],
-                "hedge_depth": limitless["ask_depth"],
-                "buy_book_age_ms": k_age_ms,
-                "hedge_book_age_ms": l_age_ms,
-            }
-        elif edge_2 >= min_edge_pct:
-            best = {
-                "direction": "BUY_YES_LIMITLESS_BUY_NO_KALSHI",
-                "buy_platform": "limitless",
-                "buy_side": "YES",
-                "buy_ask": l_yes_ask,
-                "hedge_platform": "kalshi",
-                "hedge_side": "NO",
-                "hedge_ask": k_no_ask,
-                "total_cost": cost_2,
-                "guaranteed_profit": edge_2,
-                "edge_pct": edge_2,
-                "buy_depth": limitless["ask_depth"],
-                "hedge_depth": kalshi["ask_depth"],
-                "buy_book_age_ms": l_age_ms,
-                "hedge_book_age_ms": k_age_ms,
-            }
+        # Considera todos los pares ordenados (A, B), A != B
+        for a in platforms:
+            for b in platforms:
+                if a == b:
+                    continue
+                book_a = books[a]
+                book_b = books[b]
+                a_age_ms = (now - book_a["ts_local"]) * 1000
+                b_age_ms = (now - book_b["ts_local"]) * 1000
+                if a_age_ms > max_staleness_ms or b_age_ms > max_staleness_ms:
+                    continue
+
+                a_yes_ask = book_a["yes_ask"]
+                b_no_ask = book_b["no_ask"]
+                cost = a_yes_ask + b_no_ask
+                edge = 1.0 - cost
+                if edge < min_edge_pct:
+                    continue
+
+                candidate = {
+                    "direction": f"BUY_YES_{a.upper()}_BUY_NO_{b.upper()}",
+                    "buy_platform": a,
+                    "buy_side": "YES",
+                    "buy_ask": a_yes_ask,
+                    "hedge_platform": b,
+                    "hedge_side": "NO",
+                    "hedge_ask": b_no_ask,
+                    "total_cost": cost,
+                    "guaranteed_profit": edge,
+                    "edge_pct": edge,
+                    "buy_depth": book_a["ask_depth"],
+                    "hedge_depth": book_b["ask_depth"],
+                    "buy_book_age_ms": a_age_ms,
+                    "hedge_book_age_ms": b_age_ms,
+                }
+                if best is None or edge > best["edge_pct"]:
+                    best = candidate
 
         if best:
             best["event_id"] = event_id
-            best["kalshi_yes_ask"] = k_yes_ask
-            best["limitless_yes_ask"] = l_yes_ask
             best["timestamp"] = now
 
         return best

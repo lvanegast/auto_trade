@@ -1083,6 +1083,7 @@ async def get_arbitrage_opportunities():
         both = cross_platform_tracker.get_both_books(pair["event_id"])
         kalshi_book = both.get("kalshi") or {}
         limitless_book = both.get("limitless") or {}
+        polymarket_book = both.get("polymarket") or {}
         price_map[pair["event_id"]] = {
             "event_label": pair["event_label"],
             "category": pair["category"],
@@ -1095,6 +1096,11 @@ async def get_arbitrage_opportunities():
                 "price": limitless_book.get("yes_ask", 0.0),
                 "bid": limitless_book.get("yes_bid", 0.0),
                 "ask": limitless_book.get("yes_ask", 0.0),
+            },
+            "polymarket": {
+                "price": polymarket_book.get("yes_ask", 0.0),
+                "bid": polymarket_book.get("yes_bid", 0.0),
+                "ask": polymarket_book.get("yes_ask", 0.0),
             },
         }
 

@@ -143,12 +143,11 @@ Event flow: Feeder → `PriceUpdateEvent` → Queue → `TradingWorker._process_
 
 | Worker | Purpose | Feeder | Focus |
 |--------|---------|--------|-------|
-| Worker 1 | Crypto Intraday HFT | `limitless_ws` | Limitless crypto binaries |
-| Worker 2 | Cross-Platform Sports | `limitless_sports` | Limitless vs Kalshi sports arb |
+| Worker 2 | Cross-Platform Sports | `multi_platform` | Limitless vs Kalshi (Polymarket US: pendiente) |
 | Worker 3 | Sports 3 Options | `limitless_sports` | 1xN intra-platform |
-| Worker 4 | Sports 2 Options | `limitless_sports` | Binary intra-platform |
-| Worker 5 | Binance Oracle | `binance` | Reference price feed |
-| Worker 6 | Crypto Atomic-Arb | `limitless_ws` | Limitless crypto binaries |
+| Worker 4 | Sports Maker | `maker_making` | Market making 0% fees |
+| Worker 5 | Binance Oracle | `binance` | Reference price feed (lead-lag) |
+| Worker 7 | Resolution Sniper | — | Comprar YES ~0.95-0.98 pre-settlement |
 
 ### Cross-Platform Sports vs Crypto
 
@@ -187,7 +186,7 @@ WORKER6_ENABLED=true
 
 ### Executive Summary
 
-Cross-platform arbitrage between Limitless and Polymarket is **NOT viable** with the current market structure. The two platforms sell fundamentally different market types with zero overlap.
+Cross-platform arbitrage entre Limitless y Polymarket **era** inviable con Polymarket.com (championship futures, sin partidos). Desde **dic-2025, Polymarket US (QCX/Aristotle Exchange Clearing, CFTC DCM) lista deportes match-level** (NFL, NBA, MLB, NHL, MLS, UFC, CBB, CFB, UCL, EPL, ATP, WTA) con API pública en `gateway.polymarket.us` (verificado: responde HTTP 200 desde nuestro entorno). Esto **reabre Worker 2** y permite triangulación **Limitless + Kalshi + Polymarket US** sobre los mismos partidos (mismo settlement source).
 
 ### Market Types by Platform
 
@@ -195,22 +194,24 @@ Cross-platform arbitrage between Limitless and Polymarket is **NOT viable** with
 |----------|-------------|---------|-----------|
 | **Limitless** | Match-level (specific games) | "Jessica Pegula vs Alexandra Eala" | $50K-$500K |
 | **Limitless** | Match props (O/U, both to score) | "Benfica vs Heart Of Midlothian: 3+ goals" | $50K-$500K |
-| **Polymarket** | Championship futures | "Will PSG win 2026-27 Champions League?" | $100K-$4.6M |
-| **Polymarket** | Season-long props | "Will LeBron retire before next season?" | $100K-$1M |
-| **Polymarket** | Tennis ITF match-level | "Miroshnichenko vs Chang" | <$10K |
-| **Polymarket** | Cricket T20 match-level | "Afghanistan vs Sri Lanka" | <$10K |
+| **Polymarket.com** | Championship futures | "Will PSG win 2026-27 Champions League?" | $100K-$4.6M |
+| **Polymarket US (AEC)** | **Match-level sports** (moneyline/spread/total/props) | "NFL GB @ PIT moneyline" | $100K+ |
+| **Kalshi** | Match-level sports (2026) | "Will Team X beat the spread?" | creciente |
+| **Polymarket.com** | Tennis ITF / Cricket T20 match-level | "Miroshnichenko vs Chang" | <$10K |
 
-### Why Cross-Platform Arb Failed
+### Why Cross-Platform Arb With Polymarket.com Failed
 
-1. **No market overlap**: Limitless sells soccer/esports match props; Polymarket sells championship futures. Zero markets exist on both platforms.
+1. **No market overlap** en Polymarket.com: Limitless vende match props; Polymarket.com vendía championship futures.
+2. **Different market granularity**: match vs season.
+3. **Polymarket.com match-level era low-liquidity** (tennis ITF, cricket T20): spreads de 1-99%.
+4. **NFL/NBA/NHL**: Polymarket.com tenía 0 match-level para ligas mayores.
 
-2. **Different market granularity**:
-   - Limitless: "Benfica vs Heart Of Midlothian: 3+ total goals?" (specific match)
-   - Polymarket: "Will Benfica win 2026-27 Champions League?" (season outcome)
+### Por qué cambió la ecuación (Polymarket US, dic-2025)
 
-3. **Polymarket match-level markets are low-liquidity**: The few match-level markets Polymarket has (tennis ITF, cricket T20) have spreads of 1-99%, making arb impossible.
-
-4. **NFL/NBA/NHL**: Polymarket has 0 match-level markets for major US sports leagues. All markets are championship futures or season-long props.
+- Polymarket US opera bajo QCX/AEC (DCM CFTC), catálogo sports-first, volumen junio-2026 **$3.04B**.
+- Lista **partidos individuales** con moneyline/spread/total/props → **mismo settlement source** que Limitless (Sportradar/Stats Perform).
+- **Matcheo por `event_id` compartido** en todos los markets de un juego + `event_external_id_sportradar` → resuelve el problema de matching semántico.
+- Endpoints: `GET https://gateway.polymarket.us/v2/leagues/{nfl,nba,mlb,...}/events?active=true&closed=false`, `v1/sports/teams`, refdata instruments (`POST https://api.preprod.polymarketexchange.com/v1/refdata/instruments`), CLOB `/book`.
 
 ### Price Verification (CLOB vs Gamma API)
 
@@ -241,18 +242,26 @@ Edge = 1.0 - (Limitless YES_ask + (1.0 - Polymarket YES_bid))
 
 Minimum edge for viability (with 0.25% friction): ≥2.25%
 
-### What Would Make Cross-Platform Arb Viable
+### Research Highlights (2025-2026)
 
-1. Polymarket opens match-level markets for major leagues (NFL, NBA, soccer)
-2. Limitless opens championship futures markets
-3. A third platform bridges both market types
-4. Both platforms expand their catalogs to include overlapping markets
+- **$40M extraído** en Polymarket por arbitrageurs (Saguillo et al. 2025, AFT).
+- **76.9% de oportunidades** de arb combinatorio NBA limitadas a ~15 shares (Cheng et al. 2026) → el tamaño importa.
+- **Makers > Takers** en Betfair (Whelan 2025) → respalda estrategia maker en Limitless (0% fees + rebates).
+- **Kalshi underreaction 0.64-por-1** con drift predecible (Angelini & De Angelis 2026).
+- Kalshi (2026): $31.5B volumen jun-2026; Robinhood Event Contracts rutean a Kalshi; IBKR unifica Kalshi+CME+ForecastEx (ForecastEx paga cupón ~3.13% APY, no vendible).
+
+### What Would Make Cross-Platform Arb Viable (estado)
+
+1. ✅ **Polymarket US abrió match-level para ligas mayores** (dic-2025) — hecho
+2. ⬜ Limitless abre championship futures — no relevante ya
+3. ⬜ Una tercera plataforma que unifique — Kalshi ya lista match-level (parcial)
+4. ✅ Ambas plataformas amplían catálogos para solaparse — en curso
 
 ### Recommendation
 
-- **Worker 2 (cross-platform)**: Permanently disabled until market overlap exists
-- **Worker 4 (intra-platform)**: Primary focus for $10 initial capital
-- **Future monitoring**: Check periodically if platforms expand their catalogs
+- **Worker 2 (cross-platform)**: **REACTIVAR** con feeder de Polymarket US (gateway.polymarket.us) + `multi_platform` (Kalshi) + Limitless. Prioridad máxima.
+- **Worker 4 (maker)**: seguir como foco para capital pequeño (0% fees).
+- **Triangulación**: Limitless + Kalshi + Polymarket US sobre el mismo partido (mismo settlement).
 
 ## Skills Disponibles
 

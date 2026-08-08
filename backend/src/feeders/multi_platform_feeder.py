@@ -262,85 +262,137 @@ class MultiPlatformFeeder(BaseFeeder):
         return normalized
 
     # ============================================================
-    # POLYMARKET
+    # POLYMARKET US (gateway.polymarket.us) — deportes match-level
     # ============================================================
+    # Leagues deportivas con mercados match-level en Polymarket US.
+    _POLYMARKET_LEAGUES = [
+        "nfl", "nba", "mlb", "nhl", "mls", "wnba", "ufc",
+        "ucl", "epl", "atp", "wta", "cbb", "cfb",
+    ]
+
     async def _run_polymarket(self):
-        """Conecta a Polymarket y alimenta el tracker con mercados deportivos."""
-        print("[MultiPlatform-Polymarket] Conectando a Polymarket REST API...")
+        """Conecta a Polymarket US (gateway.polymarket.us) y alimenta el tracker
+        con mercados deportivos match-level (moneyline/spread/total/props)."""
+        print("[MultiPlatform-Polymarket] Conectando a Polymarket US (gateway.polymarket.us)...")
         self._polymarket_connected = True
 
-        def fetch_polymarket():
+        def fetch_json(url, timeout=15):
             import urllib.request
             import json as _json
-            url = "https://clob.polymarket.com/markets"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
                 return _json.loads(response.read().decode("utf-8"))
 
-        def fetch_book(token_id):
-            import urllib.request
-            import json as _json
-            book_url = f"https://clob.polymarket.com/book?token_id={token_id}"
-            book_req = urllib.request.Request(book_url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(book_req, timeout=5) as book_resp:
-                return _json.loads(book_resp.read().decode("utf-8"))
+        def fetch_leagues():
+            out = {}
+            for league in self._POLYMARKET_LEAGUES:
+                url = (
+                    f"https://gateway.polymarket.us/v2/leagues/{league}/events"
+                    f"?active=true&closed=false&limit=10"
+                )
+                try:
+                    out[league] = fetch_json(url)
+                except Exception as e:
+                    print(f"[MultiPlatform-Polymarket] League {league} error: {type(e).__name__}: {e}")
+            return out
 
         while self.running:
             try:
-                # Ejecutar requests bloqueantes en un thread pool
                 cycle_updates = 0
-                result = await asyncio.to_thread(fetch_polymarket)
+                leagues_data = await asyncio.to_thread(fetch_leagues)
 
-                sports_keywords = ["NBA", "NFL", "NHL", "MLB", "Soccer", "Tennis", "UFC", "MMA", "NCAAB", "NCAAF"]
-                sports_markets = []
-
-                for market in result.get("data", []):
-                    question = market.get("question", "")
-                    tokens = market.get("tokens", [])
-
-                    is_sport = any(keyword.lower() in question.lower() for keyword in sports_keywords)
-                    if is_sport and tokens and len(tokens) >= 2:
-                        sports_markets.append(market)
-
-                sports_count = 0
-                for market in sports_markets[:20]:
-                    tokens = market.get("tokens", [])
-                    question = market.get("question", "")
-
-                    if len(tokens) >= 2:
-                        yes_token = tokens[0]
-                        yes_token_id = yes_token.get("token_id", "")
-
-                        if yes_token_id:
+                for league, data in leagues_data.items():
+                    events = data.get("events", []) or []
+                    for ev in events:
+                        if not self.running:
+                            break
+                        event_title = ev.get("title", "") or ""
+                        if not event_title:
+                            continue
+                        markets = ev.get("markets", []) or []
+                        for market in markets:
+                            # Solo moneyline (winner del partido) — matchea 1:1 con
+                            # los outcomes de Limitless. Spreads/totals usarían el
+                            # mismo team.name y colisionarían el event_id.
+                            if market.get("marketType") != "moneyline":
+                                continue
+                            sides = market.get("marketSides", []) or []
+                            if len(sides) < 2:
+                                continue
+                            # Precios ejecutables del contrato (best bid/ask del instrumento)
                             try:
-                                book = await asyncio.to_thread(fetch_book, yes_token_id)
+                                best_bid = float(market["bestBidQuote"]["value"])
+                                best_ask = float(market["bestAskQuote"]["value"])
+                            except (KeyError, TypeError, ValueError):
+                                continue
+                            if best_ask <= 0 or best_bid <= 0 or best_ask < best_bid:
+                                continue
 
-                                bids = book.get("bids", [])
-                                asks = book.get("asks", [])
+                            # Equipos de cada lado (long=True = YES / instrumento principal)
+                            side_long = next((s for s in sides if s.get("long")), None)
+                            side_short = next((s for s in sides if not s.get("long")), None)
+                            team_long = (side_long or {}).get("team", {}).get("name", "")
+                            team_short = (side_short or {}).get("team", {}).get("name", "")
 
-                                if bids and asks:
-                                    best_bid = float(bids[0]["price"])
-                                    best_ask = float(asks[0]["price"])
-                                    bid_depth = sum(float(b.get("size", 0)) for b in bids[:5])
-                                    ask_depth = sum(float(a.get("size", 0)) for a in asks[:5])
+                            # NO del instrumento: NO_ask = 1 - YES_bid ; NO_bid = 1 - YES_ask
+                            no_ask = round(1.0 - best_bid, 4)
+                            no_bid = round(1.0 - best_ask, 4)
 
-                                    # Use shared canonical event_id for cross-platform matching
-                                    event_id = make_match_event_id(question, question)
+                            # event_id CANÓNICO: el que usa Limitless para el winner
+                            # depende de la representación del partido:
+                            #   - Grupo/sub-markets (fútbol/esports):  match_X__<team>
+                            #   - Mercado individual binario (tenis):   match_X__<X>-yes
+                            # Publicamos AMBAS representaciones para cubrir las dos.
+                            # El book YES corresponde al team long; el NO al team short.
+                            book_yes = {
+                                "event_id": make_match_event_id(event_title, f"{event_title} YES"),
+                                "yes_bid": round(best_bid, 4),
+                                "yes_ask": round(best_ask, 4),
+                                "no_bid": no_bid,
+                                "no_ask": no_ask,
+                                "bid_depth": float(market.get("bestBidSize") or 0) or 0.0,
+                                "ask_depth": float(market.get("bestAskSize") or 0) or 0.0,
+                            }
+                            book_no = {
+                                "event_id": make_match_event_id(event_title, f"{event_title} NO"),
+                                "yes_bid": no_bid,
+                                "yes_ask": no_ask,
+                                "no_bid": round(best_bid, 4),
+                                "no_ask": round(best_ask, 4),
+                                "bid_depth": float(market.get("bestAskSize") or 0) or 0.0,
+                                "ask_depth": float(market.get("bestBidSize") or 0) or 0.0,
+                            }
 
-                                    self._tracker.update_book(
-                                        event_id=event_id,
-                                        platform="polymarket",
-                                        yes_bid=round(best_bid, 4),
-                                        yes_ask=round(best_ask, 4),
-                                        bid_depth=bid_depth,
-                                        ask_depth=ask_depth,
-                                        ts_origin=time.time(),
-                                    )
-                                    sports_count += 1
-                            except Exception:
-                                pass
+                            publications = [
+                                book_yes, book_no,
+                                # Representación por equipo (grupo)
+                                {
+                                    "event_id": make_match_event_id(event_title, team_long),
+                                    **book_yes,
+                                },
+                                {
+                                    "event_id": make_match_event_id(event_title, team_short),
+                                    **book_no,
+                                },
+                            ]
+                            for pub in publications:
+                                if not pub["event_id"]:
+                                    continue
+                                self._tracker.update_book(
+                                    event_id=pub["event_id"],
+                                    platform="polymarket",
+                                    yes_bid=pub["yes_bid"],
+                                    yes_ask=pub["yes_ask"],
+                                    no_bid=pub["no_bid"],
+                                    no_ask=pub["no_ask"],
+                                    bid_depth=pub["bid_depth"],
+                                    ask_depth=pub["ask_depth"],
+                                    ts_origin=time.time(),
+                                )
+                                cycle_updates += 1
 
-                print(f"[MultiPlatform-Polymarket] Updated {sports_count} sports markets in tracker")
+                if cycle_updates > 0:
+                    print(f"[MultiPlatform-Polymarket] Updated {cycle_updates} sports markets in tracker")
 
             except asyncio.CancelledError:
                 break
