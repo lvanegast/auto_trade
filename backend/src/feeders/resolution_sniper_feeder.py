@@ -1,9 +1,9 @@
 """
 Resolution Sniper Feeder — Monitors Limitless sports markets for near-certain outcomes.
 
-Scans markets where YES price > 0.95 (95%+ probability).
+Scans markets where YES price > 0.975 (97.5%+ probability).
 These are markets where one outcome is almost guaranteed.
-Strategy: Buy YES at 95-98¢, hold until resolution, receive $1.00.
+Strategy: Buy YES at 97.5-98¢, hold until resolution, receive $1.00.
 """
 
 import asyncio
@@ -22,7 +22,7 @@ class ResolutionSniperFeeder(BaseFeeder):
     def __init__(self, symbol: str, event_queue: asyncio.Queue):
         super().__init__(symbol.upper(), event_queue)
         self.poll_interval = float(os.getenv("SNIPER_POLL_INTERVAL", "5.0"))
-        self.min_entry_price = float(os.getenv("SNIPER_MIN_ENTRY_PRICE", "0.95"))
+        self.min_entry_price = float(os.getenv("SNIPER_MIN_ENTRY_PRICE", "0.975"))
         self.max_entry_price = float(os.getenv("SNIPER_MAX_ENTRY_PRICE", "0.98"))
         self.task = None
 

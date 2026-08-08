@@ -2,11 +2,11 @@
 Resolution Sniper Strategy — Buy near-certain markets and hold until resolution.
 
 Strategy:
-  - Monitors sports markets where YES price > 0.95 (95%+ probability)
-  - Buys YES contracts at 95-98¢
+  - Monitors sports markets where YES price > 0.975 (97.5%+ probability)
+  - Buys YES contracts at 97.5-98¢
   - Holds until market resolves
   - Receives $1.00 per contract on resolution
-  - Edge = 1.0 - buy_price (typically 2-5% per trade)
+  - Edge = 1.0 - buy_price (typically 2-2.5% per trade)
 
 Capital requirements:
   - Works with small capital ($2-10 per event)
@@ -52,7 +52,7 @@ class ResolutionSniperStrategy(BaseStrategy):
         self,
         symbol: str,
         feeder_type: str = "resolution_sniper",
-        min_entry_price: float = 0.95,
+        min_entry_price: float = 0.975,
         max_entry_price: float = 0.98,
         position_size_usd: float = 2.0,
         cooldown_seconds: float = 60.0,
@@ -127,7 +127,7 @@ class ResolutionSniperStrategy(BaseStrategy):
         yes_price = sniper_data["yes_price"]
         title = sniper_data.get("title", event_id)
 
-        # 6. Check if price is in sniper range (0.95 - 0.98)
+        # 6. Check if price is in sniper range (0.975 - 0.98)
         if yes_price < self.min_entry_price or yes_price > self.max_entry_price:
             self.edge = 0.0
             return None
