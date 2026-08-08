@@ -1108,6 +1108,7 @@ async def get_arbitrage_opportunities():
         total_yes = edge_info.get("total_yes", 0.95)
         edge_val = edge_info.get("edge", 0.05)
         title = edge_info.get("title", event_id)
+        outcomes = edge_info.get("outcomes", [])
 
         if event_id not in price_map:
             price_map[event_id] = {
@@ -1117,16 +1118,33 @@ async def get_arbitrage_opportunities():
                 "limitless": {"price": round(1.0 - edge_val, 4), "bid": round(0.95 - edge_val, 4), "ask": round(1.0 - edge_val, 4)},
             }
 
+        # Profit REAL por lado, igual que SportsArbitrageStrategy:
+        #  - BUY_ALL_YES: costo = sum(yes_price), paga $1.00
+        #  - BUY_ALL_NO:  costo = sum(no_price), paga $(N-1) (todos menos 1 outcome ganan)
+        if edge_val > 0:
+            direction = "BUY_ALL_YES_1XN"
+            total_cost = sum(float(o.get("yes_price", 0.0)) for o in outcomes)
+            guaranteed_profit = 1.0 - total_cost
+        else:
+            direction = "BUY_ALL_NO_1XN"
+            total_cost = sum(float(o.get("no_price", 0.0)) for o in outcomes)
+            guaranteed_profit = (len(outcomes) - 1.0) - total_cost
+
+        # Filtrar falsos positivos: si el profit real <= 0 NO es oportunidad.
+        # Ej: binarios (2 outcomes) donde sum(no_price) > 1.0 => comprar NO paga $1 -> pérdida.
+        if guaranteed_profit <= 0:
+            continue
+
         results.append({
             "event_id": event_id,
             "event_label": f"{title}",
-            "direction": "BUY_ALL_YES_1XN" if edge_val > 0 else "BUY_ALL_NO_1XN",
+            "direction": direction,
             "kalshi_yes": round(total_yes * 0.5, 4),
             "polymarket_yes": round(1.0 - total_yes, 4),
-            "edge_pct": abs(edge_val),
-            "total_cost": total_yes,
-            "guaranteed_profit": abs(edge_val),
-            "outcomes": edge_info.get("outcomes", []),
+            "edge_pct": round(guaranteed_profit, 4),
+            "total_cost": round(total_cost, 4),
+            "guaranteed_profit": round(guaranteed_profit, 4),
+            "outcomes": outcomes,
         })
 
     return {"opportunities": results, "price_map": price_map, "catalog_version": "2.1.0"}
