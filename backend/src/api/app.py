@@ -1078,15 +1078,27 @@ async def get_arbitrage_opportunities():
             opp["category"] = pair["category"]
         results.append(opp)
 
+    # SOLO intraday sports con libros REALES con data:
+    #  - Se descarta el catálogo estático macro/fed/politics (no somos intraday).
+    #  - Se descarta todo evento cuyo book real esté vacío (todos los precios en 0.0):
+    #    sin data real no se puede operar, no se muestra.
     price_map = {}
     for pair in pairs:
+        category = pair.get("category") or "sports"
+        if category not in ("sports", "Crypto"):
+            continue
         both = cross_platform_tracker.get_both_books(pair["event_id"])
         kalshi_book = both.get("kalshi") or {}
         limitless_book = both.get("limitless") or {}
         polymarket_book = both.get("polymarket") or {}
+        k_ask = kalshi_book.get("yes_ask", 0.0)
+        l_ask = limitless_book.get("yes_ask", 0.0)
+        p_ask = polymarket_book.get("yes_ask", 0.0)
+        if k_ask <= 0 and l_ask <= 0 and p_ask <= 0:
+            continue
         price_map[pair["event_id"]] = {
             "event_label": pair["event_label"],
-            "category": pair["category"],
+            "category": category,
             "kalshi": {
                 "price": kalshi_book.get("yes_ask", 0.0),
                 "bid": kalshi_book.get("yes_bid", 0.0),
@@ -1146,7 +1158,13 @@ async def get_arbitrage_opportunities():
             "outcomes": outcomes,
         })
 
-    return {"opportunities": results, "price_map": price_map, "catalog_version": "2.1.0"}
+    return {
+        "opportunities": results,
+        "price_map": price_map,
+        "market_prices": price_map,
+        "active_pairs_count": len(price_map),
+        "catalog_version": "2.1.0",
+    }
 
 
 @app.get("/api/opportunities")
