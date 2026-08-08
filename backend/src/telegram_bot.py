@@ -343,11 +343,14 @@ class TelegramBot:
 
         # Rate limit: skip envíos más frecuentes que el intervalo mínimo.
         # Se implementa como "skip" (no sleep) para no bloquear el event loop.
-        now = time.time()
-        with self._send_lock:
-            if now < self._next_allowed_send:
-                return False
-            self._next_allowed_send = now + self._min_send_interval
+        # Se aplica SOLO a envíos espontáneos (alertas): las respuestas a comandos
+        # (reply context activo) siempre se envían.
+        if self._reply_chat_id is None:
+            now = time.time()
+            with self._send_lock:
+                if now < self._next_allowed_send:
+                    return False
+                self._next_allowed_send = now + self._min_send_interval
         
         payload = {
             "chat_id": target,
