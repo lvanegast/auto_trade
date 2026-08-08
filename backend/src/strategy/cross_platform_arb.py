@@ -258,6 +258,15 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
 
             # If observation_only, just log and continue scanning
             if self.observation_only:
+                if net_edge >= 0.02:
+                    from src.telegram_bot import telegram_bot
+                    telegram_bot.send_opportunity(
+                        opp["event_id"],
+                        net_edge * 100,
+                        opp["buy_platform"],
+                        opp["hedge_platform"],
+                        event_id=opp["event_id"],
+                    )
                 continue
 
             # Execute: buy on one platform, hedge on the other
@@ -467,7 +476,7 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
 
         now = asyncio.get_event_loop().time()
         if event_id in self._last_exit_time:
-            if now - self._last_exit_time[event_id] < self.cooldown_seconds:
+            if now - self._last_exit_time.get(event_id, 0) < self.cooldown_seconds:
                 return None
 
         from src.feeders.limitless_feeder import get_macro_edge_data

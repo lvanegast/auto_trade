@@ -116,7 +116,7 @@ class ResolutionSniperStrategy(BaseStrategy):
 
         # 4. Cooldown check
         if event_id in self._last_exit_time:
-            if now - self._last_exit_time[event_id] < self.cooldown_seconds:
+            if now - self._last_exit_time.get(event_id, 0) < self.cooldown_seconds:
                 return None
 
         # 5. Read sniper data from shared store

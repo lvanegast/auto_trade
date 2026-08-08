@@ -105,13 +105,6 @@ class SportsArbitrageStrategy(BaseStrategy):
     def on_price_update(self, event: PriceUpdateEvent) -> SignalEvent | None:
         super().on_price_update(event)
 
-        # Periodic cleanup of global caches (every ~100 updates)
-        if not hasattr(self, '_update_count'):
-            self._update_count = 0
-        self._update_count = (self._update_count + 1) % 100
-        if self._update_count == 0:
-            _cleanup_global_caches()
-
         self.teorical_probability = event.price
 
         # 1. Drain pending signals queue first (N sequential fills)
@@ -131,7 +124,7 @@ class SportsArbitrageStrategy(BaseStrategy):
 
         # 3. Cooldown check
         if event_id in self._last_exit_time:
-            if now - self._last_exit_time[event_id] < self.cooldown_seconds:
+            if now - self._last_exit_time.get(event_id, 0) < self.cooldown_seconds:
                 return None
 
         # 4. Read edge data from shared store
@@ -400,7 +393,7 @@ class SportsArbitrageStrategy(BaseStrategy):
             )
             # Telegram alert for 1xN arb opportunities (deduplicated via event_id)
             from src.telegram_bot import telegram_bot
-            if telegram_bot.enabled and self.edge >= 0.02:
+            if telegram_bot.enabled and abs(self.edge) >= 0.02:
                 profit_usd = expected_profit * num_sets
                 telegram_bot.send_alert("opportunity",
                     f"1x{len(outcomes)} {arb_type} Arb: {title}\n"
