@@ -106,6 +106,7 @@ class TelegramBot:
             "/workers": self._cmd_workers,
             "/positions": self._cmd_positions,
             "/pnl": self._cmd_pnl,
+            "/sports": self._cmd_sports,
             "/help": self._cmd_help,
         }
         handler = handlers.get(cmd)
@@ -122,6 +123,7 @@ class TelegramBot:
             "/workers — Lista de workers\n"
             "/positions — Posiciones abiertas\n"
             "/pnl — Resumen de P&L\n"
+            "/sports — Eventos deportivos monitoreados\n"
             "/help — Esta ayuda"
         )
 
@@ -168,6 +170,34 @@ class TelegramBot:
             self.send_message("\n".join(lines))
         except Exception as e:
             self.send_message(f"⚠️ Error: {e}")
+
+    def _cmd_sports(self):
+        """Show sports events currently being monitored."""
+        try:
+            from src.strategy.sports_arb import _sports_edge_data
+        except Exception as e:
+            self.send_message(f"⚠️ Error: {e}")
+            return
+        if not _sports_edge_data:
+            self.send_message("⚽ No hay eventos deportivos en el radar")
+            return
+        items = sorted(
+            _sports_edge_data.items(),
+            key=lambda kv: kv[1].get("edge", 0) or 0,
+            reverse=True,
+        )
+        lines = [f"⚽ <b>Eventos deportivos monitoreados</b> ({len(items)})\n"]
+        for event_id, info in items:
+            title = info.get("title") or event_id
+            edge = info.get("edge", 0) or 0
+            total_yes = info.get("total_yes", 0) or 0
+            outcomes = info.get("outcomes_count", 0) or 0
+            arrow = "🟢" if edge > 0 else "⚪"
+            lines.append(
+                f"{arrow} <b>{title}</b>\n"
+                f"   edge {edge * 100:.1f}% | total_yes {total_yes:.3f} | {outcomes} outcomes\n"
+            )
+        self.send_message("\n".join(lines))
 
     def _cmd_positions(self):
         """Show open positions."""

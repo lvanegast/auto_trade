@@ -129,6 +129,27 @@ async def get_workers():
     return res
 
 
+@app.get("/api/sports")
+async def get_sports_monitoring():
+    """Retorna los eventos deportivos que se están monitoreando en tiempo real."""
+    from src.strategy.sports_arb import _sports_edge_data
+
+    items = []
+    for event_id, info in _sports_edge_data.items():
+        items.append(
+            {
+                "event_id": event_id,
+                "title": info.get("title", event_id),
+                "edge_pct": round((info.get("edge", 0) or 0) * 100, 2),
+                "total_yes": info.get("total_yes", 0),
+                "outcomes_count": info.get("outcomes_count", 0),
+                "group_slug": info.get("group_slug", ""),
+            }
+        )
+    items.sort(key=lambda it: it["edge_pct"], reverse=True)
+    return {"events": items, "count": len(items), "source": "sports_arb._sports_edge_data"}
+
+
 @app.get("/api/debug_tasks")
 async def debug_tasks(worker_id: str = "worker_1"):
     if worker_id not in engine.workers:

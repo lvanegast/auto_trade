@@ -96,6 +96,7 @@ Event flow: Feeder → `PriceUpdateEvent` → Queue → `TradingWorker._process_
 | `GET /api/trades` | Historial de trades |
 | `GET /api/positions` | Posiciones abiertas/cerradas |
 | `GET /api/arbitrage` | Oportunidades de arbitraje detectadas |
+| `GET /api/sports` | Eventos deportivos monitoreados en tiempo real (desde `_sports_edge_data`) |
 | `GET /api/observation/performance` | **Paper PnL** de oportunidades en observación (sin trades reales), filtrable por `category=sports|crypto` |
 | `POST /api/position/close` | Cerrar posición manualmente |
 
