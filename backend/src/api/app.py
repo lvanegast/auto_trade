@@ -1104,19 +1104,17 @@ async def get_arbitrage_opportunities():
             },
         }
 
+    # SOLO libros REALES: si el evento no está en price_map, el tracker no tiene
+    # books reales (Kalshi/Polymarket/Limitless) -> se descarta. NUNCA se muestran
+    # ni se operan precios fabricados.
+    existing_event_ids = {r["event_id"] for r in results}
     for event_id, edge_info in _sports_edge_data.items():
-        total_yes = edge_info.get("total_yes", 0.95)
+        if event_id not in price_map or event_id in existing_event_ids:
+            continue
+
         edge_val = edge_info.get("edge", 0.05)
         title = edge_info.get("title", event_id)
         outcomes = edge_info.get("outcomes", [])
-
-        if event_id not in price_map:
-            price_map[event_id] = {
-                "event_label": f"{title}",
-                "category": "sports",
-                "kalshi": {"price": round(total_yes * 0.5, 4), "bid": round(total_yes * 0.49, 4), "ask": round(total_yes * 0.5, 4)},
-                "limitless": {"price": round(1.0 - edge_val, 4), "bid": round(0.95 - edge_val, 4), "ask": round(1.0 - edge_val, 4)},
-            }
 
         # Profit REAL por lado, igual que SportsArbitrageStrategy:
         #  - BUY_ALL_YES: costo = sum(yes_price), paga $1.00
@@ -1135,12 +1133,13 @@ async def get_arbitrage_opportunities():
         if guaranteed_profit <= 0:
             continue
 
+        book = price_map.get(event_id, {})
         results.append({
             "event_id": event_id,
             "event_label": f"{title}",
             "direction": direction,
-            "kalshi_yes": round(total_yes * 0.5, 4),
-            "polymarket_yes": round(1.0 - total_yes, 4),
+            "kalshi_yes": (book.get("kalshi") or {}).get("price", 0.0),
+            "polymarket_yes": (book.get("polymarket") or {}).get("price", 0.0),
             "edge_pct": round(guaranteed_profit, 4),
             "total_cost": round(total_cost, 4),
             "guaranteed_profit": round(guaranteed_profit, 4),
