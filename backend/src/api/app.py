@@ -1116,12 +1116,13 @@ async def get_arbitrage_opportunities():
             },
         }
 
-    # SOLO libros REALES: si el evento no está en price_map, el tracker no tiene
-    # books reales (Kalshi/Polymarket/Limitless) -> se descarta. NUNCA se muestran
-    # ni se operan precios fabricados.
+    # Oportunidades 1xN intra-platform REALES de Limitless (libros reales del SDK,
+    # escritas por LimitlessSportsFeeder). Se descartan solo los duplicados que ya
+    # vienen de scan_all_pairs. Kalshi/Polymarket quedan en 0.0 porque NO hay book
+    # cross-platform real para estos eventos (NUNCA se fabrican precios).
     existing_event_ids = {r["event_id"] for r in results}
     for event_id, edge_info in _sports_edge_data.items():
-        if event_id not in price_map or event_id in existing_event_ids:
+        if event_id in existing_event_ids:
             continue
 
         edge_val = edge_info.get("edge", 0.05)
