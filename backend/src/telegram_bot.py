@@ -109,16 +109,22 @@ class TelegramBot:
                                 f"[Telegram] Msg chat={chat_id} thread={thread_id} "
                                 f"text={text[:60]!r}"
                             )
-                        # Only respond to authorized chat
-                        if chat_id == self.chat_id and text.startswith("/"):
-                            await self._handle_command(text, message_thread_id=thread_id)
+                        # Only respond to authorized chats: DM principal o el
+                        # supergrupo forum (topics).
+                        authorized = (chat_id == self.chat_id) or (
+                            self.group_id and chat_id == self.group_id
+                        )
+                        if authorized and text.startswith("/"):
+                            await self._handle_command(
+                                text, chat_id=chat_id, message_thread_id=thread_id
+                            )
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 print(f"[Telegram] Poll error: {e}")
             await asyncio.sleep(2)
 
-    async def _handle_command(self, text: str, message_thread_id=None):
+    async def _handle_command(self, text: str, chat_id: str = None, message_thread_id=None):
         """Route commands to handlers. Replies go to the chat/topic the command
         came from (works inside group forum topics)."""
         cmd = text.split()[0].lower().split("@")[0]  # Remove @botname if present
@@ -134,7 +140,7 @@ class TelegramBot:
         if handler:
             # Reply context: handlers call send_message() with no chat_id → reply
             # in the same chat (and topic) the command arrived from.
-            self._reply_chat_id = self.chat_id
+            self._reply_chat_id = chat_id or self.chat_id
             self._reply_thread_id = self._topic_thread_id(chat_id, message_thread_id)
             try:
                 handler()
@@ -142,7 +148,7 @@ class TelegramBot:
                 self._reply_chat_id = None
                 self._reply_thread_id = None
         else:
-            self._reply_chat_id = self.chat_id
+            self._reply_chat_id = chat_id or self.chat_id
             self._reply_thread_id = self._topic_thread_id(chat_id, message_thread_id)
             try:
                 self.send_message(f"❓ Comando desconocido: <code>{cmd}</code>\nUsa /help para ver comandos disponibles.")
