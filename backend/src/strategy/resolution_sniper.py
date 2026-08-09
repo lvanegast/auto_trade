@@ -36,6 +36,7 @@ def update_sniper_data(
     title: str = "",
     slug: str = "",
     sport: str = "",
+    side: str = "YES",
 ):
     """Called by ResolutionSniperFeeder to pass market data to the strategy."""
     _sniper_data[event_id] = {
@@ -43,6 +44,7 @@ def update_sniper_data(
         "title": title,
         "slug": slug,
         "sport": sport,
+        "side": side,
         "updated_at": _time.time(),
     }
 
@@ -52,8 +54,8 @@ class ResolutionSniperStrategy(BaseStrategy):
         self,
         symbol: str,
         feeder_type: str = "resolution_sniper",
-        min_entry_price: float = 0.975,
-        max_entry_price: float = 0.98,
+        min_entry_price: float = 0.985,
+        max_entry_price: float = 0.995,
         position_size_usd: float = 2.0,
         cooldown_seconds: float = 60.0,
         db=None,
@@ -126,8 +128,9 @@ class ResolutionSniperStrategy(BaseStrategy):
 
         yes_price = sniper_data["yes_price"]
         title = sniper_data.get("title", event_id)
+        side = sniper_data.get("side", "YES")
 
-        # 6. Check if price is in sniper range (0.975 - 0.98)
+        # 6. Check if price is in sniper range (0.985 - 0.995)
         if yes_price < self.min_entry_price or yes_price > self.max_entry_price:
             self.edge = 0.0
             return None
@@ -144,7 +147,7 @@ class ResolutionSniperStrategy(BaseStrategy):
             self.db.log(
                 "INFO",
                 f"[Resolution Sniper] Opportunity: {title} | "
-                f"YES @ {yes_price:.4f} | Edge: {self.edge:.4f} ({self.edge*100:.1f}%) | "
+                f"{side} @ {yes_price:.4f} | Edge: {self.edge:.4f} ({self.edge*100:.1f}%) | "
                 f"Position: ${self.position_size_usd:.2f}",
                 self.worker_id,
             )
@@ -161,16 +164,16 @@ class ResolutionSniperStrategy(BaseStrategy):
                 "platform_a_depth": 0,
                 "platform_b_depth": 0,
                 "liquidity_verified": True,
-                "viable": self.edge >= 0.02,
+                "viable": self.edge >= 0.005,
                 "category": "crypto",
-                "direction": "SNIPER_YES",
+                "direction": "SNIPER_YES" if side == "YES" else "SNIPER_NO",
                 "outcomes_count": 2,
                 "entry_price": yes_price,
                 "expected_profit": self.edge * self.position_size_usd,
             })
             # Telegram alert for sniper opportunities (deduplicated via event_id)
             from src.telegram_bot import telegram_bot
-            if telegram_bot.enabled and self.edge >= 0.02:
+            if telegram_bot.enabled and self.edge >= 0.005:
                 telegram_bot.send_opportunity(title, self.edge * 100, "Limitless", "Crypto", event_id=event_id, category="crypto")
 
         if self.db:

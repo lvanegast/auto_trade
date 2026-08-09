@@ -270,8 +270,12 @@ class ResolutionMonitor:
                                 position_pnl = payout - entry_price
                                 position_won = position_pnl > 0
                             else:
-                                # Sniper: compra YES ~0.97-0.98
-                                position_won = (winning_outcome == "YES")
+                                # Sniper: compra el lado casi-seguro (YES o NO)
+                                if direction == "SNIPER_NO":
+                                    position_won = (winning_outcome == "NO")
+                                else:
+                                    # SNIPER_YES (default): compra YES ~0.97-0.98
+                                    position_won = (winning_outcome == "YES")
                                 position_pnl = (1.0 - entry_price) if position_won else -entry_price
 
                         telegram_bot.send_opportunity_resolution(

@@ -1243,11 +1243,16 @@ class DatabaseManager:
             if entry <= 0:
                 return None
 
-            # Estrategias direccionales (resolution sniper compra YES ~0.95-0.98):
+            # Estrategias direccionales (resolution sniper compra YES ~0.985-0.995):
             # gana $1 si YES resuelve, pierde todo si NO.
             if direction in ("BUY_YES", "SNIPER_YES", "") and resolution == "resolved_YES":
                 return 1.0 - entry
             if direction in ("BUY_YES", "SNIPER_YES", "") and resolution == "resolved_NO":
+                return -entry
+            # Sniper del lado NO: gana $1 si NO resuelve, pierde todo si YES.
+            if direction == "SNIPER_NO" and resolution == "resolved_NO":
+                return 1.0 - entry
+            if direction == "SNIPER_NO" and resolution == "resolved_YES":
                 return -entry
 
             # Arbitraje 1xN garantizado: comprar todo el paquete a entry_price.
