@@ -105,6 +105,15 @@ class MakerTwoLegFeeder(BaseFeeder):
 
                     scanned += 1
 
+                    # Volumen real transado (USD) — el indicador de "vivo".
+                    # La profundidad del book (millones de shares) es postura lejana;
+                    # un mercado con volumen ~0 jamás llena 2 patas maker.
+                    volume_raw = m.volume_formatted if hasattr(m, "volume_formatted") else (m.get("volume_formatted", "") if isinstance(m, dict) else "")
+                    try:
+                        market_volume = float(volume_raw) if volume_raw else 0.0
+                    except (TypeError, ValueError):
+                        market_volume = 0.0
+
                     # Book real (bid/ask ejecutables)
                     from src.limitless_price_cache import async_get_limitless_executable_price
                     book = await async_get_limitless_executable_price(slug)
@@ -129,6 +138,7 @@ class MakerTwoLegFeeder(BaseFeeder):
                     event.ask_size = ask_size
                     event.market_slug = slug
                     event.title = title
+                    event.market_volume = market_volume
                     await self.queue.put(event)
 
                     # Delay entre markets para no saturar la API

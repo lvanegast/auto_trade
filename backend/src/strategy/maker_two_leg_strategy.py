@@ -34,6 +34,7 @@ class MakerTwoLegStrategy(BaseStrategy):
         db=None,
         worker_id: str = "worker_6",
         observation_only: bool = True,
+        min_market_volume_usd: float = 25.0,  # volumen real transado mínimo para considerar el mercado "vivo"
     ):
         super().__init__(symbol)
         self.min_edge_pct = min_edge_pct
@@ -41,6 +42,7 @@ class MakerTwoLegStrategy(BaseStrategy):
         self.db = db
         self.worker_id = worker_id
         self.observation_only = observation_only
+        self.min_market_volume_usd = float(os.getenv("CRYPTO_MAKER_MIN_VOLUME_USD", "25.0")) or min_market_volume_usd
 
         # Estado de pares en curso: {slug: {"leg1": str, "leg2": str, "filled": [..]}}
         self._active_pairs: dict = {}
@@ -109,7 +111,16 @@ class MakerTwoLegStrategy(BaseStrategy):
         if maker_edge < 0:
             return None
 
+        # Filtro de mercado "vivo": el volumen real transado es la única prueba
+        # de que las 2 patas se pueden llenar. Un book con millones de shares
+        # pero volumen ~0 es postura lejana que jamás se cruza.
+        market_volume = float(getattr(event, "market_volume", 0.0) or 0.0)
+        if market_volume < self.min_market_volume_usd:
+            self._diag["liquidity_filtered"] += 1
+            return None
+
         # Liquidez: las 2 patas deben tener tamaño real en el book
+        # bid_size/ask_size vienen en shares; convertir a USD para comparar con el presupuesto
         bid_size = float(getattr(event, "bid_size", 0.0) or 0.0)
         ask_size = float(getattr(event, "ask_size", 0.0) or 0.0)
         min_usd_liquidity = self.position_size_usd * 2.0
@@ -125,9 +136,9 @@ class MakerTwoLegStrategy(BaseStrategy):
             self._diag["edge_filtered"] += 1
             return None
 
-        # Liquidez real en ambas patas
-        yes_depth = bid_size
-        no_depth = ask_size  # profundidad de NO ≈ profundidad de asks de YES
+        # Liquidez real en ambas patas (shares -> USD)
+        yes_depth = round(bid_size * cost_yes, 2)   # USD de profundidad en el lado YES
+        no_depth = round(ask_size * cost_no, 2)     # USD de profundidad en el lado NO
         if yes_depth < min_usd_liquidity or no_depth < min_usd_liquidity:
             self._diag["liquidity_filtered"] += 1
             return None

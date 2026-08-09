@@ -20,6 +20,7 @@ class MakerLiquidityRewardsStrategy(BaseStrategy):
         db=None,
         worker_id: str = "worker_6",
         observation_only: bool = True,
+        min_market_volume_usd: float = 25.0,
     ):
         super().__init__(symbol)
         self.position_size_usd = position_size_usd
@@ -28,6 +29,7 @@ class MakerLiquidityRewardsStrategy(BaseStrategy):
         self.db = db
         self.worker_id = worker_id
         self.observation_only = observation_only
+        self.min_market_volume_usd = min_market_volume_usd
 
         self.last_position = None
         self.entry_price = 0.0
@@ -47,6 +49,13 @@ class MakerLiquidityRewardsStrategy(BaseStrategy):
         real_bid = getattr(event, "bid", 0.0)
         real_ask = getattr(event, "ask", 0.0)
         if real_bid <= 0 or real_ask <= 0:
+            return None
+
+        # Filtro de mercado "vivo": volumen real transado mínimo.
+        # La profundidad del book (millones de shares) es postura lejana que jamás
+        # llena la pata complementaria; sin volumen real el spread-gap es fantasma.
+        market_volume = float(getattr(event, "market_volume", 0.0) or 0.0)
+        if market_volume < self.min_market_volume_usd:
             return None
 
         self.teorical_probability = (real_bid + real_ask) / 2.0

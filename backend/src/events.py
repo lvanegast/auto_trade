@@ -42,6 +42,9 @@ class PriceUpdateEvent(TradingEvent):
         # El motor puede operar con mid-price, mientras la gráfica conserva el
         # último precio negociado para coincidir con las velas históricas.
         self.chart_price = chart_price
+        # Volumen real transado (USD) del mercado — el indicador de "vivo".
+        # Un book con millones de shares pero volumen ~0 nunca llenará maker orders.
+        self.market_volume = 0.0
 
     def __str__(self):
         return f"[PriceUpdate] {self.symbol}: {self.price:.4f} (Bid: {self.bid}, Ask: {self.ask})"
