@@ -153,6 +153,7 @@ class ResolutionSniperStrategy(BaseStrategy):
             )
             # Record opportunity for outcome tracking
             opp_id = self.db.record_opportunity({
+                "worker_id": self.worker_id,
                 "platform_a": "limitless",
                 "platform_b": "crypto",
                 "event_id": event_id,
