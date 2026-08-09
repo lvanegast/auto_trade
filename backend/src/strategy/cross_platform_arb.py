@@ -290,6 +290,7 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
                         opp["hedge_platform"],
                         event_id=opp["event_id"],
                         category="sports",
+                        worker_id=self.worker_id,
                     )
                 continue
 

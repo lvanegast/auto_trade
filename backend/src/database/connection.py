@@ -1343,4 +1343,24 @@ class DatabaseManager:
             decided = bucket["wins"] + bucket["losses"]
             bucket["win_rate_pct"] = (bucket["wins"] / decided * 100) if decided else 0.0
 
+        # Advertencia estadística: una racha ganadora corta NO es evidencia de
+        # rentabilidad a largo plazo. El sniper compra a ~0.975-0.98 (edge 2-2.5%)
+        # con payout $1.00 o pérdida TOTAL del principal. Con edge promedio ~2%,
+        # UNA sola pérdida al precio típico borra ~49 victorias de 2% (break-even
+        # WR ≈ entry). Se necesitan varios cientos de muestras resueltas (no 29-30)
+        # antes de concluir que la estrategia no va a fallar: "no ha fallado todavía"
+        # ≠ "no va a fallar".
+        caveat = (
+            "ADVERTENCIA ESTADÍSTICA: 'no ha fallado todavía' NO es evidencia de "
+            "'no va a fallar'. El sniper es asimétrico: gana ~2-2.5% por trade "
+            "(payout $1.00 - entry ~0.975-0.98) pero pierde ~97-98% en una sola "
+            "pérdida (se pierde todo el principal). Break-even WR ≈ entry_price. "
+            "Con una pérdida cada ~50 trades, la win_rate cae al 98% que es apenas "
+            "el break-even. Se requieren varios cientos de muestras resueltas para "
+            "una conclusión estadísticamente válida."
+        )
+        summary["statistical_caveat"] = caveat
+        for cat, c in by_category.items():
+            c["statistical_caveat"] = caveat
+
         return {"rows": enriched, "summary": summary, "by_category": by_category}

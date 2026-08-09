@@ -152,15 +152,27 @@ class LimitlessSportsFeeder(BaseFeeder):
                         _stats["no_slug"] += 1
                         continue
 
-                    # Filter out long-term futures / non-intraday events (max horizon 48h)
+                    # Filter long-term futures / stale events. Usamos la
+                    # expiration_timestamp REAL del mercado (no el ts del slug,
+                    # que es la fecha de creación y descartaba partidos lejanos).
+                    # El horizonte máximo es configurable (default 14 días) para
+                    # no escanear futures de temporada; los partidos a >48h se
+                    # evalúan con el umbral de edge alto (SPORTS_FAR_MIN_EDGE_PCT).
                     try:
-                        parts = slug.split("-")
-                        ts_str = parts[-1]
-                        if ts_str.isdigit():
-                            ts_val = int(ts_str)
-                            expiration_s = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
-                            # Allow matches starting up to 48h in future, or started within last 24h (live/in-play)
-                            if (now - expiration_s) > 86400 or (expiration_s - now) > 172800:
+                        exp_ts = getattr(m, "expiration_timestamp", None) or (m.get("expiration_timestamp") if isinstance(m, dict) else None)
+                        if not exp_ts:
+                            parts = slug.split("-")
+                            ts_str = parts[-1]
+                            if ts_str.isdigit():
+                                ts_val = int(ts_str)
+                                exp_ts = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
+                            else:
+                                exp_ts = None
+                        if exp_ts:
+                            expiration_s = float(exp_ts) / 1000.0 if float(exp_ts) > 1000000000000 else float(exp_ts)
+                            max_horizon_h = float(os.getenv("SPORTS_MAX_HORIZON_HOURS", "336"))
+                            # Allow matches starting up to max horizon, or started within last 24h (live/in-play)
+                            if (now - expiration_s) > 86400 or (expiration_s - now) > (max_horizon_h * 3600.0):
                                 _stats["skipped"] += 1
                                 continue
                     except Exception:
@@ -168,9 +180,10 @@ class LimitlessSportsFeeder(BaseFeeder):
 
                     # Extract sub-markets directly from item payload without secondary HTTP request
                     subs = getattr(m, "markets", None) or (m.get("markets") if isinstance(m, dict) else None)
+                    expiration_ts = getattr(m, "expiration_timestamp", None) or (m.get("expiration_timestamp") if isinstance(m, dict) else None)
                     if subs and isinstance(subs, list) and len(subs) >= 2:
                         _stats["group_arb"] += 1
-                        await self._process_group_arb(slug, title, subs)
+                        await self._process_group_arb(slug, title, subs, expiration_ts)
                     else:
                         # Single / binary market directly in item
                         prices = getattr(m, "prices", None) or (m.get("prices") if isinstance(m, dict) else None)
@@ -197,7 +210,7 @@ class LimitlessSportsFeeder(BaseFeeder):
                 except Exception:
                     pass
 
-    async def _process_group_arb(self, group_slug, group_title, subs):
+    async def _process_group_arb(self, group_slug, group_title, subs, expiration_ts=None):
         from src.strategy.cross_platform_tracker import cross_platform_tracker
         from src.limitless_price_cache import async_get_limitless_executable_price
 
@@ -276,6 +289,22 @@ class LimitlessSportsFeeder(BaseFeeder):
         direction_label = "BUY_ALL_YES_1XN" if arb_type == "YES" else "BUY_ALL_NO_1XN"
         entry_price = total_yes if arb_type == "YES" else round(len(outcomes) - total_yes, 4)
 
+        # Dynamic viability threshold: si el partido está a más de 2 días, el
+        # edge mínimo exigido sube (SPORTS_FAR_MIN_EDGE_PCT, default 7%) para
+        # compensar la espera del capital. Dentro de 2 días se usa el umbral
+        # intraday normal (SPORTS_ARB_EDGE_PCT o 2%).
+        _now = time.time()
+        min_edge_req = float(os.getenv("SPORTS_ARB_EDGE_PCT", "0.02"))
+        try:
+            if expiration_ts:
+                _exp_s = float(expiration_ts) / 1000.0 if float(expiration_ts) > 1000000000000 else float(expiration_ts)
+                _hours_to_match = (_exp_s - _now) / 3600.0
+                far_threshold_h = float(os.getenv("SPORTS_FAR_MATCH_THRESHOLD_HOURS", "48"))
+                if _hours_to_match > far_threshold_h:
+                    min_edge_req = float(os.getenv("SPORTS_FAR_MIN_EDGE_PCT", "0.07"))
+        except Exception:
+            pass
+
         event_id = make_match_event_id(group_title, group_title)
         primary_price = outcomes[0]["yes_price"]
 
@@ -303,6 +332,7 @@ class LimitlessSportsFeeder(BaseFeeder):
             title=group_title,
             outcomes=outcomes,
             group_slug=group_slug,
+            expiration_ts=expiration_ts,
         )
 
         try:
@@ -320,7 +350,7 @@ class LimitlessSportsFeeder(BaseFeeder):
                 platform_a_depth=10.0,
                 platform_b_depth=10.0,
                 liquidity_verified=True,
-                viable=(gross_edge >= 0.02),
+                viable=(gross_edge >= min_edge_req),
                 direction=direction_label,
                 outcomes_count=len(outcomes),
                 market_slug=group_slug,

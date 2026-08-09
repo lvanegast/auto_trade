@@ -3112,6 +3112,18 @@ async function loadObservationPerformance() {
         setVal("paper-win-rate", `${winRate.toFixed(1)}%`, winRate >= 60 ? "#02c076" : "#f0b90b");
         setVal("paper-win-loss", `${wins} / ${losses}`, wins >= losses ? "#02c076" : "#f6465d");
 
+        // Advertencia estadística: racha ganadora corta ≠ rentabilidad a largo plazo
+        const caveat = cat === "" ? (summary.statistical_caveat || "") : (byCategory[cat] ? byCategory[cat].statistical_caveat || "" : "");
+        const caveatEl = document.getElementById("paper-stat-caveat");
+        if (caveatEl) {
+            if (caveat) {
+                caveatEl.textContent = "⚠ " + caveat;
+                caveatEl.style.display = "block";
+            } else {
+                caveatEl.style.display = "none";
+            }
+        }
+
         // Table
         const rows = data.rows || [];
         if (rows.length === 0) {

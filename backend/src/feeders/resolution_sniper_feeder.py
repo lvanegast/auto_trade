@@ -26,12 +26,18 @@ class ResolutionSniperFeeder(BaseFeeder):
         super().__init__(symbol.upper(), event_queue)
         self.poll_interval = float(os.getenv("SNIPER_POLL_INTERVAL", "5.0"))
         # Umbral más alto: solo comprar lo casi-ya-resuelto. La EV es W - entry,
-        # así que un entry de 0.985+ exige >98.5% de win real.
-        self.min_entry_price = float(os.getenv("SNIPER_MIN_ENTRY_PRICE", "0.985"))
-        self.max_entry_price = float(os.getenv("SNIPER_MAX_ENTRY_PRICE", "0.995"))
+        # así que un entry de 0.975+ exige >97.5% de win real.
+        self.min_entry_price = float(os.getenv("SNIPER_MIN_ENTRY_PRICE", "0.975"))
+        self.max_entry_price = float(os.getenv("SNIPER_MAX_ENTRY_PRICE", "0.98"))
         # Solo snipear mercados con poca vida restante (el resultado ya está decidido)
         self.max_seconds_to_resolution = float(
             os.getenv("SNIPER_MAX_SECONDS_TO_RESOLUTION", "1800")
+        )
+        # Para deportes el partido puede tener horas de vida restante; la
+        # "casi-certeza" (YES ~0.975-0.98) aparece en los minutos/horas finales.
+        # Umbral separado y más holgado que el de crypto up/down.
+        self.sports_max_seconds_to_resolution = float(
+            os.getenv("SNIPER_SPORTS_MAX_SECONDS_TO_RESOLUTION", "14400")
         )
         # Confirmación: N scans consecutivos en rango antes de emitir señal
         self.min_consecutive_scans = int(
@@ -151,11 +157,15 @@ class ResolutionSniperFeeder(BaseFeeder):
             try:
                 from src.engine.latency_tracker import latency_tracker
 
+                # Lista de (market, category). category = "crypto" | "sports"
+                # para enrutar la oportunidad a la sala correcta en edge_snapshots
+                # y Telegram (TELEGRAM_CHAT_ID_CRYPTO vs TELEGRAM_CHAT_ID_SPORTS).
+                scan_items = []
+
                 page_ids = [
                     "5e76699e-8763-4c91-85de-3efeb064efec",  # Crypto only
                 ]
 
-                markets = []
                 for page_id in page_ids:
                     try:
                         async with latency_tracker.measure("resolution_sniper", "get_markets") as m:
@@ -163,15 +173,30 @@ class ResolutionSniperFeeder(BaseFeeder):
                             m.result = resp
 
                         page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
-                        markets.extend(page_m)
+                        for mk in page_m:
+                            scan_items.append((mk, "crypto"))
                     except Exception as pe:
                         if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
                             print(f"[Resolution Sniper] Error fetching page {page_id}: {pe}")
 
+                # Páginas deportivas (mismo patrón: YES casi-cerrado pre-resolución).
+                # Los mercados sports exponen expiration_timestamp (ms) como atributo
+                # del objeto, no como patrón del slug (a diferencia de crypto up/down).
+                for path in ["/sport", "/esports"]:
+                    try:
+                        page = await self._page_fetcher.get_market_page_by_path(path)
+                        resp = await self._page_fetcher.get_markets(page.id, {"limit": 100})
+                        page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
+                        for mk in page_m:
+                            scan_items.append((mk, "sports"))
+                    except Exception as pe:
+                        if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
+                            print(f"[Resolution Sniper] Error fetching sports page {path}: {pe}")
+
                 snipers_found = 0
-                _diag = {"total": 0, "no_slug": 0, "non_crypto": 0, "no_exp": 0, "exp_filtered": 0,
+                _diag = {"total": 0, "no_slug": 0, "non_crypto": 0, "non_sports": 0, "no_exp": 0, "exp_filtered": 0,
                          "price_out_of_range": 0, "no_liquidity": 0, "waiting_confirmation": 0}
-                for m in markets:
+                for m, category in scan_items:
                     slug = m.slug if hasattr(m, "slug") else (m.get("slug", "") if isinstance(m, dict) else "")
                     title = m.title if hasattr(m, "title") else (m.get("title", "") if isinstance(m, dict) else "")
                     _diag["total"] += 1
@@ -179,21 +204,33 @@ class ResolutionSniperFeeder(BaseFeeder):
                         _diag["no_slug"] += 1
                         continue
 
-                    # FILTER: Only process crypto markets (limitless_crypto_ prefix)
-                    # Skip sports markets
-                    if "crypto" not in slug.lower() and "up-or-down" not in slug.lower():
-                        self._reject(f"limitless_sniper_{slug}")
-                        _diag["non_crypto"] += 1
-                        continue
+                    if category == "crypto":
+                        # FILTER: Only process crypto markets (limitless_crypto_ prefix)
+                        # Skip sports markets
+                        if "crypto" not in slug.lower() and "up-or-down" not in slug.lower():
+                            self._reject(f"limitless_sniper_{slug}")
+                            _diag["non_crypto"] += 1
+                            continue
+                        exp = self._parse_expiration(slug)
+                        max_res_secs = self.max_seconds_to_resolution
+                    else:
+                        # Sports markets must NOT be crypto up/down slugs
+                        if "crypto" in slug.lower() or "up-or-down" in slug.lower():
+                            self._reject(f"limitless_sniper_{slug}")
+                            _diag["non_sports"] += 1
+                            continue
+                        # expiration_timestamp real (ms) del mercado deportivo
+                        exp_ts = getattr(m, "expiration_timestamp", None) or (m.get("expiration_timestamp") if isinstance(m, dict) else None)
+                        exp = (float(exp_ts) / 1000.0) if exp_ts else None
+                        max_res_secs = self.sports_max_seconds_to_resolution
 
                     # FILTER: solo mercados cerca de resolver (el resultado ya está decidido)
                     remaining = -1
-                    exp = self._parse_expiration(slug)
                     if exp is None:
                         _diag["no_exp"] += 1
                     else:
                         remaining = exp - now
-                        if remaining < 0 or remaining > self.max_seconds_to_resolution:
+                        if remaining < 0 or remaining > max_res_secs:
                             self._reject(f"limitless_sniper_{slug}")
                             _diag["exp_filtered"] += 1
                             continue
@@ -210,8 +247,8 @@ class ResolutionSniperFeeder(BaseFeeder):
                             event_id = f"limitless_sniper_{slug}"
                             if self._confirm(event_id):
                                 snipers_found += 1
-                                print(f"[Resolution Sniper] Found YES: {title[:50]} YES_ASK={yes_ask:.4f} remaining={remaining:.0f}s")
-                                await self._emit_sniper_signal(slug, title, yes_ask, side="YES")
+                                print(f"[Resolution Sniper] Found YES ({category}): {title[:50]} YES_ASK={yes_ask:.4f} remaining={remaining:.0f}s")
+                                await self._emit_sniper_signal(slug, title, yes_ask, side="YES", category=category)
                             else:
                                 _diag["waiting_confirmation"] += 1
                         # Lado NO casi-seguro (NO_ask = 1 - yes_bid)
@@ -219,8 +256,8 @@ class ResolutionSniperFeeder(BaseFeeder):
                             event_id = f"limitless_sniper_{slug}"
                             if self._confirm(event_id):
                                 snipers_found += 1
-                                print(f"[Resolution Sniper] Found NO: {title[:50]} NO_ASK={no_ask:.4f} remaining={remaining:.0f}s")
-                                await self._emit_sniper_signal(slug, title, no_ask, side="NO")
+                                print(f"[Resolution Sniper] Found NO ({category}): {title[:50]} NO_ASK={no_ask:.4f} remaining={remaining:.0f}s")
+                                await self._emit_sniper_signal(slug, title, no_ask, side="NO", category=category)
                             else:
                                 _diag["waiting_confirmation"] += 1
                         else:
@@ -239,11 +276,15 @@ class ResolutionSniperFeeder(BaseFeeder):
                             if not sub_slug:
                                 self._reject(f"limitless_sniper_{sub_slug}")
                                 continue
-                            sub_exp = self._parse_expiration(sub_slug)
+                            if category == "sports":
+                                sub_exp_ts = getattr(sub, "expiration_timestamp", None) or (sub.get("expiration_timestamp") if isinstance(sub, dict) else None)
+                                sub_exp = (float(sub_exp_ts) / 1000.0) if sub_exp_ts else exp
+                            else:
+                                sub_exp = self._parse_expiration(sub_slug)
                             sub_remaining = -1
                             if sub_exp is not None:
                                 sub_remaining = sub_exp - now
-                                if sub_remaining < 0 or sub_remaining > self.max_seconds_to_resolution:
+                                if sub_remaining < 0 or sub_remaining > max_res_secs:
                                     self._reject(f"limitless_sniper_{sub_slug}")
                                     _diag["exp_filtered"] += 1
                                     continue
@@ -257,16 +298,16 @@ class ResolutionSniperFeeder(BaseFeeder):
                                     event_id = f"limitless_sniper_{sub_slug}"
                                     if self._confirm(event_id):
                                         snipers_found += 1
-                                        print(f"[Resolution Sniper] Found YES: {sub_title[:50]} YES_ASK={sub_yes:.4f} remaining={sub_remaining:.0f}s")
-                                        await self._emit_sniper_signal(sub_slug, sub_title, sub_yes, side="YES")
+                                        print(f"[Resolution Sniper] Found YES ({category}): {sub_title[:50]} YES_ASK={sub_yes:.4f} remaining={sub_remaining:.0f}s")
+                                        await self._emit_sniper_signal(sub_slug, sub_title, sub_yes, side="YES", category=category)
                                     else:
                                         _diag["waiting_confirmation"] += 1
                                 elif self.min_entry_price <= sub_no <= self.max_entry_price and sub_book["bid_size"] > 0:
                                     event_id = f"limitless_sniper_{sub_slug}"
                                     if self._confirm(event_id):
                                         snipers_found += 1
-                                        print(f"[Resolution Sniper] Found NO: {sub_title[:50]} NO_ASK={sub_no:.4f} remaining={sub_remaining:.0f}s")
-                                        await self._emit_sniper_signal(sub_slug, sub_title, sub_no, side="NO")
+                                        print(f"[Resolution Sniper] Found NO ({category}): {sub_title[:50]} NO_ASK={sub_no:.4f} remaining={sub_remaining:.0f}s")
+                                        await self._emit_sniper_signal(sub_slug, sub_title, sub_no, side="NO", category=category)
                                     else:
                                         _diag["waiting_confirmation"] += 1
                                 else:
@@ -278,7 +319,7 @@ class ResolutionSniperFeeder(BaseFeeder):
                     # Delay between markets
                     await asyncio.sleep(0.1)
 
-                print(f"[Resolution Sniper] Scan complete: {len(markets)} markets checked, {snipers_found} snipers found | diag={_diag}")
+                print(f"[Resolution Sniper] Scan complete: {len(scan_items)} markets checked, {snipers_found} snipers found | diag={_diag}")
 
             except Exception as e:
                 print(f"[Resolution Sniper] Error scanning: {e}")
@@ -300,7 +341,7 @@ class ResolutionSniperFeeder(BaseFeeder):
         except Exception:
             return False
 
-    async def _emit_sniper_signal(self, slug: str, title: str, entry_price: float, side: str = "YES"):
+    async def _emit_sniper_signal(self, slug: str, title: str, entry_price: float, side: str = "YES", category: str = "crypto"):
         """Emit a PriceUpdateEvent for the strategy to process."""
         from src.strategy.resolution_sniper import update_sniper_data
 
@@ -312,8 +353,9 @@ class ResolutionSniperFeeder(BaseFeeder):
             yes_price=entry_price,
             title=title,
             slug=slug,
-            sport="crypto",
+            sport=category,
             side=side,
+            category=category,
         )
 
         # Create and emit price event

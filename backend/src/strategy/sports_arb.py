@@ -33,6 +33,7 @@ def update_sports_edge(
     title: str = "",
     outcomes: list = None,
     group_slug: str = "",
+    expiration_ts: float = None,
 ):
     """Called by LimitlessSportsFeeder to pass edge data to the strategy."""
     _sports_edge_data[event_id] = {
@@ -42,6 +43,7 @@ def update_sports_edge(
         "title": title,
         "outcomes": outcomes or [],
         "group_slug": group_slug,
+        "expiration_ts": expiration_ts,
     }
 
 
@@ -213,7 +215,22 @@ class SportsArbitrageStrategy(BaseStrategy):
             self.edge = round(-self.edge, 4)
 
         # 6. Validate: need minimum edge and outcomes
-        if self.edge < self.min_edge_pct:
+        # Dynamic threshold: si el partido está a más de 2 días, el edge mínimo
+        # exigido sube (SPORTS_FAR_MIN_EDGE_PCT, default 7%) para compensar la
+        # espera del capital. Dentro de 2 días se usa el umbral normal.
+        now = _time.time()
+        min_edge_req = self.min_edge_pct
+        try:
+            expiration_ts = edge_data.get("expiration_ts")
+            if expiration_ts:
+                expiration_s = float(expiration_ts) / 1000.0 if float(expiration_ts) > 1000000000000 else float(expiration_ts)
+                hours_to_match = (expiration_s - now) / 3600.0
+                far_threshold_h = float(os.getenv("SPORTS_FAR_MATCH_THRESHOLD_HOURS", "48"))
+                if hours_to_match > far_threshold_h:
+                    min_edge_req = float(os.getenv("SPORTS_FAR_MIN_EDGE_PCT", "0.07"))
+        except Exception:
+            pass
+        if self.edge < min_edge_req:
             return None
 
         # Sanity: edges > 15% are data errors or illiquid markets — not real arb
@@ -330,7 +347,7 @@ class SportsArbitrageStrategy(BaseStrategy):
                 # Telegram alert for cross-platform opportunities (once per event per hour)
                 from src.telegram_bot import telegram_bot
                 if telegram_bot.enabled and net_edge >= 0.02:
-                    telegram_bot.send_opportunity(title, net_edge * 100, "Limitless", "Kalshi", event_id=event_id, category="sports")
+                    telegram_bot.send_opportunity(title, net_edge * 100, "Limitless", "Kalshi", event_id=event_id, category="sports", worker_id=self.worker_id)
             return None
 
         expected_profit = (1.0 - total_cost) if arb_type == "YES" else ((len(outcomes) - 1.0) - total_cost)

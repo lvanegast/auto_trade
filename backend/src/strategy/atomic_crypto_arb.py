@@ -17,14 +17,22 @@ class AtomicCryptoArbStrategy(BaseStrategy):
         self,
         symbol: str,
         min_profit_target: float = 0.015,  # 1.5% profit target
-        position_size_usd: float = 10.0,
+        position_size_usd: float = 1.0,  # monto USD por leg (fijo)
+        leg_size_min_usd: float = 1.0,   # mínimo por leg
+        leg_size_max_usd: float = 3.0,   # máximo por leg
         db=None,
         worker_id: str = "worker_6",
         observation_only: bool = True,
     ):
         super().__init__(symbol)
         self.min_profit_target = min_profit_target
-        self.position_size_usd = position_size_usd
+        self.leg_size_min_usd = leg_size_min_usd
+        self.leg_size_max_usd = leg_size_max_usd
+        # Presupuesto por leg fijo, limitado a [min, max]
+        self.position_size_usd = max(
+            leg_size_min_usd,
+            min(position_size_usd, leg_size_max_usd),
+        )
         self.db = db
         self.worker_id = worker_id
         self.observation_only = observation_only
@@ -141,7 +149,8 @@ class AtomicCryptoArbStrategy(BaseStrategy):
                             platform_a="Limitless (YES)",
                             platform_b="Limitless (NO)",
                             event_id=event.symbol,
-                            category="crypto"
+                            category="crypto",
+                            worker_id=self.worker_id
                         )
                 except Exception:
                     pass
@@ -156,19 +165,24 @@ class AtomicCryptoArbStrategy(BaseStrategy):
             self.successful_bundles += 1
             self._last_signal_time = now
 
-            # Number of contracts to buy per leg to balance the payout:
-            # S = position_size_usd / total_cost
-            num_contracts = self.position_size_usd / max(total_cost, 0.01)
-            usd_leg_yes = round(num_contracts * my_ask_yes, 4)
-            usd_leg_no = round(num_contracts * my_ask_no, 4)
+            # Presupuesto FIJO por leg (min 1, max 3 USD), estilo Binance .fun:
+            # cada leg (YES y NO) invierte exactamente leg_size_usd, sin balancear
+            # el payout (a mayor edge, mayor ganancia por leg).
+            leg_size_usd = self.position_size_usd
+            usd_leg_yes = round(leg_size_usd, 4)
+            usd_leg_no = round(leg_size_usd, 4)
+            # Contratos que se compran con ese monto en cada leg (solo informativo)
+            num_contracts = leg_size_usd / max(total_cost, 0.01)
 
             reason_yes = (
                 f"Atomic-Taker Arb [Leg 1/2]: YES @{my_ask_yes:.4f} | "
-                f"Costo Total: {total_cost:.4f} | Edge: {gross_profit:.2%} | Net Profit: ${gross_profit * num_contracts:.4f}"
+                f"Costo Total: {total_cost:.4f} | Edge: {gross_profit:.2%} | "
+                f"Leg: ${usd_leg_yes:.2f} | Net Profit: ${gross_profit * num_contracts:.4f}"
             )
             reason_no = (
                 f"Atomic-Taker Arb [Leg 2/2]: NO @{my_ask_no:.4f} | "
-                f"Costo Total: {total_cost:.4f} | Edge: {gross_profit:.2%} | Net Profit: ${gross_profit * num_contracts:.4f}"
+                f"Costo Total: {total_cost:.4f} | Edge: {gross_profit:.2%} | "
+                f"Leg: ${usd_leg_no:.2f} | Net Profit: ${gross_profit * num_contracts:.4f}"
             )
 
             # Queue Leg 2 (NO)

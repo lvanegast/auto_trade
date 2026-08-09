@@ -37,6 +37,7 @@ def update_sniper_data(
     slug: str = "",
     sport: str = "",
     side: str = "YES",
+    category: str = "crypto",
 ):
     """Called by ResolutionSniperFeeder to pass market data to the strategy."""
     _sniper_data[event_id] = {
@@ -45,6 +46,7 @@ def update_sniper_data(
         "slug": slug,
         "sport": sport,
         "side": side,
+        "category": category,
         "updated_at": _time.time(),
     }
 
@@ -54,12 +56,13 @@ class ResolutionSniperStrategy(BaseStrategy):
         self,
         symbol: str,
         feeder_type: str = "resolution_sniper",
-        min_entry_price: float = 0.985,
-        max_entry_price: float = 0.995,
+        min_entry_price: float = 0.975,
+        max_entry_price: float = 0.98,
         position_size_usd: float = 2.0,
         cooldown_seconds: float = 60.0,
         db=None,
         worker_id: str = "worker_7",
+        observation_only: bool = True,
     ):
         super().__init__(symbol)
         self.feeder_type = feeder_type
@@ -77,6 +80,9 @@ class ResolutionSniperStrategy(BaseStrategy):
         )
         self.db = db
         self.worker_id = worker_id
+        # Defensa en profundidad: este worker permanece bloqueado en modo solo
+        # recolección de datos hasta que su worker_id esté en ALLOWED_REAL_WORKERS.
+        self.observation_only = observation_only
 
         # Active sniper positions: {event_id: {entry_time, buy_price, amount, title, slug}}
         self._active_positions = {}
@@ -129,6 +135,7 @@ class ResolutionSniperStrategy(BaseStrategy):
         yes_price = sniper_data["yes_price"]
         title = sniper_data.get("title", event_id)
         side = sniper_data.get("side", "YES")
+        category = sniper_data.get("category", "crypto")
 
         # 6. Check if price is in sniper range (0.985 - 0.995)
         if yes_price < self.min_entry_price or yes_price > self.max_entry_price:
@@ -155,7 +162,7 @@ class ResolutionSniperStrategy(BaseStrategy):
             opp_id = self.db.record_opportunity({
                 "worker_id": self.worker_id,
                 "platform_a": "limitless",
-                "platform_b": "crypto",
+                "platform_b": "limitless" if category == "sports" else "crypto",
                 "event_id": event_id,
                 "event_title": title,
                 "gross_edge_pct": self.edge * 100,
@@ -166,7 +173,7 @@ class ResolutionSniperStrategy(BaseStrategy):
                 "platform_b_depth": 0,
                 "liquidity_verified": True,
                 "viable": self.edge >= 0.005,
-                "category": "crypto",
+                "category": category,
                 "direction": "SNIPER_YES" if side == "YES" else "SNIPER_NO",
                 "outcomes_count": 2,
                 "entry_price": yes_price,
@@ -175,7 +182,7 @@ class ResolutionSniperStrategy(BaseStrategy):
             # Telegram alert for sniper opportunities (deduplicated via event_id)
             from src.telegram_bot import telegram_bot
             if telegram_bot.enabled and self.edge >= 0.005:
-                telegram_bot.send_opportunity(title, self.edge * 100, "Limitless", "Crypto", event_id=event_id, category="crypto")
+                telegram_bot.send_opportunity(title, self.edge * 100, "Limitless", "Crypto" if category == "crypto" else "Sports", event_id=event_id, category=category, worker_id=self.worker_id)
 
         if self.db:
             self.db.log(

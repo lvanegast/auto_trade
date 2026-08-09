@@ -125,6 +125,17 @@ Event flow: Feeder → `PriceUpdateEvent` → Queue → `TradingWorker._process_
 - **WebSocket feeder**: Para crypto workers (evita polling)
 - **Logging diferenciado**: fail_no_liquidity vs fail_timeout vs fail_rate_limited
 
+## Resolution Sniper (Worker 7) — Extensión a Deportes (Agosto 2026)
+
+- **Patrón evaluado**: comprar YES/NO a `entry ∈ [0.975, 0.98]` pre-settlement y mantener hasta resolución (payout $1.00 si gana, pérdida total si no).
+- **Alcance**: Worker 7 ahora escanea crypto up/down (página crypto, `_parse_expiration` por patrón del slug) **y** mercados deportivos (`/sport` + `/esports`, `expiration_timestamp` real en ms). Las oportunidades se etiquetan `category="sports"|"crypto"` para enrutar al chat correcto de Telegram y filtrar el Paper PnL por sala.
+- **Protecciones (idénticas a crypto)**: `observation_only=True` a nivel de estrategia, la estrategia **nunca** emite `SignalEvent` (estructuralmente read-only), y `ALLOWED_REAL_WORKERS` vacío bloquea `_execute_order` en el motor. Solo recolección de datos.
+- **Umbral temporal deportes**: `SNIPER_SPORTS_MAX_SECONDS_TO_RESOLUTION` (default 14400s = 4h) — la casi-certeza deportiva aparece en los minutos/horas finales del partido; crypto usa `SNIPER_MAX_SECONDS_TO_RESOLUTION` (1800s).
+
+### Advertencia estadística (obligatoria al interpretar el Paper PnL)
+
+**"No ha fallado todavía" ≠ "no va a fallar".** El sniper es asimétrico: gana ~2-2.5% por trade (payout $1.00 − entry ~0.975-0.98) pero pierde ~97-98% en una sola pérdida (se pierde el principal completo). El break-even WR ≈ entry_price (≈0.975-0.98). Una racha de 29-30 wins con edge promedio ~1% es **exactamente lo esperado** antes de la primera pérdida grande, NO evidencia de rentabilidad a largo plazo. Una sola pérdida al precio típico borra ~40-100 victorias de ~1-2.5%. **Se requieren varios cientos de muestras resueltas** (no 29-30) para una conclusión estadísticamente válida, tanto en crypto como en deportes. El reporte `/api/observation/performance` incluye esta advertencia en `summary.statistical_caveat`.
+
 ## Research Findings (Julio 2026)
 
 ### Realistic Profit Expectations
@@ -156,7 +167,7 @@ Event flow: Feeder → `PriceUpdateEvent` → Queue → `TradingWorker._process_
 | Worker 3 | Sports 3 Options | `limitless_sports` | 1xN intra-platform |
 | Worker 4 | Sports Maker | `maker_making` | Market making 0% fees |
 | Worker 5 | Binance Oracle | `binance` | Reference price feed (lead-lag) |
-| Worker 7 | Resolution Sniper | — | Comprar YES ~0.95-0.98 pre-settlement |
+| Worker 7 | Resolution Sniper | `resolution_sniper` | Crypto up/down + Sports: comprar YES ~0.975-0.98 pre-settlement (observación) |
 
 ### Cross-Platform Sports vs Crypto
 
@@ -189,6 +200,11 @@ WORKER3_ENABLED=true
 WORKER4_ENABLED=true
 WORKER5_ENABLED=true
 WORKER6_ENABLED=true
+
+# Resolution Sniper (Worker 7 - crypto up/down + sports)
+SNIPER_MIN_ENTRY_PRICE=0.975
+SNIPER_MAX_ENTRY_PRICE=0.98
+SNIPER_SPORTS_MAX_SECONDS_TO_RESOLUTION=14400
 ```
 
 ## Cross-Platform Arbitrage Research (August 2026)

@@ -30,7 +30,9 @@ class MakerTwoLegStrategy(BaseStrategy):
         self,
         symbol: str,
         min_edge_pct: float = 0.02,      # edge maker mínimo = spread mínimo (2%)
-        position_size_usd: float = 10.0,  # presupuesto total para las 2 patas
+        position_size_usd: float = 1.0,  # monto USD por leg (fijo, min 1 / max 3)
+        leg_size_min_usd: float = 1.0,   # mínimo por leg
+        leg_size_max_usd: float = 3.0,   # máximo por leg
         db=None,
         worker_id: str = "worker_6",
         observation_only: bool = True,
@@ -38,7 +40,13 @@ class MakerTwoLegStrategy(BaseStrategy):
     ):
         super().__init__(symbol)
         self.min_edge_pct = min_edge_pct
-        self.position_size_usd = position_size_usd
+        # Presupuesto por leg fijo, limitado a [min, max]
+        self.position_size_usd = max(
+            leg_size_min_usd,
+            min(position_size_usd, leg_size_max_usd),
+        )
+        self.leg_size_min_usd = leg_size_min_usd
+        self.leg_size_max_usd = leg_size_max_usd
         self.db = db
         self.worker_id = worker_id
         self.observation_only = observation_only
@@ -200,11 +208,14 @@ class MakerTwoLegStrategy(BaseStrategy):
         self.total_pairs_sent += 1
         self._last_signal_time[slug] = now
 
-        # Balancear tamaño por pata: presupuesto total repartido por costo
-        # n_contracts = budget / total_maker_cost (así el par entero usa el presupuesto)
-        num_contracts = self.position_size_usd / max(total_maker_cost, 0.01)
-        usd_leg_yes = round(num_contracts * cost_yes, 4)
-        usd_leg_no = round(num_contracts * cost_no, 4)
+        # Presupuesto FIJO por leg (min 1, max 3 USD), estilo Binance .fun:
+        # cada pata (YES y NO) invierte exactamente leg_size_usd, sin balancear
+        # el payout (a mayor edge, mayor ganancia por pata).
+        leg_size_usd = self.position_size_usd
+        usd_leg_yes = round(leg_size_usd, 4)
+        usd_leg_no = round(leg_size_usd, 4)
+        # Contratos que se compran con ese monto en cada pata (solo informativo)
+        num_contracts = leg_size_usd / max(total_maker_cost, 0.01)
 
         reason_yes = (
             f"Maker 2-Leg [1/2]: BUY YES GTC @{cost_yes:.4f} | "

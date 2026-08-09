@@ -439,7 +439,7 @@ class TelegramBot:
 <b>Errores:</b> {stats.get('errors', 0)}"""
         return self.send_message(text)
     
-    def send_opportunity(self, event: str, edge: float, platform_a: str, platform_b: str, event_id: str = None, category: str = None):
+    def send_opportunity(self, event: str, edge: float, platform_a: str, platform_b: str, event_id: str = None, category: str = None, worker_id: str = None):
         """Send an opportunity alert with dedup, routed to the category sub-room."""
         # Dedup check
         if event_id and self.has_been_alerted(event_id):
@@ -454,6 +454,7 @@ class TelegramBot:
             
         text = f"""🎯 <b>Oportunidad Detectada</b>
 
+<b>Worker:</b> {worker_id or 'N/A'}
 <b>Evento:</b> {event}
 <b>Contrato / ID:</b> <code>{event_ref}</code>
 <b>Edge:</b> {edge:.2f}%

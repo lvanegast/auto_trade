@@ -14,16 +14,24 @@ class MakerLiquidityRewardsStrategy(BaseStrategy):
     def __init__(
         self,
         symbol: str,
-        position_size_usd: float = 50.0,
+        position_size_usd: float = 1.0,
         min_rebate_edge_pct: float = 0.015, # 1.5% de margen Maker mínimo
         cooldown_seconds: float = 5.0,
         db=None,
         worker_id: str = "worker_6",
         observation_only: bool = True,
         min_market_volume_usd: float = 25.0,
+        leg_size_min_usd: float = 1.0,
+        leg_size_max_usd: float = 3.0,
     ):
         super().__init__(symbol)
-        self.position_size_usd = position_size_usd
+        # Presupuesto por leg fijo, limitado a [min, max]
+        self.position_size_usd = max(
+            leg_size_min_usd,
+            min(position_size_usd, leg_size_max_usd),
+        )
+        self.leg_size_min_usd = leg_size_min_usd
+        self.leg_size_max_usd = leg_size_max_usd
         self.min_rebate_edge_pct = min_rebate_edge_pct
         self.cooldown_seconds = cooldown_seconds
         self.db = db
