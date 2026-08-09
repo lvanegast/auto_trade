@@ -98,27 +98,6 @@ class AtomicCryptoArbStrategy(BaseStrategy):
         self.teorical_probability = (bid_yes + ask_yes) / 2.0
         self.edge = gross_profit
 
-        # Record snapshot in database for evaluation
-        try:
-            if self.db:
-                self.db.save_edge_snapshot(
-                    worker_id=self.worker_id,
-                    platform_a="limitless",
-                    platform_b="limitless",
-                    event_id=event.symbol if event.symbol.startswith("limitless_crypto_") else f"limitless_crypto_{event.symbol}",
-                    event_title=event.symbol,
-                    edge_pct=gross_profit,
-                    gross_edge_pct=gross_profit,
-                    platform_a_yes_ask=my_ask_yes,
-                    platform_b_no_ask=my_ask_no,
-                    platform_a_depth=10.0,
-                    platform_b_depth=10.0,
-                    liquidity_verified=True,
-                    viable=(gross_profit >= self.min_profit_target)
-                )
-        except Exception:
-            pass
-
         # Always record opportunity in DB if viable, before checking observation_only
         try:
             if self.db and hasattr(self.db, "record_opportunity") and gross_profit >= self.min_profit_target:

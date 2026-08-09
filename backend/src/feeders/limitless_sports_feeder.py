@@ -301,7 +301,7 @@ class LimitlessSportsFeeder(BaseFeeder):
         try:
             from src.api.app import db
             db.save_edge_snapshot(
-                worker_id="worker_2",
+                worker_id="worker_3",
                 platform_a="limitless",
                 platform_b="limitless",
                 event_id=event_id,
@@ -313,7 +313,13 @@ class LimitlessSportsFeeder(BaseFeeder):
                 platform_a_depth=10.0,
                 platform_b_depth=10.0,
                 liquidity_verified=True,
-                viable=(edge >= 0.02)
+                viable=(edge >= 0.02),
+                direction="BUY_ALL_YES_1XN",
+                outcomes_count=len(outcomes),
+                market_slug=group_slug,
+                entry_price=total_yes,
+                expected_profit=edge * 2.0,
+                category="sports",
             )
         except Exception:
             pass

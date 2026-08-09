@@ -466,12 +466,12 @@ class DatabaseManager:
 
         query = """
             INSERT INTO edge_snapshots 
-            (platform_a, platform_b, event_id, event_title, edge_pct,
+            (worker_id, platform_a, platform_b, event_id, event_title, edge_pct,
              gross_edge_pct, platform_a_yes_ask, platform_b_no_ask,
              platform_a_depth, platform_b_depth, liquidity_verified, viable,
              resolution_status, entry_price, expected_profit,
              category, direction, outcomes_count, market_slug)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """
         conn = None
@@ -479,6 +479,7 @@ class DatabaseManager:
             conn = self._get_connection()
             with conn.cursor() as cursor:
                 cursor.execute(query, (
+                    opportunity.get("worker_id", "worker_2"),
                     opportunity.get("platform_a", "limitless"),
                     opportunity.get("platform_b", "kalshi"),
                     opportunity.get("event_id", ""),
@@ -531,7 +532,7 @@ class DatabaseManager:
                 cursor.execute(
                     """
                     UPDATE edge_snapshots SET
-                        platform_a=%s, platform_b=%s, event_title=%s,
+                        worker_id=%s, platform_a=%s, platform_b=%s, event_title=%s,
                         edge_pct=%s, gross_edge_pct=%s, platform_a_yes_ask=%s,
                         platform_b_no_ask=%s, platform_a_depth=%s,
                         platform_b_depth=%s, liquidity_verified=%s, viable=%s,
@@ -541,6 +542,7 @@ class DatabaseManager:
                     WHERE event_id=%s
                     """,
                     (
+                        opportunity.get("worker_id", "worker_2"),
                         opportunity.get("platform_a", "limitless"),
                         opportunity.get("platform_b", "kalshi"),
                         opportunity.get("event_title", ""),
@@ -1131,32 +1133,42 @@ class DatabaseManager:
         platform_b_depth: float = None,
         liquidity_verified: bool = False,
         viable: bool = False,
+        direction: str = "",
+        outcomes_count: int = 0,
+        market_slug: str = "",
+        entry_price: float = None,
+        expected_profit: float = None,
+        category: str = "sports",
     ):
-        query = """
-            INSERT INTO edge_snapshots (
-                worker_id, platform_a, platform_b, event_id, event_title,
-                edge_pct, gross_edge_pct, platform_a_yes_ask, platform_b_no_ask,
-                platform_a_depth, platform_b_depth, liquidity_verified, viable
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        """Registra una observación de edge delegando en record_opportunity.
+
+        record_opportunity ya tiene el DEDUP por event_id (INSERT si no existe,
+        UPDATE vía _refresh_opportunity si ya existe), evitando filas duplicadas
+        por cada scan del feeder (polling ~3-5s). Antes este método hacía un
+        INSERT puro, inflando el paper PnL con el mismo evento decenas de veces
+        (ej. Oviedo vs Le Havre 58 filas, Atlético vs Málaga 108).
         """
-        params = (
-            worker_id, platform_a, platform_b, event_id, event_title,
-            edge_pct, gross_edge_pct, platform_a_yes_ask, platform_b_no_ask,
-            platform_a_depth, platform_b_depth, liquidity_verified, viable
-        )
-        conn = None
-        try:
-            conn = self._get_connection()
-            with conn.cursor() as cursor:
-                cursor.execute(query, params)
-                if not self.use_sqlite:
-                    conn.commit()
-        except Exception as e:
-            if conn and not self.use_sqlite:
-                conn.rollback()
-            print(f"[DB ERROR] Error guardando edge_snapshot: {e}")
-        finally:
-            self._return_connection(conn)
+        self.record_opportunity({
+            "worker_id": worker_id,
+            "platform_a": platform_a,
+            "platform_b": platform_b,
+            "event_id": event_id,
+            "event_title": event_title,
+            "net_edge_pct": edge_pct,
+            "gross_edge_pct": gross_edge_pct,
+            "platform_a_yes_ask": platform_a_yes_ask,
+            "platform_b_no_ask": platform_b_no_ask,
+            "platform_a_depth": platform_a_depth,
+            "platform_b_depth": platform_b_depth,
+            "liquidity_verified": liquidity_verified,
+            "viable": viable,
+            "category": category,
+            "direction": direction,
+            "outcomes_count": outcomes_count,
+            "market_slug": market_slug,
+            "entry_price": entry_price if entry_price is not None else 0.0,
+            "expected_profit": expected_profit if expected_profit is not None else 0.0,
+        })
 
     def get_edge_snapshots(self, worker_id: str = None, limit: int = 100, viable_only: bool = False):
         query = "SELECT * FROM edge_snapshots WHERE 1=1"
