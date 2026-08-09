@@ -187,11 +187,35 @@ class ResolutionMonitor:
                 
                 # Verificar si el mercado resolvió
                 if status != "RESOLVED":
-                    return None
+                    # Para grupos 1xN (N>2), el status del grupo puede permanecer
+                    # "FUNDED" mientras los sub-mercados ya resuelven. Verificar
+                    # los children como fallback.
+                    subs = getattr(market, "markets", None) or []
+                    if market.market_type == "group" and subs:
+                        resolved_subs = [s for s in subs if getattr(s, "winning_outcome_index", None) is not None]
+                        if not resolved_subs:
+                            return None
+                        resolved_sub = resolved_subs[0]
+                        winning_index = resolved_sub.winning_outcome_index
+                        status = "RESOLVED"
+                    else:
+                        return None
                 
                 # Determinar outcome ganador
                 if winning_index is not None:
-                    winning_outcome = "YES" if winning_index == 0 else "NO"
+                    if market.market_type == "group":
+                        # Un grupo 1xN: el outcome ganador es el sub-market cuyo
+                        # YES resolvió a $1.00 (winning_outcome_index == 0).
+                        subs = getattr(market, "markets", None) or []
+                        winning_subs = [s for s in subs if s.winning_outcome_index == 0]
+                        if winning_subs:
+                            winning_outcome = winning_subs[0].title or "OUTCOME"
+                        elif 0 <= winning_index < len(subs):
+                            winning_outcome = subs[winning_index].title or f"OUTCOME_{winning_index}"
+                        else:
+                            winning_outcome = f"OUTCOME_{winning_index}"
+                    else:
+                        winning_outcome = "YES" if winning_index == 0 else "NO"
                 else:
                     # Split resolution
                     winning_outcome = "SPLIT"
