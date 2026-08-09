@@ -131,6 +131,9 @@ class TradingWorker:
         elif self.feeder_type == "resolution_sniper":
             from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
             self.feeder = ResolutionSniperFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "maker_two_leg":
+            from src.feeders.maker_two_leg_feeder import MakerTwoLegFeeder
+            self.feeder = MakerTwoLegFeeder(self.symbol, self.queue)
         elif self.feeder_type == "multi_platform":
             from src.feeders.multi_platform_feeder import MultiPlatformFeeder
             self.feeder = MultiPlatformFeeder(self.symbol, self.queue)
@@ -1491,7 +1494,7 @@ class TradingWorker:
                 return
 
         # 4. EJECUCIÓN CON LIMITLESS (Deportes / Cripto Blockchain)
-        if self.feeder_type in ("limitless", "limitless_sports", "maker_making", "binary_arb"):
+        if self.feeder_type in ("limitless", "limitless_sports", "maker_making", "binary_arb", "maker_two_leg"):
             api_key = os.getenv("LIMITLESS_API_KEY")
             api_secret = os.getenv("LIMITLESS_API_SECRET")
             private_key = os.getenv("LIMITLESS_PRIVATE_KEY")
@@ -1582,67 +1585,71 @@ class TradingWorker:
                         # Truncate to 6 decimal places (Limitless API max precision)
                         spend_amount = float(f"{spend_amount:.6f}")
                         
-                        # OrderBookWalker: Validate liquidity before sending order
-                        try:
-                            from src.engine.orderbook_walker import orderbook_walker
-                            
-                            # Fetch orderbook for this market
-                            orderbook = await limitless_c.markets.get_orderbook(market_slug)
-                            
-                            if orderbook and hasattr(orderbook, 'bids') and hasattr(orderbook, 'asks'):
-                                # Convert to dict format expected by OrderBookWalker
-                                ob_dict = {
-                                    'bids': [{'price': str(b.price), 'size': str(b.size)} for b in (orderbook.bids or [])],
-                                    'asks': [{'price': str(a.price), 'size': str(a.size)} for a in (orderbook.asks or [])],
-                                }
+                        # OrderBookWalker: Validate liquidity before sending order.
+                        # Solo aplica a órdenes taker (FOK). Las GTC maker post-only descansan
+                        # en el book al precio límite — no hay slippage ni fill parcial.
+                        is_gtc = getattr(signal, "order_type", None) == "GTC"
+                        if not is_gtc:
+                            try:
+                                from src.engine.orderbook_walker import orderbook_walker
                                 
-                                # Simulate fill to check liquidity and slippage
-                                fill_result = orderbook_walker.simulate_fill(
-                                    orderbook=ob_dict,
-                                    side=signal.side,
-                                    size_usd=spend_amount,
-                                )
+                                # Fetch orderbook for this market
+                                orderbook = await limitless_c.markets.get_orderbook(market_slug)
                                 
-                                # Log the liquidity analysis
+                                if orderbook and hasattr(orderbook, 'bids') and hasattr(orderbook, 'asks'):
+                                    # Convert to dict format expected by OrderBookWalker
+                                    ob_dict = {
+                                        'bids': [{'price': str(b.price), 'size': str(b.size)} for b in (orderbook.bids or [])],
+                                        'asks': [{'price': str(a.price), 'size': str(a.size)} for a in (orderbook.asks or [])],
+                                    }
+                                    
+                                    # Simulate fill to check liquidity and slippage
+                                    fill_result = orderbook_walker.simulate_fill(
+                                        orderbook=ob_dict,
+                                        side=signal.side,
+                                        size_usd=spend_amount,
+                                    )
+                                    
+                                    # Log the liquidity analysis
+                                    self.db.log(
+                                        "INFO",
+                                        f"[OrderBookWalker] Liquidity check: "
+                                        f"best_price={fill_result.best_price:.4f}, "
+                                        f"avg_price={fill_result.avg_price:.4f}, "
+                                        f"slippage={fill_result.slippage_pct:.2f}%, "
+                                        f"levels_consumed={fill_result.levels_consumed}, "
+                                        f"partial_fill={fill_result.partial_fill}",
+                                        self.worker_id,
+                                    )
+                                    
+                                    # Reject if slippage is too high (>2%)
+                                    if fill_result.slippage_pct > 2.0:
+                                        self.db.log(
+                                            "WARNING",
+                                            f"[OrderBookWalker] REJECTED: Slippage too high ({fill_result.slippage_pct:.2f}% > 2.0%). "
+                                            f"Insufficient liquidity for ${spend_amount:.2f} order.",
+                                            self.worker_id,
+                                        )
+                                        return
+                                    
+                                    # Reject if partial fill (not enough liquidity)
+                                    if fill_result.partial_fill:
+                                        self.db.log(
+                                            "WARNING",
+                                            f"[OrderBookWalker] REJECTED: Partial fill detected. "
+                                            f"Only ${fill_result.total_cost:.2f} of ${spend_amount:.2f} would fill.",
+                                            self.worker_id,
+                                        )
+                                        return
+                            except Exception as obw_error:
+                                # FAIL-SAFE: If liquidity check fails, reject the order
                                 self.db.log(
-                                    "INFO",
-                                    f"[OrderBookWalker] Liquidity check: "
-                                    f"best_price={fill_result.best_price:.4f}, "
-                                    f"avg_price={fill_result.avg_price:.4f}, "
-                                    f"slippage={fill_result.slippage_pct:.2f}%, "
-                                    f"levels_consumed={fill_result.levels_consumed}, "
-                                    f"partial_fill={fill_result.partial_fill}",
+                                    "WARNING",
+                                    f"[OrderBookWalker] REJECTED: Liquidity check failed: {obw_error}. "
+                                    f"Cannot verify liquidity for ${spend_amount:.2f} order.",
                                     self.worker_id,
                                 )
-                                
-                                # Reject if slippage is too high (>2%)
-                                if fill_result.slippage_pct > 2.0:
-                                    self.db.log(
-                                        "WARNING",
-                                        f"[OrderBookWalker] REJECTED: Slippage too high ({fill_result.slippage_pct:.2f}% > 2.0%). "
-                                        f"Insufficient liquidity for ${spend_amount:.2f} order.",
-                                        self.worker_id,
-                                    )
-                                    return
-                                
-                                # Reject if partial fill (not enough liquidity)
-                                if fill_result.partial_fill:
-                                    self.db.log(
-                                        "WARNING",
-                                        f"[OrderBookWalker] REJECTED: Partial fill detected. "
-                                        f"Only ${fill_result.total_cost:.2f} of ${spend_amount:.2f} would fill.",
-                                        self.worker_id,
-                                    )
-                                    return
-                        except Exception as obw_error:
-                            # FAIL-SAFE: If liquidity check fails, reject the order
-                            self.db.log(
-                                "WARNING",
-                                f"[OrderBookWalker] REJECTED: Liquidity check failed: {obw_error}. "
-                                f"Cannot verify liquidity for ${spend_amount:.2f} order.",
-                                self.worker_id,
-                            )
-                            return
+                                return
                         
                         self.db.log(
                             "INFO",
@@ -1650,14 +1657,28 @@ class TradingWorker:
                             self.worker_id,
                         )
                         
-                        # We use FOK (Fill Or Kill) style execution for taker orders
-                        response = await order_client.create_order(
-                            token_id=str(token_id),
-                            side=LimitlessSide.BUY if signal.side == "BUY" else LimitlessSide.SELL,
-                            order_type=LimitlessOrderType.FOK,
-                            market_slug=market_slug,
-                            maker_amount=spend_amount,
-                        )
+                        # GTC = limit maker post-only (0% fees). FOK = taker (fill or kill).
+                        if is_gtc:
+                            # Para GTC, el SDK espera price (precio por share) + size (USDC).
+                            # post_only=True rechaza la orden si cruzaria (asegura rol maker).
+                            response = await order_client.create_order(
+                                token_id=str(token_id),
+                                side=LimitlessSide.BUY if signal.side == "BUY" else LimitlessSide.SELL,
+                                order_type=LimitlessOrderType.GTC,
+                                market_slug=market_slug,
+                                price=float(price),
+                                size=float(spend_amount),
+                                post_only=True,
+                            )
+                        else:
+                            # We use FOK (Fill Or Kill) style execution for taker orders
+                            response = await order_client.create_order(
+                                token_id=str(token_id),
+                                side=LimitlessSide.BUY if signal.side == "BUY" else LimitlessSide.SELL,
+                                order_type=LimitlessOrderType.FOK,
+                                market_slug=market_slug,
+                                maker_amount=spend_amount,
+                            )
                         
                         order_id = response.order.id if hasattr(response, "order") and response.order else "N/A"
                         _exec_ms = (time.time() - _t_exec_start) * 1000
@@ -2200,7 +2221,7 @@ class TradingWorker:
                     f"Pre-carga Binance completada. {len(rows)} velas reales cargadas.",
                     self.worker_id,
                 )
-            elif self.feeder_type in ("limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal", "maker_making", "multi_platform", "resolution_sniper"):
+            elif self.feeder_type in ("limitless", "limitless_sports", "kalshi", "polymarket", "binary_arb", "multi_signal", "maker_making", "multi_platform", "resolution_sniper", "maker_two_leg"):
                 self.db.log(
                     "INFO",
                     f"{self.feeder_type}: omitiendo historial sintético (esperando datos reales del feeder)...",
@@ -2415,12 +2436,19 @@ class TradingEngine:
                 worker5.strategy = OracleOnlyStrategy("BTCUSDT")
                 self.workers["worker_5"] = worker5
 
-            # Worker 6: Arbitraje Atómico/Maker Market Making (Post-Only) en Limitless/Kalshi
+            # Worker 6: Maker Two-Leg (compra las 2 patas YES+NO con límite maker post-only; edge = spread)
             w6_enabled = os.getenv("WORKER6_ENABLED", "true").lower() == "true"
             if w6_enabled:
-                from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
-                worker6 = TradingWorker("worker_6", "Crypto Atomic-Arb", "BTC-INTRADAY", limitless_feeder_type, self.db)
-                worker6.strategy = AtomicCryptoArbStrategy("BTC-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=crypto_maker_size, db=self.db, worker_id="worker_6", observation_only=True)
+                from src.strategy.maker_two_leg_strategy import MakerTwoLegStrategy
+                worker6 = TradingWorker("worker_6", "Crypto Maker 2-Leg", "ANY-INTRADAY", "maker_two_leg", self.db)
+                worker6.strategy = MakerTwoLegStrategy(
+                    "ANY-INTRADAY",
+                    min_edge_pct=crypto_maker_edge,
+                    position_size_usd=crypto_maker_size,
+                    db=self.db,
+                    worker_id="worker_6",
+                    observation_only=True,
+                )
                 self.workers["worker_6"] = worker6
 
             # Worker 7: Resolution Sniper (Buy near-certain markets, hold to resolution)
