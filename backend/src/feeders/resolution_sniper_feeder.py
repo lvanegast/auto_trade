@@ -143,24 +143,33 @@ class ResolutionSniperFeeder(BaseFeeder):
                             print(f"[Resolution Sniper] Error fetching page {page_id}: {pe}")
 
                 snipers_found = 0
+                _diag = {"total": 0, "no_slug": 0, "non_crypto": 0, "no_exp": 0, "exp_filtered": 0,
+                         "price_out_of_range": 0, "no_liquidity": 0, "waiting_confirmation": 0}
                 for m in markets:
                     slug = m.slug if hasattr(m, "slug") else (m.get("slug", "") if isinstance(m, dict) else "")
                     title = m.title if hasattr(m, "title") else (m.get("title", "") if isinstance(m, dict) else "")
+                    _diag["total"] += 1
                     if not slug:
+                        _diag["no_slug"] += 1
                         continue
 
                     # FILTER: Only process crypto markets (limitless_crypto_ prefix)
                     # Skip sports markets
                     if "crypto" not in slug.lower() and "up-or-down" not in slug.lower():
                         self._reject(f"limitless_sniper_{slug}")
+                        _diag["non_crypto"] += 1
                         continue
 
                     # FILTER: solo mercados cerca de resolver (el resultado ya está decidido)
+                    remaining = -1
                     exp = self._parse_expiration(slug)
-                    if exp is not None:
+                    if exp is None:
+                        _diag["no_exp"] += 1
+                    else:
                         remaining = exp - now
                         if remaining < 0 or remaining > self.max_seconds_to_resolution:
                             self._reject(f"limitless_sniper_{slug}")
+                            _diag["exp_filtered"] += 1
                             continue
 
                     # Check for single/binary markets
@@ -177,6 +186,8 @@ class ResolutionSniperFeeder(BaseFeeder):
                                 snipers_found += 1
                                 print(f"[Resolution Sniper] Found YES: {title[:50]} YES_ASK={yes_ask:.4f} remaining={remaining:.0f}s")
                                 await self._emit_sniper_signal(slug, title, yes_ask, side="YES")
+                            else:
+                                _diag["waiting_confirmation"] += 1
                         # Lado NO casi-seguro (NO_ask = 1 - yes_bid)
                         elif self.min_entry_price <= no_ask <= self.max_entry_price and book["bid_size"] > 0:
                             event_id = f"limitless_sniper_{slug}"
@@ -184,8 +195,13 @@ class ResolutionSniperFeeder(BaseFeeder):
                                 snipers_found += 1
                                 print(f"[Resolution Sniper] Found NO: {title[:50]} NO_ASK={no_ask:.4f} remaining={remaining:.0f}s")
                                 await self._emit_sniper_signal(slug, title, no_ask, side="NO")
+                            else:
+                                _diag["waiting_confirmation"] += 1
                         else:
                             self._reject(f"limitless_sniper_{slug}")
+                            _diag["price_out_of_range"] += 1
+                    else:
+                        _diag["no_liquidity"] += 1
 
                     # Check sub-markets in groups
                     subs = getattr(m, "markets", None) or (m.get("markets") if isinstance(m, dict) else None)
@@ -198,10 +214,12 @@ class ResolutionSniperFeeder(BaseFeeder):
                                 self._reject(f"limitless_sniper_{sub_slug}")
                                 continue
                             sub_exp = self._parse_expiration(sub_slug)
+                            sub_remaining = -1
                             if sub_exp is not None:
                                 sub_remaining = sub_exp - now
                                 if sub_remaining < 0 or sub_remaining > self.max_seconds_to_resolution:
                                     self._reject(f"limitless_sniper_{sub_slug}")
+                                    _diag["exp_filtered"] += 1
                                     continue
 
                             from src.limitless_price_cache import async_get_limitless_executable_price
@@ -215,19 +233,26 @@ class ResolutionSniperFeeder(BaseFeeder):
                                         snipers_found += 1
                                         print(f"[Resolution Sniper] Found YES: {sub_title[:50]} YES_ASK={sub_yes:.4f} remaining={sub_remaining:.0f}s")
                                         await self._emit_sniper_signal(sub_slug, sub_title, sub_yes, side="YES")
+                                    else:
+                                        _diag["waiting_confirmation"] += 1
                                 elif self.min_entry_price <= sub_no <= self.max_entry_price and sub_book["bid_size"] > 0:
                                     event_id = f"limitless_sniper_{sub_slug}"
                                     if self._confirm(event_id):
                                         snipers_found += 1
                                         print(f"[Resolution Sniper] Found NO: {sub_title[:50]} NO_ASK={sub_no:.4f} remaining={sub_remaining:.0f}s")
                                         await self._emit_sniper_signal(sub_slug, sub_title, sub_no, side="NO")
+                                    else:
+                                        _diag["waiting_confirmation"] += 1
                                 else:
                                     self._reject(f"limitless_sniper_{sub_slug}")
+                                    _diag["price_out_of_range"] += 1
+                            else:
+                                _diag["no_liquidity"] += 1
 
                     # Delay between markets
                     await asyncio.sleep(0.1)
 
-                print(f"[Resolution Sniper] Scan complete: {len(markets)} markets checked, {snipers_found} snipers found")
+                print(f"[Resolution Sniper] Scan complete: {len(markets)} markets checked, {snipers_found} snipers found | diag={_diag}")
 
             except Exception as e:
                 print(f"[Resolution Sniper] Error scanning: {e}")
