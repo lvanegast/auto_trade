@@ -41,7 +41,33 @@ class ResolutionSniperFeeder(BaseFeeder):
 
     @staticmethod
     def _parse_expiration(slug: str):
-        """Extrae la expiración (unix) del slug. Ej: ...weekly-1785729600"""
+        """Extrae la expiración (unix) del slug up-or-down.
+
+        El timestamp del slug es el INICIO de la ventana, no la expiración.
+        La resolución ocurre start + duración según el patrón:
+        ...-5-min-<ts> / ...-15-min-<ts> / ...-hourly-<ts> / ...-daily-<ts> / ...-weekly-<ts>
+        """
+        import re
+
+        patterns = [
+            (r"-(\d+)-min-(\d+)$", 60),
+            (r"-(\d+)-hour-(\d+)$", 3600),
+            (r"-hourly-(\d+)$", 3600),
+            (r"-daily-(\d+)$", 86400),
+            (r"-weekly-(\d+)$", 604800),
+            (r"-(\d+)-day-(\d+)$", 86400),
+        ]
+        for pat, mult in patterns:
+            m = re.search(pat, slug)
+            if m:
+                if len(m.groups()) == 2:
+                    dur = int(m.group(1)) * mult
+                    ts_val = int(m.group(2))
+                else:
+                    ts_val = int(m.group(1))
+                    dur = mult
+                ts_val = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
+                return ts_val + dur
         parts = slug.split("-")
         ts_str = parts[-1]
         if not ts_str.isdigit():
