@@ -51,6 +51,20 @@ def _fetch_limitless_executable_price(slug: str) -> Optional[dict]:
             bid_size = float(bids[0].get("size", 0))
             ask_size = float(asks[0].get("size", 0))
 
+            spread = best_ask - best_bid
+            max_spread = float(data.get("maxSpread", 0.035))
+            adjusted_mid = data.get("adjustedMidpoint")
+
+            # Reject phantom books: wide spread + no real activity = unfillable maker orders.
+            # Platform caps normal spread at maxSpread (3.5%); beyond that the book is stale/decided
+            # and BOTH legs of a 2-leg maker never fill -> fake edge.
+            if spread > max_spread:
+                return None
+            if adjusted_mid is not None:
+                adjusted_mid = float(adjusted_mid)
+                if adjusted_mid < 0.01 or adjusted_mid > 0.99:
+                    return None
+
             result = {
                 "yes_bid": best_bid,
                 "yes_ask": best_ask,
@@ -58,6 +72,8 @@ def _fetch_limitless_executable_price(slug: str) -> Optional[dict]:
                 "ask_size": ask_size,
                 "no_ask": round(1.0 - best_bid, 4),
                 "no_bid": round(1.0 - best_ask, 4),
+                "spread": round(spread, 4),
+                "max_spread": round(max_spread, 4),
             }
 
             # Update cache
