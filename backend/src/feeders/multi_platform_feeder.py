@@ -667,6 +667,17 @@ class MultiPlatformFeeder(BaseFeeder):
                             book = self._sx_bet_build_book(m, m_orders)
                             if book is None:
                                 continue
+                            if not hasattr(self, "_sx_bet_debug_count"):
+                                self._sx_bet_debug_count = 0
+                            if self._sx_bet_debug_count < 8:
+                                print(
+                                    f"[MultiPlatform-SXBet] DEBUG: "
+                                    f"{m.get('outcomeOneName')} vs {m.get('outcomeTwoName')} "
+                                    f"type={m.get('type')} -> "
+                                    f"event_ids={book['event_ids']} "
+                                    f"yes_ask={book['book']['yes_ask']} yes_bid={book['book']['yes_bid']}"
+                                )
+                                self._sx_bet_debug_count += 1
                             for event_id in book["event_ids"]:
                                 self._tracker.update_book(
                                     event_id=event_id,

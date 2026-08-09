@@ -1077,32 +1077,30 @@ async def get_arbitrage_opportunities():
         if category not in ("sports", "Crypto"):
             continue
         both = cross_platform_tracker.get_both_books(pair["event_id"])
-        kalshi_book = both.get("kalshi") or {}
-        limitless_book = both.get("limitless") or {}
-        polymarket_book = both.get("polymarket") or {}
-        k_ask = kalshi_book.get("yes_ask", 0.0)
-        l_ask = limitless_book.get("yes_ask", 0.0)
-        p_ask = polymarket_book.get("yes_ask", 0.0)
-        if k_ask <= 0 and l_ask <= 0 and p_ask <= 0:
+        platform_books = {}
+        any_real = False
+        for platform_name, pbook in both.items():
+            if platform_name == "oracle":
+                continue
+            p_ask = pbook.get("yes_ask", 0.0)
+            p_bid = pbook.get("yes_bid", 0.0)
+            if p_ask > 0 or p_bid > 0:
+                any_real = True
+            platform_books[platform_name] = {
+                "price": p_ask,
+                "bid": p_bid,
+                "ask": p_ask,
+            }
+        if not any_real:
             continue
         price_map[pair["event_id"]] = {
             "event_label": pair["event_label"],
             "category": category,
-            "kalshi": {
-                "price": kalshi_book.get("yes_ask", 0.0),
-                "bid": kalshi_book.get("yes_bid", 0.0),
-                "ask": kalshi_book.get("yes_ask", 0.0),
-            },
-            "limitless": {
-                "price": limitless_book.get("yes_ask", 0.0),
-                "bid": limitless_book.get("yes_bid", 0.0),
-                "ask": limitless_book.get("yes_ask", 0.0),
-            },
-            "polymarket": {
-                "price": polymarket_book.get("yes_ask", 0.0),
-                "bid": polymarket_book.get("yes_bid", 0.0),
-                "ask": polymarket_book.get("yes_ask", 0.0),
-            },
+            "platforms": platform_books,
+            "kalshi": platform_books.get("kalshi") or {"price": 0.0, "bid": 0.0, "ask": 0.0},
+            "limitless": platform_books.get("limitless") or {"price": 0.0, "bid": 0.0, "ask": 0.0},
+            "polymarket": platform_books.get("polymarket") or {"price": 0.0, "bid": 0.0, "ask": 0.0},
+            "sx_bet": platform_books.get("sx_bet") or {"price": 0.0, "bid": 0.0, "ask": 0.0},
         }
 
     # Oportunidades 1xN intra-platform REALES de Limitless (libros reales del SDK,

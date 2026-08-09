@@ -2660,16 +2660,45 @@ function renderArbitragePanel(data) {
         for (const [eventId, info] of Object.entries(market_prices)) {
             if (!matchesArbitrageRoom(info.category)) continue;
             roomCount++;
+            const platformEntries = Object.entries(info.platforms || {});
+            const platformColors = {
+                kalshi: "#00c8ff",
+                limitless: "#02c076",
+                polymarket: "#a03ffc",
+                sx_bet: "#f0b90b"
+            };
+            const platformLabels = {
+                kalshi: "KALSHI YES",
+                limitless: "LIMITLESS YES",
+                polymarket: "POLY YES",
+                sx_bet: "SX BET YES"
+            };
+
+            const priceCells = platformEntries.map(([pname, pbook]) => {
+                const price = pbook && pbook.price ? pbook.price : null;
+                const color = platformColors[pname] || "#eaecef";
+                const label = platformLabels[pname] || (pname.toUpperCase() + " YES");
+                const bid = pbook && pbook.bid != null ? pbook.bid : null;
+                const ask = pbook && pbook.ask != null ? pbook.ask : null;
+                return `
+                    <div style="text-align:center;">
+                        <div style="font-size:10px; color:#848e9c; margin-bottom:2px;">${label}</div>
+                        <div style="font-size:18px; font-weight:700; color:${color}; font-family:'JetBrains Mono',monospace;">
+                            ${price !== null ? (price * 100).toFixed(1) + '%' : '—'}
+                        </div>
+                        ${bid !== null ? `<div style="font-size:9px; color:#848e9c;">Bid ${bid.toFixed(2)} / Ask ${ask.toFixed(2)}</div>` : ''}
+                    </div>`;
+            }).join("");
+
             const kPrice = info.kalshi ? info.kalshi.price : null;
             const pPrice = info.polymarket ? info.polymarket.price : null;
-            const kBid = info.kalshi ? info.kalshi.bid : null;
-            const kAsk = info.kalshi ? info.kalshi.ask : null;
-            const pBid = info.polymarket ? info.polymarket.bid : null;
-            const pAsk = info.polymarket ? info.polymarket.ask : null;
 
             let diffHtml = '<span style="color:#848e9c;">Sin datos</span>';
-            if (kPrice !== null && pPrice !== null) {
-                const diff = Math.abs(kPrice - pPrice);
+            const validPrices = platformEntries
+                .map(([, pbook]) => (pbook && pbook.price ? pbook.price : null))
+                .filter(p => p !== null);
+            if (validPrices.length >= 2) {
+                const diff = Math.abs(validPrices[0] - validPrices[1]);
                 const diffPct = (diff * 100).toFixed(2);
                 const diffColor = diff > 0.03 ? "#02c076" : diff > 0.01 ? "#f0b90b" : "#848e9c";
                 diffHtml = `<span style="color:${diffColor}; font-weight:700;">${diffPct}%</span>`;
@@ -2684,21 +2713,8 @@ function renderArbitragePanel(data) {
                     <span style="font-size:12px; font-weight:600; color:#eaecef;">${info.event_label}</span>
                     <span style="font-size:10px; padding:2px 6px; background:rgba(0,230,255,0.1); color:#00e6ff; border-radius:3px;">${info.category}</span>
                 </div>
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px;">
-                    <div style="text-align:center;">
-                        <div style="font-size:10px; color:#848e9c; margin-bottom:2px;">KALSHI YES</div>
-                        <div style="font-size:18px; font-weight:700; color:#00c8ff; font-family:'JetBrains Mono',monospace;">
-                            ${kPrice !== null ? (kPrice * 100).toFixed(1) + '%' : '—'}
-                        </div>
-                        ${kBid !== null ? `<div style="font-size:9px; color:#848e9c;">Bid ${kBid.toFixed(2)} / Ask ${kAsk.toFixed(2)}</div>` : ''}
-                    </div>
-                    <div style="text-align:center;">
-                        <div style="font-size:10px; color:#848e9c; margin-bottom:2px;">POLY YES</div>
-                        <div style="font-size:18px; font-weight:700; color:#a03ffc; font-family:'JetBrains Mono',monospace;">
-                            ${pPrice !== null ? (pPrice * 100).toFixed(1) + '%' : '—'}
-                        </div>
-                        ${pBid !== null ? `<div style="font-size:9px; color:#848e9c;">Bid ${pBid.toFixed(2)} / Ask ${pAsk.toFixed(2)}</div>` : ''}
-                    </div>
+                <div style="display:grid; grid-template-columns:repeat(${Math.max(2, platformEntries.length)}, 1fr); gap:8px; margin-bottom:8px;">
+                    ${priceCells}
                 </div>
                 <div style="display:flex; justify-content:space-between; align-items:center; padding-top:6px; border-top:1px solid #2d3139;">
                     <span style="font-size:10px; color:#848e9c;">Spread: ${diffHtml}</span>
