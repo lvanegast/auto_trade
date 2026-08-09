@@ -132,7 +132,11 @@ class TradingWorker:
             self.feeder = LimitlessSportsFeeder(self.symbol, self.queue)
         elif self.feeder_type == "resolution_sniper":
             from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
-            self.feeder = ResolutionSniperFeeder(self.symbol, self.queue)
+            # El scope del feeder se deriva del symbol del worker:
+            # "CRYPTO" -> escanea solo crypto, "SPORTS" -> escanea solo sports.
+            # Cada worker tiene su propio feeder; NO mezclar categorías.
+            scope = self.symbol.lower() if self.symbol.lower() in ("crypto", "sports") else "crypto"
+            self.feeder = ResolutionSniperFeeder(self.symbol, self.queue, scope=scope)
         elif self.feeder_type == "maker_two_leg":
             from src.feeders.maker_two_leg_feeder import MakerTwoLegFeeder
             self.feeder = MakerTwoLegFeeder(self.symbol, self.queue)
@@ -511,11 +515,14 @@ class TradingWorker:
                     ):
                         await self._sync_kalshi_portfolio()
                     elif self.feeder_type == "resolution_sniper":
-                        # Solo el Resolution Sniper ejecuta el monitor global de resoluciones.
-                        # Si todos los workers lo corrieran, cada mercado resuelto generaría
-                        # un mensaje de Telegram por worker (duplicados).
+                        # Ambos workers (7 crypto, 8 sports) resuelven sus propias posiciones.
                         await self._resolve_expired_positions_simulated()
-                        await self._check_market_resolutions()
+                        # El monitor GLOBAL de resoluciones (revisa TODOS los mercados
+                        # abiertos/pendientes y manda Telegram) corre SOLO en un worker,
+                        # si no cada mercado resuelto generaría mensajes duplicados.
+                        monitor_worker = os.getenv("SNIPER_RESOLUTION_MONITOR_WORKER", "worker_8")
+                        if self.worker_id == monitor_worker:
+                            await self._check_market_resolutions()
                     elif self.feeder_type in ("kalshi", "limitless", "limitless_sports", "limitless_ws", "multi_platform", "binary_arb"):
                         await self._resolve_expired_positions_simulated()
                 except Exception as e:
@@ -2464,13 +2471,21 @@ class TradingEngine:
                 )
                 self.workers["worker_6"] = worker6
 
-            # Worker 7: Resolution Sniper (Buy near-certain markets, hold to resolution)
+            # Worker 7: Resolution Sniper CRYPTO (buy near-certain crypto up/down, hold to resolution)
             w7_enabled = os.getenv("WORKER7_ENABLED", "false").lower() == "true"
             if w7_enabled:
                 from src.strategy.resolution_sniper import ResolutionSniperStrategy
-                worker7 = TradingWorker("worker_7", "Resolution Sniper", "SPORTS", "resolution_sniper", self.db)
-                worker7.strategy = ResolutionSniperStrategy("SPORTS", db=self.db, worker_id="worker_7")
+                worker7 = TradingWorker("worker_7", "Resolution Sniper Crypto", "CRYPTO", "resolution_sniper", self.db)
+                worker7.strategy = ResolutionSniperStrategy("CRYPTO", db=self.db, worker_id="worker_7")
                 self.workers["worker_7"] = worker7
+
+            # Worker 8: Resolution Sniper SPORTS (buy near-certain sports, hold to resolution)
+            w8_enabled = os.getenv("WORKER8_ENABLED", "false").lower() == "true"
+            if w8_enabled:
+                from src.strategy.resolution_sniper import ResolutionSniperStrategy
+                worker8 = TradingWorker("worker_8", "Resolution Sniper Sports", "SPORTS", "resolution_sniper", self.db)
+                worker8.strategy = ResolutionSniperStrategy("SPORTS", db=self.db, worker_id="worker_8")
+                self.workers["worker_8"] = worker8
 
         elif profile_mode == "crypto_hft_volatile":
             self.workers["worker_1"] = TradingWorker(

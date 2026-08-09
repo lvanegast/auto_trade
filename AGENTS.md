@@ -125,11 +125,16 @@ Event flow: Feeder → `PriceUpdateEvent` → Queue → `TradingWorker._process_
 - **WebSocket feeder**: Para crypto workers (evita polling)
 - **Logging diferenciado**: fail_no_liquidity vs fail_timeout vs fail_rate_limited
 
-## Resolution Sniper (Worker 7) — Extensión a Deportes (Agosto 2026)
+## Resolution Sniper (Worker 7 CRYPTO + Worker 8 SPORTS) — Extensión a Deportes (Agosto 2026)
 
 - **Patrón evaluado**: comprar YES/NO a `entry ∈ [0.975, 0.98]` pre-settlement y mantener hasta resolución (payout $1.00 si gana, pérdida total si no).
-- **Alcance**: Worker 7 ahora escanea crypto up/down (página crypto, `_parse_expiration` por patrón del slug) **y** mercados deportivos (`/sport` + `/esports`, `expiration_timestamp` real en ms). Las oportunidades se etiquetan `category="sports"|"crypto"` para enrutar al chat correcto de Telegram y filtrar el Paper PnL por sala.
-- **Protecciones (idénticas a crypto)**: `observation_only=True` a nivel de estrategia, la estrategia **nunca** emite `SignalEvent` (estructuralmente read-only), y `ALLOWED_REAL_WORKERS` vacío bloquea `_execute_order` en el motor. Solo recolección de datos.
+- **Instrumentos SEPARADOS por worker** (no mezclar en el mismo feeder):
+  - **Worker 7** (`WORKER7_SYMBOL=CRYPTO`): escanea solo la página crypto up/down (`_parse_expiration` por patrón del slug).
+  - **Worker 8** (`WORKER8_SYMBOL=SPORTS`): escanea solo `/sport` + `/esports` (`expiration_timestamp` real en ms).
+  - El feeder `ResolutionSniperFeeder` recibe `scope="crypto"|"sports"` derivado del symbol del worker. Cada worker tiene su propio lock/scan-time por instancia.
+- **Categoría**: las oportunidades se etiquetan `category="sports"|"crypto"` para enrutar al chat correcto de Telegram y filtrar el Paper PnL por sala.
+- **Protecciones (idénticas)**: `observation_only=True` a nivel de estrategia, la estrategia **nunca** emite `SignalEvent` (estructuralmente read-only), y `ALLOWED_REAL_WORKERS` vacío bloquea `_execute_order` en el motor. Solo recolección de datos.
+- **Monitor global de resoluciones**: solo corre en UN worker (`SNIPER_RESOLUTION_MONITOR_WORKER`, default `worker_8`) para no duplicar mensajes de Telegram; cada worker resuelve sus propias posiciones.
 - **Umbral temporal deportes**: `SNIPER_SPORTS_MAX_SECONDS_TO_RESOLUTION` (default 14400s = 4h) — la casi-certeza deportiva aparece en los minutos/horas finales del partido; crypto usa `SNIPER_MAX_SECONDS_TO_RESOLUTION` (1800s).
 
 ### Advertencia estadística (obligatoria al interpretar el Paper PnL)
@@ -167,7 +172,8 @@ Event flow: Feeder → `PriceUpdateEvent` → Queue → `TradingWorker._process_
 | Worker 3 | Sports 3 Options | `limitless_sports` | 1xN intra-platform |
 | Worker 4 | Sports Maker | `maker_making` | Market making 0% fees |
 | Worker 5 | Binance Oracle | `binance` | Reference price feed (lead-lag) |
-| Worker 7 | Resolution Sniper | `resolution_sniper` | Crypto up/down + Sports: comprar YES ~0.975-0.98 pre-settlement (observación) |
+| Worker 7 | Resolution Sniper Crypto | `resolution_sniper` | Crypto up/down: comprar YES ~0.975-0.98 pre-settlement (observación) |
+| Worker 8 | Resolution Sniper Sports | `resolution_sniper` | Sports + esports: comprar YES ~0.975-0.98 pre-settlement (observación) |
 
 ### Cross-Platform Sports vs Crypto
 
@@ -201,10 +207,15 @@ WORKER4_ENABLED=true
 WORKER5_ENABLED=true
 WORKER6_ENABLED=true
 
-# Resolution Sniper (Worker 7 - crypto up/down + sports)
+# Resolution Sniper (Worker 7 = crypto, Worker 8 = sports — instrumentos separados)
+WORKER7_ENABLED=true
+WORKER7_SYMBOL=CRYPTO
+WORKER8_ENABLED=true
+WORKER8_SYMBOL=SPORTS
 SNIPER_MIN_ENTRY_PRICE=0.975
 SNIPER_MAX_ENTRY_PRICE=0.98
 SNIPER_SPORTS_MAX_SECONDS_TO_RESOLUTION=14400
+SNIPER_RESOLUTION_MONITOR_WORKER=worker_8
 ```
 
 ## Cross-Platform Arbitrage Research (August 2026)

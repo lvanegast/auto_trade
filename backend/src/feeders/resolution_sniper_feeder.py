@@ -13,18 +13,28 @@ from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
 
 
-# Shared cache to prevent rate limiting
-_last_sniper_scan_time = 0.0
-_sniper_scan_lock = asyncio.Lock()
 # Consecutive-scan confirmation: {event_id: count} — solo emitir tras N scans estables
 _sniper_confirmations: dict = {}
 _sniper_confirmations_seen: dict = {}  # última vez visto, para limpieza
 
 
 class ResolutionSniperFeeder(BaseFeeder):
-    def __init__(self, symbol: str, event_queue: asyncio.Queue):
+    def __init__(
+        self,
+        symbol: str,
+        event_queue: asyncio.Queue,
+        scope: str = "crypto",
+    ):
         super().__init__(symbol.upper(), event_queue)
+        # Alcance del feeder: "crypto" | "sports". Cada worker tiene SU PROPIO
+        # feeder y escanea SOLO su categoría (Worker 7 = crypto, Worker 8 = sports).
+        # No escanear las dos en la misma instancia: contamina las señales y el
+        # tracking de resoluciones de un worker con la categoría del otro.
+        self.scope = scope
         self.poll_interval = float(os.getenv("SNIPER_POLL_INTERVAL", "5.0"))
+        # Rate-limit interno por instancia (cada worker escanea a su propio ritmo)
+        self._last_scan_time = 0.0
+        self._scan_lock = asyncio.Lock()
         # Umbral más alto: solo comprar lo casi-ya-resuelto. La EV es W - entry,
         # así que un entry de 0.975+ exige >97.5% de win real.
         self.min_entry_price = float(os.getenv("SNIPER_MIN_ENTRY_PRICE", "0.975"))
@@ -107,6 +117,7 @@ class ResolutionSniperFeeder(BaseFeeder):
         self.running = True
         print(
             f"[Feeder Resolution Sniper] Iniciando polling cada {self.poll_interval}s | "
+            f"Scope: {self.scope} | "
             f"Rango: {self.min_entry_price:.2f} - {self.max_entry_price:.2f} | "
             f"Vida restante máx: {self.max_seconds_to_resolution/60:.0f}min | "
             f"Confirmación: {self.min_consecutive_scans} scans"
@@ -147,12 +158,11 @@ class ResolutionSniperFeeder(BaseFeeder):
             await http_client.close()
 
     async def _scan_for_snipers(self):
-        global _last_sniper_scan_time
         now = time.time()
-        if now - _last_sniper_scan_time < 5.0:
+        if now - self._last_scan_time < 5.0:
             return
-        async with _sniper_scan_lock:
-            _last_sniper_scan_time = now
+        async with self._scan_lock:
+            self._last_scan_time = now
             self._prune_confirmations()
             try:
                 from src.engine.latency_tracker import latency_tracker
@@ -162,36 +172,38 @@ class ResolutionSniperFeeder(BaseFeeder):
                 # y Telegram (TELEGRAM_CHAT_ID_CRYPTO vs TELEGRAM_CHAT_ID_SPORTS).
                 scan_items = []
 
-                page_ids = [
-                    "5e76699e-8763-4c91-85de-3efeb064efec",  # Crypto only
-                ]
+                if self.scope in ("crypto", "both"):
+                    page_ids = [
+                        "5e76699e-8763-4c91-85de-3efeb064efec",  # Crypto only
+                    ]
 
-                for page_id in page_ids:
-                    try:
-                        async with latency_tracker.measure("resolution_sniper", "get_markets") as m:
-                            resp = await self._page_fetcher.get_markets(page_id, {"limit": 50})
-                            m.result = resp
+                    for page_id in page_ids:
+                        try:
+                            async with latency_tracker.measure("resolution_sniper", "get_markets") as m:
+                                resp = await self._page_fetcher.get_markets(page_id, {"limit": 50})
+                                m.result = resp
 
-                        page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
-                        for mk in page_m:
-                            scan_items.append((mk, "crypto"))
-                    except Exception as pe:
-                        if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
-                            print(f"[Resolution Sniper] Error fetching page {page_id}: {pe}")
+                            page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
+                            for mk in page_m:
+                                scan_items.append((mk, "crypto"))
+                        except Exception as pe:
+                            if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
+                                print(f"[Resolution Sniper] Error fetching page {page_id}: {pe}")
 
-                # Páginas deportivas (mismo patrón: YES casi-cerrado pre-resolución).
-                # Los mercados sports exponen expiration_timestamp (ms) como atributo
-                # del objeto, no como patrón del slug (a diferencia de crypto up/down).
-                for path in ["/sport", "/esports"]:
-                    try:
-                        page = await self._page_fetcher.get_market_page_by_path(path)
-                        resp = await self._page_fetcher.get_markets(page.id, {"limit": 100})
-                        page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
-                        for mk in page_m:
-                            scan_items.append((mk, "sports"))
-                    except Exception as pe:
-                        if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
-                            print(f"[Resolution Sniper] Error fetching sports page {path}: {pe}")
+                if self.scope in ("sports", "both"):
+                    # Páginas deportivas (mismo patrón: YES casi-cerrado pre-resolución).
+                    # Los mercados sports exponen expiration_timestamp (ms) como atributo
+                    # del objeto, no como patrón del slug (a diferencia de crypto up/down).
+                    for path in ["/sport", "/esports"]:
+                        try:
+                            page = await self._page_fetcher.get_market_page_by_path(path)
+                            resp = await self._page_fetcher.get_markets(page.id, {"limit": 100})
+                            page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
+                            for mk in page_m:
+                                scan_items.append((mk, "sports"))
+                        except Exception as pe:
+                            if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
+                                print(f"[Resolution Sniper] Error fetching sports page {path}: {pe}")
 
                 snipers_found = 0
                 _diag = {"total": 0, "no_slug": 0, "non_crypto": 0, "non_sports": 0, "no_exp": 0, "exp_filtered": 0,
