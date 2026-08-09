@@ -2387,12 +2387,19 @@ class TradingEngine:
             use_ws = os.getenv("LIMITLESS_USE_WEBSOCKET", "false").lower() == "true"
             limitless_feeder_type = "limitless_ws" if use_ws else "limitless"
 
-            # Worker 1: Arbitraje Intraday General (Opciones de mismo día / rápida resolución)
+            # Worker 1: Maker Rewards (spread como gap) — estrategia del repo, edge = spread
             w1_enabled = os.getenv("WORKER1_ENABLED", "true").lower() == "true"
             if w1_enabled:
-                from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
-                worker1 = TradingWorker("worker_1", "Limitless Intraday General", "ANY-INTRADAY", limitless_feeder_type, self.db)
-                worker1.strategy = AtomicCryptoArbStrategy("ANY-INTRADAY", min_profit_target=crypto_maker_edge, position_size_usd=1.0, db=self.db, worker_id="worker_1", observation_only=True)
+                from src.strategy.maker_rewards_strategy import MakerLiquidityRewardsStrategy
+                worker1 = TradingWorker("worker_1", "Limitless Maker Rewards", "ANY-INTRADAY", "maker_two_leg", self.db)
+                worker1.strategy = MakerLiquidityRewardsStrategy(
+                    "ANY-INTRADAY",
+                    position_size_usd=crypto_maker_size,
+                    min_rebate_edge_pct=crypto_maker_edge,
+                    db=self.db,
+                    worker_id="worker_1",
+                    observation_only=True,
+                )
                 self.workers["worker_1"] = worker1
 
             # Worker 2: Arbitraje Cross-Platform Deportes (Limitless vs Polymarket vs Kalshi)
