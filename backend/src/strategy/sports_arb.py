@@ -205,12 +205,19 @@ class SportsArbitrageStrategy(BaseStrategy):
             self.edge = edge_data["edge"]
             arb_type = edge_data.get("arb_type", "YES" if self.edge > 0 else "NO")
 
+        # 5b. Normalize edge to the chosen direction.
+        # For 1xN: edge_NO = total_yes - 1 = -edge_YES. A negative edge on the
+        # YES side means the profitable side is NO. self.edge is kept >= 0 so
+        # filters, snapshots and alerts never report a guaranteed loss as an arb.
+        if arb_type == "NO":
+            self.edge = round(-self.edge, 4)
+
         # 6. Validate: need minimum edge and outcomes
-        if abs(self.edge) < self.min_edge_pct:
+        if self.edge < self.min_edge_pct:
             return None
 
         # Sanity: edges > 15% are data errors or illiquid markets — not real arb
-        if abs(self.edge) > 0.15:
+        if self.edge > 0.15:
             return None
 
         # Filtro de Rentabilidad Neta Anti-Fricción

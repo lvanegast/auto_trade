@@ -269,6 +269,13 @@ class LimitlessSportsFeeder(BaseFeeder):
         if abs(edge) > 0.15:
             return
 
+        # 1xN: edge_NO = total_yes - 1 = -edge_YES. Negative edge means the
+        # profitable side is NO. Normalize to the profitable direction.
+        arb_type = "YES" if edge >= 0 else "NO"
+        gross_edge = round(abs(edge), 4)
+        direction_label = "BUY_ALL_YES_1XN" if arb_type == "YES" else "BUY_ALL_NO_1XN"
+        entry_price = total_yes if arb_type == "YES" else round(len(outcomes) - total_yes, 4)
+
         event_id = make_match_event_id(group_title, group_title)
         primary_price = outcomes[0]["yes_price"]
 
@@ -306,19 +313,19 @@ class LimitlessSportsFeeder(BaseFeeder):
                 platform_b="limitless",
                 event_id=event_id,
                 event_title=group_title,
-                edge_pct=edge,
-                gross_edge_pct=edge,
+                edge_pct=gross_edge,
+                gross_edge_pct=gross_edge,
                 platform_a_yes_ask=primary_price,
                 platform_b_no_ask=1.0 - primary_price,
                 platform_a_depth=10.0,
                 platform_b_depth=10.0,
                 liquidity_verified=True,
-                viable=(edge >= 0.02),
-                direction="BUY_ALL_YES_1XN",
+                viable=(gross_edge >= 0.02),
+                direction=direction_label,
                 outcomes_count=len(outcomes),
                 market_slug=group_slug,
-                entry_price=total_yes,
-                expected_profit=edge * 2.0,
+                entry_price=entry_price,
+                expected_profit=gross_edge * 2.0,
                 category="sports",
             )
         except Exception:
