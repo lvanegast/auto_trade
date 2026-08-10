@@ -39,6 +39,10 @@ class ResolutionSniperFeeder(BaseFeeder):
         # así que un entry de 0.975+ exige >97.5% de win real.
         self.min_entry_price = float(os.getenv("SNIPER_MIN_ENTRY_PRICE", "0.975"))
         self.max_entry_price = float(os.getenv("SNIPER_MAX_ENTRY_PRICE", "0.98"))
+        # Finance (Gold, Meta, ETFs): menos volátil que crypto → rango más amplio
+        # para entrar más temprano y capturar más oportunidades.
+        self.finance_min_entry_price = float(os.getenv("SNIPER_FINANCE_MIN_ENTRY_PRICE", "0.95"))
+        self.finance_max_entry_price = float(os.getenv("SNIPER_FINANCE_MAX_ENTRY_PRICE", "0.985"))
         # Solo snipear mercados con poca vida restante (el resultado ya está decidido)
         self.max_seconds_to_resolution = float(
             os.getenv("SNIPER_MAX_SECONDS_TO_RESOLUTION", "1800")
@@ -190,19 +194,6 @@ class ResolutionSniperFeeder(BaseFeeder):
                             if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
                                 print(f"[Resolution Sniper] Error fetching page {page_id}: {pe}")
 
-                    # Finance: Gold, Meta, Lockheed, ETFs — mismo patrón up-or-down
-                    # que crypto (hourly/daily). _parse_expiration funciona igual.
-                    for path in ["/finance"]:
-                        try:
-                            page = await self._page_fetcher.get_market_page_by_path(path)
-                            resp = await self._page_fetcher.get_markets(page.id, {"limit": 50})
-                            page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
-                            for mk in page_m:
-                                scan_items.append((mk, "crypto"))  # misma categoría que crypto para Telegram
-                        except Exception as pe:
-                            if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
-                                print(f"[Resolution Sniper] Error fetching finance page: {pe}")
-
                 if self.scope in ("sports", "both"):
                     # Páginas deportivas (mismo patrón: YES casi-cerrado pre-resolución).
                     # Los mercados sports exponen expiration_timestamp (ms) como atributo
@@ -217,6 +208,19 @@ class ResolutionSniperFeeder(BaseFeeder):
                         except Exception as pe:
                             if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
                                 print(f"[Resolution Sniper] Error fetching sports page {path}: {pe}")
+
+                    # Finance: Gold, Meta, NVIDIA, ETFs — menos volátil que crypto,
+                    # rango más amplio [0.95, 0.985]. Mismo patrón up-or-down.
+                    for path in ["/finance"]:
+                        try:
+                            page = await self._page_fetcher.get_market_page_by_path(path)
+                            resp = await self._page_fetcher.get_markets(page.id, {"limit": 50})
+                            page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
+                            for mk in page_m:
+                                scan_items.append((mk, "finance"))
+                        except Exception as pe:
+                            if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
+                                print(f"[Resolution Sniper] Error fetching finance page: {pe}")
 
                 snipers_found = 0
                 _diag = {"total": 0, "no_slug": 0, "non_crypto": 0, "non_sports": 0, "no_exp": 0, "exp_filtered": 0,
@@ -238,6 +242,19 @@ class ResolutionSniperFeeder(BaseFeeder):
                             continue
                         exp = self._parse_expiration(slug)
                         max_res_secs = self.max_seconds_to_resolution
+                        _min_price = self.min_entry_price
+                        _max_price = self.max_entry_price
+                    elif category == "finance":
+                        # Finance: mismo patrón up-or-down que crypto, pero rango
+                        # más amplio [0.95, 0.985] por menor volatilidad.
+                        if "up-or-down" not in slug.lower():
+                            self._reject(f"limitless_sniper_{slug}")
+                            _diag["non_crypto"] += 1
+                            continue
+                        exp = self._parse_expiration(slug)
+                        max_res_secs = self.max_seconds_to_resolution
+                        _min_price = self.finance_min_entry_price
+                        _max_price = self.finance_max_entry_price
                     else:
                         # Sports markets must NOT be crypto up/down slugs
                         if "crypto" in slug.lower() or "up-or-down" in slug.lower():
@@ -248,6 +265,8 @@ class ResolutionSniperFeeder(BaseFeeder):
                         exp_ts = getattr(m, "expiration_timestamp", None) or (m.get("expiration_timestamp") if isinstance(m, dict) else None)
                         exp = (float(exp_ts) / 1000.0) if exp_ts else None
                         max_res_secs = self.sports_max_seconds_to_resolution
+                        _min_price = self.min_entry_price
+                        _max_price = self.max_entry_price
 
                     # FILTER: solo mercados cerca de resolver (el resultado ya está decidido)
                     remaining = -1
@@ -276,7 +295,7 @@ class ResolutionSniperFeeder(BaseFeeder):
                             yes_bid = book["yes_bid"]
                             no_ask = 1.0 - yes_bid
                             # Lado YES casi-seguro
-                            if self.min_entry_price <= yes_ask <= self.max_entry_price and book["ask_size"] > 0:
+                            if _min_price <= yes_ask <= _max_price and book["ask_size"] > 0:
                                 event_id = f"limitless_sniper_{slug}"
                                 if self._confirm(event_id):
                                     snipers_found += 1
@@ -285,7 +304,7 @@ class ResolutionSniperFeeder(BaseFeeder):
                                 else:
                                     _diag["waiting_confirmation"] += 1
                             # Lado NO casi-seguro (NO_ask = 1 - yes_bid)
-                            elif self.min_entry_price <= no_ask <= self.max_entry_price and book["bid_size"] > 0:
+                            elif _min_price <= no_ask <= _max_price and book["bid_size"] > 0:
                                 event_id = f"limitless_sniper_{slug}"
                                 if self._confirm(event_id):
                                     snipers_found += 1
@@ -328,7 +347,7 @@ class ResolutionSniperFeeder(BaseFeeder):
                                     if sub_book:
                                         sub_yes = sub_book["yes_ask"]
                                         sub_no = 1.0 - sub_book["yes_bid"]
-                                        if self.min_entry_price <= sub_yes <= self.max_entry_price and sub_book["ask_size"] > 0:
+                                        if _min_price <= sub_yes <= _max_price and sub_book["ask_size"] > 0:
                                             event_id = f"limitless_sniper_{sub_slug}"
                                             if self._confirm(event_id):
                                                 snipers_found += 1
@@ -336,7 +355,7 @@ class ResolutionSniperFeeder(BaseFeeder):
                                                 await self._emit_sniper_signal(sub_slug, sub_title, sub_yes, side="YES", category=category)
                                             else:
                                                 _diag["waiting_confirmation"] += 1
-                                        elif self.min_entry_price <= sub_no <= self.max_entry_price and sub_book["bid_size"] > 0:
+                                        elif _min_price <= sub_no <= _max_price and sub_book["bid_size"] > 0:
                                             event_id = f"limitless_sniper_{sub_slug}"
                                             if self._confirm(event_id):
                                                 snipers_found += 1
