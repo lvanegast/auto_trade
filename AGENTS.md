@@ -137,6 +137,19 @@ Event flow: Feeder → `PriceUpdateEvent` → Queue → `TradingWorker._process_
 - **Monitor global de resoluciones**: solo corre en UN worker (`SNIPER_RESOLUTION_MONITOR_WORKER`, default `worker_8`) para no duplicar mensajes de Telegram; cada worker resuelve sus propias posiciones.
 - **Umbral temporal deportes**: `SNIPER_SPORTS_MAX_SECONDS_TO_RESOLUTION` (default 14400s = 4h) — la casi-certeza deportiva aparece en los minutos/horas finales del partido; crypto usa `SNIPER_MAX_SECONDS_TO_RESOLUTION` (1800s).
 
+### Sub-mercados deportivos (exploración futura)
+
+Los mercados deportivos de Limitless tienen **sub-mercados** independientes por cada partido. Ejemplo tenis:
+- **Moneyline**: ¿Quién gana el partido? (este es el que snipeamos hoy)
+- **3+ sets**: ¿El partido tendrá 3 o más sets? (YES/NO independiente)
+- **22+ games**: ¿Habrá 22+ juegos en total? (YES/NO independiente)
+- **Spread**: Handicap de sets/juegos
+- **Total**: Over/under de sets/juegos
+
+Cada sub-mercado tiene su propio orderbook y se resuelve independientemente. El sniper actualmente solo procesa el **moneyline** (primer sub-mercado del grupo). Los demás sub-mercados son candidatos a explorar como oportunidades adicionales de sniper, especialmente cuando un resultado es casi seguro (ej: si Swiatek va ganando 5-2 en el tercer set, tanto moneyline NO como "3+ sets" YES pueden estar en rango).
+
+**Limitación actual**: el feeder solo procesa `subs[0]` (moneyline). Para explorar sub-mercados, hay que iterar `subs[1:]` y evaluar cada uno por separado.
+
 ### Advertencia estadística (obligatoria al interpretar el Paper PnL)
 
 **"No ha fallado todavía" ≠ "no va a fallar".** El sniper es asimétrico: gana ~2-2.5% por trade (payout $1.00 − entry ~0.975-0.98) pero pierde ~97-98% en una sola pérdida (se pierde el principal completo). El break-even WR ≈ entry_price (≈0.975-0.98). Una racha de 29-30 wins con edge promedio ~1% es **exactamente lo esperado** antes de la primera pérdida grande, NO evidencia de rentabilidad a largo plazo. Una sola pérdida al precio típico borra ~40-100 victorias de ~1-2.5%. **Se requieren varios cientos de muestras resueltas** (no 29-30) para una conclusión estadísticamente válida, tanto en crypto como en deportes. El reporte `/api/observation/performance` incluye esta advertencia en `summary.statistical_caveat`.
