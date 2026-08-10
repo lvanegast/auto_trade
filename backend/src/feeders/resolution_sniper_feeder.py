@@ -190,6 +190,19 @@ class ResolutionSniperFeeder(BaseFeeder):
                             if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
                                 print(f"[Resolution Sniper] Error fetching page {page_id}: {pe}")
 
+                    # Finance: Gold, Meta, Lockheed, ETFs — mismo patrón up-or-down
+                    # que crypto (hourly/daily). _parse_expiration funciona igual.
+                    for path in ["/finance"]:
+                        try:
+                            page = await self._page_fetcher.get_market_page_by_path(path)
+                            resp = await self._page_fetcher.get_markets(page.id, {"limit": 50})
+                            page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
+                            for mk in page_m:
+                                scan_items.append((mk, "crypto"))  # misma categoría que crypto para Telegram
+                        except Exception as pe:
+                            if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
+                                print(f"[Resolution Sniper] Error fetching finance page: {pe}")
+
                 if self.scope in ("sports", "both"):
                     # Páginas deportivas (mismo patrón: YES casi-cerrado pre-resolución).
                     # Los mercados sports exponen expiration_timestamp (ms) como atributo
