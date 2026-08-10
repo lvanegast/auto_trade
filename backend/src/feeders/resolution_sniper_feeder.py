@@ -247,12 +247,14 @@ class ResolutionSniperFeeder(BaseFeeder):
                     elif category == "finance":
                         # Finance: mismo patrón up-or-down que crypto, pero rango
                         # más amplio [0.95, 0.985] por menor volatilidad.
+                        # Ventana más amplia (4h) como sports — los mercados finance
+                        # expiran menos frecuentemente que crypto (daily/weekly).
                         if "up-or-down" not in slug.lower():
                             self._reject(f"limitless_sniper_{slug}")
                             _diag["non_crypto"] += 1
                             continue
                         exp = self._parse_expiration(slug)
-                        max_res_secs = self.max_seconds_to_resolution
+                        max_res_secs = self.sports_max_seconds_to_resolution
                         _min_price = self.finance_min_entry_price
                         _max_price = self.finance_max_entry_price
                     else:
