@@ -43,6 +43,9 @@ class TelegramBot:
         # Dedup: event_ids that already received an opportunity alert.
         # Auto-expire after 24h so old events don't permanently block.
         self._sent_event_alerts = BoundedTimeDict(max_size=500, ttl_seconds=86400)
+        # Dedup por título normalizado: evita que diferentes workers (cross-platform,
+        # sports arb, sniper) alerten el mismo partido con event_id distintos.
+        self._sent_title_alerts = BoundedTimeDict(max_size=500, ttl_seconds=86400)
         # Dedup de resultados de resolución: un mismo evento solo se informa UNA vez
         # (TTL 30 días — estos mercados no re-resuelven en la práctica).
         self._sent_resolution_alerts = BoundedTimeDict(max_size=5000, ttl_seconds=2592000)
@@ -389,6 +392,41 @@ class TelegramBot:
         """Clear an event_id after resolution — allows new alert if event reopens."""
         self._sent_event_alerts.discard(event_id)
 
+    @staticmethod
+    def _normalize_title(title: str) -> str:
+        """Normaliza un título de evento para dedup cross-worker.
+
+        Ejemplo: "Diana Shnaider Vs Iga Swiatek - Moneyline" → "diana shnaider vs iga swiatek"
+        Elimina sub-mercados (moneyline, spread, total, sets, games, over, under)
+        y normaliza a minúsculas para que diferentes workers usen la misma clave.
+        """
+        import re
+        t = title.lower().strip()
+        # Eliminar sufijos de sub-mercado comunes
+        for suffix in ["moneyline", "spread", "total", "over", "under",
+                       "3 or more total sets", "2 or more total sets",
+                       "22 or more total games", "20 or more total games",
+                       "both teams to score", "clean sheet"]:
+            t = t.replace(suffix, "")
+        # Normalizar espacios
+        t = re.sub(r"\s+", " ", t).strip()
+        # Eliminar trailing separators
+        t = t.rstrip(" -–—:·")
+        return t
+
+    def _title_already_alerted(self, title: str) -> bool:
+        """Check if a normalized title was already alerted (cross-worker dedup)."""
+        norm = self._normalize_title(title)
+        if not norm:
+            return False
+        return self._sent_title_alerts.get(norm) is not None
+
+    def _mark_title_alerted(self, title: str):
+        """Mark a normalized title as alerted."""
+        norm = self._normalize_title(title)
+        if norm:
+            self._sent_title_alerts[norm] = time.time()
+
     def has_resolution_alerted(self, event_id: str) -> bool:
         """True si ya se envió el resultado de resolución para este evento."""
         return self._sent_resolution_alerts.get(event_id) is not None
@@ -441,11 +479,15 @@ class TelegramBot:
     
     def send_opportunity(self, event: str, edge: float, platform_a: str, platform_b: str, event_id: str = None, category: str = None, worker_id: str = None):
         """Send an opportunity alert with dedup, routed to the category sub-room."""
-        # Dedup check
+        # Dedup por event_id (mismo slug/market)
         if event_id and self.has_been_alerted(event_id):
+            return False
+        # Dedup por título normalizado (mismo partido detectado por workers distintos)
+        if self._title_already_alerted(event):
             return False
         if event_id:
             self.mark_alerted(event_id)
+        self._mark_title_alerted(event)
         
         # Format clean ID display from event_id or slug
         event_ref = event_id if event_id else "N/A"

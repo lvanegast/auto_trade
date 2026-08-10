@@ -249,38 +249,50 @@ class ResolutionSniperFeeder(BaseFeeder):
 
                     # Check for single/binary markets
                     from src.limitless_price_cache import async_get_limitless_executable_price
-                    book = await async_get_limitless_executable_price(slug)
-                    if book:
-                        yes_ask = book["yes_ask"]
-                        yes_bid = book["yes_bid"]
-                        no_ask = 1.0 - yes_bid
-                        # Lado YES casi-seguro
-                        if self.min_entry_price <= yes_ask <= self.max_entry_price and book["ask_size"] > 0:
-                            event_id = f"limitless_sniper_{slug}"
-                            if self._confirm(event_id):
-                                snipers_found += 1
-                                print(f"[Resolution Sniper] Found YES ({category}): {title[:50]} YES_ASK={yes_ask:.4f} remaining={remaining:.0f}s")
-                                await self._emit_sniper_signal(slug, title, yes_ask, side="YES", category=category)
+
+                    # Si el grupo tiene sub-mercados, NO procesar el slug principal
+                    # (es solo el wrapper del grupo). Procesar sub-mercados abajo
+                    # usando el slug del grupo como event_id para dedup de Telegram.
+                    subs = getattr(m, "markets", None) or (m.get("markets") if isinstance(m, dict) else None)
+                    _has_subs = subs and isinstance(subs, list) and len(subs) > 0
+
+                    if not _has_subs:
+                        book = await async_get_limitless_executable_price(slug)
+                        if book:
+                            yes_ask = book["yes_ask"]
+                            yes_bid = book["yes_bid"]
+                            no_ask = 1.0 - yes_bid
+                            # Lado YES casi-seguro
+                            if self.min_entry_price <= yes_ask <= self.max_entry_price and book["ask_size"] > 0:
+                                event_id = f"limitless_sniper_{slug}"
+                                if self._confirm(event_id):
+                                    snipers_found += 1
+                                    print(f"[Resolution Sniper] Found YES ({category}): {title[:50]} YES_ASK={yes_ask:.4f} remaining={remaining:.0f}s")
+                                    await self._emit_sniper_signal(slug, title, yes_ask, side="YES", category=category)
+                                else:
+                                    _diag["waiting_confirmation"] += 1
+                            # Lado NO casi-seguro (NO_ask = 1 - yes_bid)
+                            elif self.min_entry_price <= no_ask <= self.max_entry_price and book["bid_size"] > 0:
+                                event_id = f"limitless_sniper_{slug}"
+                                if self._confirm(event_id):
+                                    snipers_found += 1
+                                    print(f"[Resolution Sniper] Found NO ({category}): {title[:50]} NO_ASK={no_ask:.4f} remaining={remaining:.0f}s")
+                                    await self._emit_sniper_signal(slug, title, no_ask, side="NO", category=category)
+                                else:
+                                    _diag["waiting_confirmation"] += 1
                             else:
-                                _diag["waiting_confirmation"] += 1
-                        # Lado NO casi-seguro (NO_ask = 1 - yes_bid)
-                        elif self.min_entry_price <= no_ask <= self.max_entry_price and book["bid_size"] > 0:
-                            event_id = f"limitless_sniper_{slug}"
-                            if self._confirm(event_id):
-                                snipers_found += 1
-                                print(f"[Resolution Sniper] Found NO ({category}): {title[:50]} NO_ASK={no_ask:.4f} remaining={remaining:.0f}s")
-                                await self._emit_sniper_signal(slug, title, no_ask, side="NO", category=category)
-                            else:
-                                _diag["waiting_confirmation"] += 1
+                                self._reject(f"limitless_sniper_{slug}")
+                                _diag["price_out_of_range"] += 1
                         else:
-                            self._reject(f"limitless_sniper_{slug}")
-                            _diag["price_out_of_range"] += 1
-                    else:
-                        _diag["no_liquidity"] += 1
+                            _diag["no_liquidity"] += 1
 
                     # Check sub-markets in groups
-                    subs = getattr(m, "markets", None) or (m.get("markets") if isinstance(m, dict) else None)
-                    if subs and isinstance(subs, list):
+                    if _has_subs:
+                        # Dedup a nivel de grupo: usar el slug del grupo como event_id
+                        # base para que todos los sub-mercados del mismo partido
+                        # compartan la clave de Telegram y solo 1 mensaje por grupo.
+                        group_event_id = f"limitless_sniper_{slug}"
+                        _group_already_alerted = False
                         for sub in subs:
                             sub_slug = getattr(sub, "slug", "") if hasattr(sub, "slug") else (sub.get("slug", "") if isinstance(sub, dict) else "")
                             sub_title = getattr(sub, "title", "") if hasattr(sub, "title") else (sub.get("title", "") if isinstance(sub, dict) else "")
@@ -307,19 +319,21 @@ class ResolutionSniperFeeder(BaseFeeder):
                                 sub_yes = sub_book["yes_ask"]
                                 sub_no = 1.0 - sub_book["yes_bid"]
                                 if self.min_entry_price <= sub_yes <= self.max_entry_price and sub_book["ask_size"] > 0:
-                                    event_id = f"limitless_sniper_{sub_slug}"
-                                    if self._confirm(event_id):
-                                        snipers_found += 1
-                                        print(f"[Resolution Sniper] Found YES ({category}): {sub_title[:50]} YES_ASK={sub_yes:.4f} remaining={sub_remaining:.0f}s")
-                                        await self._emit_sniper_signal(sub_slug, sub_title, sub_yes, side="YES", category=category)
+                                    if self._confirm(group_event_id):
+                                        if not _group_already_alerted:
+                                            snipers_found += 1
+                                            _group_already_alerted = True
+                                            print(f"[Resolution Sniper] Found YES ({category}): {sub_title[:50]} YES_ASK={sub_yes:.4f} remaining={sub_remaining:.0f}s")
+                                            await self._emit_sniper_signal(sub_slug, sub_title, sub_yes, side="YES", category=category)
                                     else:
                                         _diag["waiting_confirmation"] += 1
                                 elif self.min_entry_price <= sub_no <= self.max_entry_price and sub_book["bid_size"] > 0:
-                                    event_id = f"limitless_sniper_{sub_slug}"
-                                    if self._confirm(event_id):
-                                        snipers_found += 1
-                                        print(f"[Resolution Sniper] Found NO ({category}): {sub_title[:50]} NO_ASK={sub_no:.4f} remaining={sub_remaining:.0f}s")
-                                        await self._emit_sniper_signal(sub_slug, sub_title, sub_no, side="NO", category=category)
+                                    if self._confirm(group_event_id):
+                                        if not _group_already_alerted:
+                                            snipers_found += 1
+                                            _group_already_alerted = True
+                                            print(f"[Resolution Sniper] Found NO ({category}): {sub_title[:50]} NO_ASK={sub_no:.4f} remaining={sub_remaining:.0f}s")
+                                            await self._emit_sniper_signal(sub_slug, sub_title, sub_no, side="NO", category=category)
                                     else:
                                         _diag["waiting_confirmation"] += 1
                                 else:
