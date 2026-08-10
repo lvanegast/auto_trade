@@ -514,17 +514,12 @@ class TradingWorker:
                         and self.kalshi_private_key_path
                     ):
                         await self._sync_kalshi_portfolio()
-                    elif self.feeder_type == "resolution_sniper":
-                        # Ambos workers (7 crypto, 8 sports) resuelven sus propias posiciones.
+                    elif self.feeder_type in ("resolution_sniper", "limitless_sports", "multi_platform", "maker_making", "binary_arb"):
+                        # Cada worker resuelve SUS PROPIAS posiciones y oportunidades.
+                        # _check_market_resolutions ahora está scoped por worker_id
+                        # así que no hay duplicados de Telegram entre workers.
                         await self._resolve_expired_positions_simulated()
-                        # El monitor GLOBAL de resoluciones (revisa TODOS los mercados
-                        # abiertos/pendientes y manda Telegram) corre SOLO en un worker,
-                        # si no cada mercado resuelto generaría mensajes duplicados.
-                        monitor_worker = os.getenv("SNIPER_RESOLUTION_MONITOR_WORKER", "worker_8")
-                        if self.worker_id == monitor_worker:
-                            await self._check_market_resolutions()
-                    elif self.feeder_type in ("kalshi", "limitless", "limitless_sports", "limitless_ws", "multi_platform", "binary_arb"):
-                        await self._resolve_expired_positions_simulated()
+                        await self._check_market_resolutions()
                 except Exception as e:
                     print(f"[Sync Error] Error en sincronización periódica: {e}")
 
@@ -697,7 +692,7 @@ class TradingWorker:
         unresolved_opps = []
         try:
             if hasattr(self.db, "get_pending_opportunities"):
-                unresolved_opps = self.db.get_pending_opportunities() or []
+                unresolved_opps = self.db.get_pending_opportunities(worker_id=self.worker_id) or []
         except Exception:
             pass
         if not open_pos and not unresolved_opps:

@@ -655,21 +655,33 @@ class DatabaseManager:
         finally:
             self._return_connection(conn)
 
-    def get_pending_opportunities(self):
-        """Get all opportunities that haven't been resolved yet."""
-        query = """
-            SELECT id, event_id, event_title, edge_pct, platform_a_yes_ask, 
-                   platform_b_no_ask, entry_price, expected_profit, timestamp,
-                   market_slug, category, direction, outcomes_count
-            FROM edge_snapshots 
-            WHERE resolution_status = 'pending'
-            ORDER BY timestamp DESC
-        """
+    def get_pending_opportunities(self, worker_id: str = None):
+        """Get all opportunities that haven't been resolved yet (optionally scoped to a worker)."""
+        if worker_id:
+            query = """
+                SELECT id, event_id, event_title, edge_pct, platform_a_yes_ask, 
+                       platform_b_no_ask, entry_price, expected_profit, timestamp,
+                       market_slug, category, direction, outcomes_count
+                FROM edge_snapshots 
+                WHERE resolution_status = 'pending' AND worker_id = %s
+                ORDER BY timestamp DESC
+            """
+            params = (worker_id,)
+        else:
+            query = """
+                SELECT id, event_id, event_title, edge_pct, platform_a_yes_ask, 
+                       platform_b_no_ask, entry_price, expected_profit, timestamp,
+                       market_slug, category, direction, outcomes_count
+                FROM edge_snapshots 
+                WHERE resolution_status = 'pending'
+                ORDER BY timestamp DESC
+            """
+            params = ()
         conn = None
         try:
             conn = self._get_connection()
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute(query)
+                cursor.execute(query, params)
                 return cursor.fetchall()
         finally:
             self._return_connection(conn)
