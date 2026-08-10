@@ -483,11 +483,18 @@ class TelegramBot:
         if event_id and self.has_been_alerted(event_id):
             return False
         # Dedup por título normalizado (mismo partido detectado por workers distintos)
+        # Usar tanto event como event_id para cubrir ambos casos:
+        # - sports_arb pasa título legible ("LP, Santa Clara vs Nacional")
+        # - cross_platform_arb pasa slug ("match_nacional-vs-santa-clara__...")
         if self._title_already_alerted(event):
+            return False
+        if event_id and self._title_already_alerted(event_id):
             return False
         if event_id:
             self.mark_alerted(event_id)
         self._mark_title_alerted(event)
+        if event_id:
+            self._mark_title_alerted(event_id)
         
         # Format clean ID display from event_id or slug
         event_ref = event_id if event_id else "N/A"
