@@ -220,14 +220,24 @@ class SecurityGuard:
             "max_trades_per_minute": self.max_trades_per_minute,
             "consecutive_losses": dict(self._consecutive_losses),
             "concurrent_positions": len(self.db.get_open_positions()) if self.db else 0,
-            "concurrent_positions_per_worker": {
-                wid: len(self.db.get_open_positions(worker_id=wid))
-                for wid in ["worker_1", "worker_2", "worker_3", "worker_4"]
-            }
-            if self.db
-            else {},
+            "concurrent_positions_per_worker": self._positions_per_active_worker(),
             "max_concurrent_positions": self.max_concurrent_positions,
         }
+
+    def _positions_per_active_worker(self) -> dict:
+        """
+        Cuenta posiciones abiertas por worker a partir de los datos reales
+        (una sola consulta), en vez de una lista fija de worker_ids que queda
+        desactualizada cada vez que se agrega un worker nuevo.
+        """
+        if not self.db:
+            return {}
+        counts: dict[str, int] = {}
+        for pos in self.db.get_open_positions():
+            wid = pos.get("worker_id")
+            if wid:
+                counts[wid] = counts.get(wid, 0) + 1
+        return counts
 
     def _ensure_daily_reset(self):
         today = datetime.date.today().isoformat()

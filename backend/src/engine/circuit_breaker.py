@@ -8,7 +8,7 @@ detiene inmediatamente la ejecución de todos los trabajadores y bloquea la emis
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Tuple
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,21 @@ class CircuitBreaker:
         self.tripped_reason = ""
         self.tripped_timestamp = None
         self.starting_capital_day = 0.0
+        self._day_anchor = None  # date (UTC) en que se fijó starting_capital_day
+
+    def update_daily_baseline(self, current_total_equity: float) -> float:
+        """
+        Fija/reinicia el baseline de pérdida DIARIA. Debe llamarse antes de
+        check_portfolio_safety en cada ciclo — reinicia automáticamente al
+        cruzar medianoche UTC, en vez de fijar el baseline una sola vez para
+        toda la vida del proceso.
+        """
+        today = datetime.now(timezone.utc).date()
+        if self._day_anchor != today or self.starting_capital_day <= 0:
+            self.starting_capital_day = current_total_equity
+            self._day_anchor = today
+            logger.info(f"[CIRCUIT BREAKER] Baseline diario reiniciado ({today}): ${current_total_equity:.2f}")
+        return self.starting_capital_day
 
     def check_portfolio_safety(self, initial_capital: float, current_total_equity: float) -> Tuple[bool, str]:
         """

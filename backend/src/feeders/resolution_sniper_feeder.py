@@ -13,11 +13,6 @@ from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
 
 
-# Consecutive-scan confirmation: {event_id: count} — solo emitir tras N scans estables
-_sniper_confirmations: dict = {}
-_sniper_confirmations_seen: dict = {}  # última vez visto, para limpieza
-
-
 class ResolutionSniperFeeder(BaseFeeder):
     def __init__(
         self,
@@ -31,6 +26,11 @@ class ResolutionSniperFeeder(BaseFeeder):
         # No escanear las dos en la misma instancia: contamina las señales y el
         # tracking de resoluciones de un worker con la categoría del otro.
         self.scope = scope
+        # Confirmación de scans consecutivos: por INSTANCIA (antes eran dicts a
+        # nivel de módulo, compartidos entre el feeder de worker 7 y el de worker 8,
+        # pese a que el diseño asume aislamiento total por scope).
+        self._sniper_confirmations: dict = {}
+        self._sniper_confirmations_seen: dict = {}
         self.poll_interval = float(os.getenv("SNIPER_POLL_INTERVAL", "5.0"))
         # Rate-limit interno por instancia (cada worker escanea a su propio ritmo)
         self._last_scan_time = 0.0
@@ -98,24 +98,23 @@ class ResolutionSniperFeeder(BaseFeeder):
     def _confirm(self, event_id: str) -> bool:
         """Incrementa el contador de scans consecutivos; True cuando alcanza el mínimo."""
         now = time.time()
-        if event_id not in _sniper_confirmations:
-            _sniper_confirmations[event_id] = 0
-        _sniper_confirmations[event_id] += 1
-        _sniper_confirmations_seen[event_id] = now
-        return _sniper_confirmations[event_id] >= self.min_consecutive_scans
+        if event_id not in self._sniper_confirmations:
+            self._sniper_confirmations[event_id] = 0
+        self._sniper_confirmations[event_id] += 1
+        self._sniper_confirmations_seen[event_id] = now
+        return self._sniper_confirmations[event_id] >= self.min_consecutive_scans
 
     def _reject(self, event_id: str):
         """Resetea la confirmación (precio salió del rango o sin liquidez)."""
-        _sniper_confirmations.pop(event_id, None)
+        self._sniper_confirmations.pop(event_id, None)
 
-    @staticmethod
-    def _prune_confirmations(max_age: float = 120.0):
+    def _prune_confirmations(self, max_age: float = 120.0):
         """Limpia confirmaciones viejas para no acumular memoria."""
         now = time.time()
-        for k in list(_sniper_confirmations_seen):
-            if now - _sniper_confirmations_seen.get(k, 0) > max_age:
-                _sniper_confirmations.pop(k, None)
-                _sniper_confirmations_seen.pop(k, None)
+        for k in list(self._sniper_confirmations_seen):
+            if now - self._sniper_confirmations_seen.get(k, 0) > max_age:
+                self._sniper_confirmations.pop(k, None)
+                self._sniper_confirmations_seen.pop(k, None)
 
     async def start(self):
         self.running = True

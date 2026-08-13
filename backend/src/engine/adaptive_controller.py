@@ -49,14 +49,17 @@ class AdaptiveController:
             # -------------------------------------------------------------
             # LÓGICA DE CONTROL POR RETROALIMENTACIÓN (FEEDBACK CONTROL LOOP)
             # -------------------------------------------------------------
-            # Regla 1: Si el Profit Factor es excelente (> 2.0) y Win Rate > 85% -> Escalar posición (+15%)
-            if profit_factor >= 2.0 and win_rate >= 85.0:
-                max_pos = float(os.getenv("MAX_ADAPTIVE_POSITION_USD", "200.0"))
-                adj_pos_size = min(max_pos, current_pos_size * 1.15)
-                action_log.append(f"Performance Excelente (PF: {profit_factor:.2f}, WR: {win_rate:.1f}%) -> Escalar Posición a ${adj_pos_size:.2f}")
+            # NOTA: se eliminó la regla de escalado de posición por buen rendimiento.
+            # En arbitraje puro el edge ya está garantizado matemáticamente al entrar
+            # (1xN por <$1.00); un Win Rate alto no valida ni invalida ese edge, y para
+            # estrategias de payoff asimétrico (ej. Resolution Sniper) un WR~97% es
+            # justamente lo esperado ANTES de la primera pérdida catastrófica (ver
+            # AGENTS.md statistical caveat). Escalar posición ahí sería aumentar la
+            # exposición justo antes del blowup. Solo se conserva la protección
+            # defensiva (Regla 2).
 
             # Regla 2: Si Win Rate cae por debajo de 60% o Profit Factor < 1.1 -> Subir exigencia de Edge (+0.5%) y reducir posición (-20%)
-            elif win_rate < 60.0 or profit_factor < 1.1:
+            if win_rate < 60.0 or profit_factor < 1.1:
                 adj_edge = min(0.08, current_min_edge + 0.005)
                 min_pos = float(os.getenv("MIN_ADAPTIVE_POSITION_USD", "10.0"))
                 adj_pos_size = max(min_pos, current_pos_size * 0.80)

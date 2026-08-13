@@ -212,15 +212,19 @@ class MultiPlatformFeeder(BaseFeeder):
             if markets:
                 first = markets[0]
                 first_slug = first.slug if hasattr(first, "slug") else ""
-                first_prices = getattr(first, "prices", None) or [0.5]
-                price = float(first_prices[0]) if first_prices else 0.5
-                event = PriceUpdateEvent(
-                    symbol=f"multi_platform_tick",
-                    price=price,
-                    ask=price,
-                    bid=price,
-                )
-                await self.queue.put(event)
+                first_prices = getattr(first, "prices", None)
+                if first_prices:
+                    price = float(first_prices[0])
+                    event = PriceUpdateEvent(
+                        symbol=f"multi_platform_tick",
+                        price=price,
+                        ask=price,
+                        bid=price,
+                    )
+                    await self.queue.put(event)
+                # Si no hay precio real, no emitir el tick — el tracker ya se
+                # actualizó arriba con datos reales del book; este evento es solo
+                # el disparador para evaluate_signal, no debe inventar un precio.
 
     def _normalize_match_name(self, title: str) -> str:
         """Normaliza nombre de match para emparejar Limitless y Kalshi."""

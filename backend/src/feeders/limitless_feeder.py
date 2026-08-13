@@ -168,8 +168,8 @@ class LimitlessFeeder(BaseFeeder):
                         async with latency_tracker.measure("limitless", "get_market") as m:
                             market = await market_fetcher.get_market(slug)
                             m.result = market
-                        prices = market.prices if hasattr(market, "prices") else [0.5, 0.5]
-                        yes_price = float(prices[0]) if prices else 0.5
+                        prices = market.prices if hasattr(market, "prices") else []
+                        yes_price = float(prices[0]) if prices else None
 
                         # Query real orderbook to get bids/asks
                         bid, ask = 0.0, 0.0
@@ -380,8 +380,8 @@ class LimitlessFeeder(BaseFeeder):
 
     async def _handle_single_market(self, market_fetcher, market, slug):
         """Handle a single (non-group) market."""
-        prices = market.prices if hasattr(market, "prices") else [0.5, 0.5]
-        yes_price = prices[0] if len(prices) > 0 else 0.5
+        prices = market.prices if hasattr(market, "prices") else []
+        yes_price = prices[0] if len(prices) > 0 else None
         actual_slug = slug
 
         try:
@@ -413,9 +413,12 @@ class LimitlessFeeder(BaseFeeder):
                 no_ask=round(1.0 - float(bid), 4),
             )
 
+        # yes_price viene del listing (market.prices) y puede estar ausente/desactualizado;
+        # el book (bid/ask) ya fue validado como ejecutable arriba, así que usamos el
+        # ask real como precio en vez de arriesgarnos a emitir un valor inventado.
         event = PriceUpdateEvent(
             symbol=self.symbol,
-            price=float(yes_price),
+            price=float(ask),
             ask=float(ask),
             bid=float(bid),
         )

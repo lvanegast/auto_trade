@@ -107,12 +107,29 @@ class NegRiskMultiOutcomeStrategy(BaseStrategy):
                     )
 
                 arb_type = "YES" if negrisk_edge > 0 else "NO"
+                pending_signals = []
                 for out in outcomes:
                     if negrisk_edge > 0:
-                        token_price = out.get("yes_price", 0.10)
+                        token_price = out.get("yes_price")
                     else:
-                        token_price = out.get("no_price", round(1.0 - out.get("yes_price", 0.50), 6))
-                    self._pending_signals.append(
+                        no_price = out.get("no_price")
+                        yes_price = out.get("yes_price")
+                        token_price = no_price if no_price is not None else (
+                            round(1.0 - yes_price, 6) if yes_price is not None else None
+                        )
+                    if token_price is None:
+                        # Precio real no disponible para esta pata: abortar todo el
+                        # grupo en vez de inventar un precio (rompería el 1x$1.00 garantizado).
+                        if self.db:
+                            self.db.log(
+                                "WARNING",
+                                f"[NegRisk] Abortando entrada '{title}': falta precio real para "
+                                f"'{out.get('title')}' ({'yes_price' if negrisk_edge > 0 else 'no_price'}).",
+                                self.worker_id,
+                            )
+                        del self._arb_groups[event_id]
+                        return None
+                    pending_signals.append(
                         SignalEvent(
                             symbol=out.get("slug", self.symbol),
                             side="BUY",
@@ -123,6 +140,7 @@ class NegRiskMultiOutcomeStrategy(BaseStrategy):
                         )
                     )
 
+                self._pending_signals.extend(pending_signals)
                 if self._pending_signals:
                     return self._pending_signals.pop(0)
 

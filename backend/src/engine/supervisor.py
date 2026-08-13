@@ -54,110 +54,8 @@ class TradingWorker:
 
         self.base_asset, self.quote_asset = self._parse_symbol()
 
-        # Inicializar estrategia según tipo de feeder
-        if self.feeder_type == "limitless_ws":
-            from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
-            self.strategy = AtomicCryptoArbStrategy(
-                self.symbol,
-                min_profit_target=float(os.getenv("CRYPTO_MAKER_EDGE", "0.01")),
-                position_size_usd=float(os.getenv("CRYPTO_MAKER_SIZE", "1.0")),
-                leg_size_min_usd=float(os.getenv("CRYPTO_LEG_MIN_USD", "1.0")),
-                leg_size_max_usd=float(os.getenv("CRYPTO_LEG_MAX_USD", "3.0")),
-                db=self.db,
-                worker_id=self.worker_id,
-                observation_only=True,
-            )
-        elif self.feeder_type in ("kalshi", "polymarket", "limitless"):
-            min_edge = float(os.getenv("MIN_ARB_EDGE_PCT", "0.03"))
-            position_size = float(os.getenv("ARB_POSITION_SIZE_PCT", "0.5"))
-            self.strategy = CrossPlatformArbitrageStrategy(
-                self.symbol,
-                feeder_type=self.feeder_type,
-                min_edge_pct=min_edge,
-                position_size_pct=position_size,
-                db=self.db,
-                worker_id=self.worker_id,
-            )
-        elif self.feeder_type == "limitless_sports":
-            min_edge = float(os.getenv("SPORTS_ARB_EDGE_PCT", "0.03"))
-            position_size_usd = float(os.getenv("SPORTS_POSITION_SIZE_USD", "10.0"))
-            self.strategy = SportsArbitrageStrategy(
-                self.symbol,
-                feeder_type=self.feeder_type,
-                min_edge_pct=min_edge,
-                position_size_usd=position_size_usd,
-                db=self.db,
-                worker_id=self.worker_id,
-            )
-        elif self.feeder_type == "binary_arb":
-            self.strategy = OracleMomentumStrategy(
-                self.symbol,
-                db=self.db,
-                worker_id=self.worker_id,
-            )
-        elif self.feeder_type == "maker_making":
-            self.strategy = MarketMakingStrategy(
-                self.symbol,
-                position_size_usd=float(os.getenv("MM_POSITION_SIZE_USD", "25.0")),
-                half_spread_pct=float(os.getenv("MM_HALF_SPREAD_PCT", "0.02")),
-                min_spread_pct=float(os.getenv("MM_MIN_SPREAD_PCT", "0.01")),
-                max_inventory=int(os.getenv("MM_MAX_INVENTORY", "5")),
-                cooldown_seconds=float(os.getenv("MM_COOLDOWN_SECONDS", "30.0")),
-                min_edge_pct=float(os.getenv("MM_MIN_EDGE_PCT", "0.005")),
-                db=self.db,
-                worker_id=self.worker_id,
-            )
-        else:
-            self.strategy = LeadLagArbitrageStrategy(
-                self.symbol, db=self.db, worker_id=self.worker_id
-            )
-
-        if self.feeder_type == "oanda":
-            self.feeder = OandaFeeder(self.symbol, self.queue)
-        elif self.feeder_type == "ig":
-            self.feeder = IGFeeder(self.symbol, self.queue)
-        elif self.feeder_type == "alpaca":
-            self.feeder = AlpacaFeeder(self.symbol, self.queue)
-        elif self.feeder_type == "kalshi":
-            self.feeder = KalshiFeeder(self.symbol, self.queue)
-        elif self.feeder_type == "binance":
-            self.feeder = BinanceFeeder(self.symbol, self.queue)
-        elif self.feeder_type == "polymarket":
-            self.feeder = PolymarketFeeder(self.symbol, self.queue)
-        elif self.feeder_type == "limitless":
-            self.feeder = LimitlessFeeder(self.symbol, self.queue)
-        elif self.feeder_type == "limitless_ws":
-            self.feeder = LimitlessWebSocketFeeder(self.symbol, self.queue)
-        elif self.feeder_type == "limitless_sports":
-            self.feeder = LimitlessSportsFeeder(self.symbol, self.queue)
-        elif self.feeder_type == "resolution_sniper":
-            from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
-            # El scope del feeder se deriva del symbol del worker:
-            # "CRYPTO" -> escanea solo crypto, "SPORTS" -> escanea solo sports.
-            # Cada worker tiene su propio feeder; NO mezclar categorías.
-            scope = self.symbol.lower() if self.symbol.lower() in ("crypto", "sports") else "crypto"
-            self.feeder = ResolutionSniperFeeder(self.symbol, self.queue, scope=scope)
-        elif self.feeder_type == "maker_two_leg":
-            from src.feeders.maker_two_leg_feeder import MakerTwoLegFeeder
-            self.feeder = MakerTwoLegFeeder(self.symbol, self.queue)
-        elif self.feeder_type == "multi_platform":
-            from src.feeders.multi_platform_feeder import MultiPlatformFeeder
-            self.feeder = MultiPlatformFeeder(self.symbol, self.queue)
-        elif self.feeder_type == "binary_arb":
-            self.feeder = LimitlessOracleFeeder(self.symbol, self.queue)
-        elif self.feeder_type == "maker_making":
-            self.feeder = LimitlessFeeder(self.symbol, self.queue)
-        elif self.feeder_type == "hyperliquid":
-            from src.feeders.hyperliquid_feeder import HyperliquidFeeder
-            self.feeder = HyperliquidFeeder(self.symbol, self.queue)
-        elif self.feeder_type == "dydx":
-            from src.feeders.dydx_feeder import DydxFeeder
-            self.feeder = DydxFeeder(self.symbol, self.queue)
-        elif self.feeder_type == "forecastex":
-            from src.feeders.forecastex_feeder import ForecastExFeeder
-            self.feeder = ForecastExFeeder(self.symbol, self.queue)
-        else:
-            self.feeder = MockFeeder(self.symbol, self.queue, interval=1.0)
+        self.strategy = self._build_strategy()
+        self.feeder = self._build_feeder()
 
         self.is_running = False
         self.engine_task = None
@@ -216,6 +114,182 @@ class TradingWorker:
 
         # Saldo virtual inicial
         self._init_portfolio()
+
+    def _build_strategy(self):
+        """Instancia la estrategia según feeder_type. Extraído del __init__ para
+        no mezclar selección de estrategia, selección de feeder y setup de
+        credenciales en un solo bloque de 200+ líneas."""
+        if self.feeder_type == "limitless_ws":
+            from src.strategy.atomic_crypto_arb import AtomicCryptoArbStrategy
+            return AtomicCryptoArbStrategy(
+                self.symbol,
+                min_profit_target=float(os.getenv("CRYPTO_MAKER_EDGE", "0.01")),
+                position_size_usd=float(os.getenv("CRYPTO_MAKER_SIZE", "1.0")),
+                leg_size_min_usd=float(os.getenv("CRYPTO_LEG_MIN_USD", "1.0")),
+                leg_size_max_usd=float(os.getenv("CRYPTO_LEG_MAX_USD", "3.0")),
+                db=self.db,
+                worker_id=self.worker_id,
+                observation_only=True,
+            )
+        elif self.feeder_type in ("kalshi", "polymarket", "limitless"):
+            min_edge = float(os.getenv("MIN_ARB_EDGE_PCT", "0.03"))
+            position_size = float(os.getenv("ARB_POSITION_SIZE_PCT", "0.5"))
+            return CrossPlatformArbitrageStrategy(
+                self.symbol,
+                feeder_type=self.feeder_type,
+                min_edge_pct=min_edge,
+                position_size_pct=position_size,
+                db=self.db,
+                worker_id=self.worker_id,
+            )
+        elif self.feeder_type == "limitless_sports":
+            min_edge = float(os.getenv("SPORTS_ARB_EDGE_PCT", "0.03"))
+            position_size_usd = float(os.getenv("SPORTS_POSITION_SIZE_USD", "10.0"))
+            return SportsArbitrageStrategy(
+                self.symbol,
+                feeder_type=self.feeder_type,
+                min_edge_pct=min_edge,
+                position_size_usd=position_size_usd,
+                db=self.db,
+                worker_id=self.worker_id,
+            )
+        elif self.feeder_type == "binary_arb":
+            return OracleMomentumStrategy(
+                self.symbol,
+                db=self.db,
+                worker_id=self.worker_id,
+            )
+        elif self.feeder_type == "maker_making":
+            return MarketMakingStrategy(
+                self.symbol,
+                position_size_usd=float(os.getenv("MM_POSITION_SIZE_USD", "25.0")),
+                half_spread_pct=float(os.getenv("MM_HALF_SPREAD_PCT", "0.02")),
+                min_spread_pct=float(os.getenv("MM_MIN_SPREAD_PCT", "0.01")),
+                max_inventory=int(os.getenv("MM_MAX_INVENTORY", "5")),
+                cooldown_seconds=float(os.getenv("MM_COOLDOWN_SECONDS", "30.0")),
+                min_edge_pct=float(os.getenv("MM_MIN_EDGE_PCT", "0.005")),
+                db=self.db,
+                worker_id=self.worker_id,
+            )
+        else:
+            return LeadLagArbitrageStrategy(
+                self.symbol, db=self.db, worker_id=self.worker_id
+            )
+
+    def _build_feeder(self):
+        """Instancia el feeder según feeder_type. Extraído del __init__ (ver
+        _build_strategy) — mismo motivo: separar responsabilidades del constructor."""
+        if self.feeder_type == "oanda":
+            return OandaFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "ig":
+            return IGFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "alpaca":
+            return AlpacaFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "kalshi":
+            return KalshiFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "binance":
+            return BinanceFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "polymarket":
+            return PolymarketFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "limitless":
+            return LimitlessFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "limitless_ws":
+            return LimitlessWebSocketFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "limitless_sports":
+            return LimitlessSportsFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "resolution_sniper":
+            from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
+            # El scope del feeder se deriva del symbol del worker:
+            # "CRYPTO" -> escanea solo crypto, "SPORTS" -> escanea solo sports.
+            # Cada worker tiene su propio feeder; NO mezclar categorías.
+            scope = self.symbol.lower() if self.symbol.lower() in ("crypto", "sports") else "crypto"
+            return ResolutionSniperFeeder(self.symbol, self.queue, scope=scope)
+        elif self.feeder_type == "maker_two_leg":
+            from src.feeders.maker_two_leg_feeder import MakerTwoLegFeeder
+            return MakerTwoLegFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "multi_platform":
+            from src.feeders.multi_platform_feeder import MultiPlatformFeeder
+            return MultiPlatformFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "binary_arb":
+            return LimitlessOracleFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "maker_making":
+            return LimitlessFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "hyperliquid":
+            from src.feeders.hyperliquid_feeder import HyperliquidFeeder
+            return HyperliquidFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "dydx":
+            from src.feeders.dydx_feeder import DydxFeeder
+            return DydxFeeder(self.symbol, self.queue)
+        elif self.feeder_type == "forecastex":
+            from src.feeders.forecastex_feeder import ForecastExFeeder
+            return ForecastExFeeder(self.symbol, self.queue)
+        else:
+            return MockFeeder(self.symbol, self.queue, interval=1.0)
+
+        self.is_running = False
+        self.engine_task = None
+        self.feeder_task = None
+        self.sync_task = None
+        self.last_bid = 0.0
+        self.last_ask = 0.0
+        self.trading_mode = os.getenv("ALPACA_TRADING_MODE", "paper").lower()
+
+        # Cliente de ejecución para Alpaca
+        self.alpaca_client = None
+        self.execution_type = os.getenv("EXECUTION_TYPE", "alpaca").lower()
+        if self.feeder_type == "alpaca" and self.execution_type == "alpaca":
+            from alpaca.trading.client import TradingClient
+
+            api_key = os.getenv("ALPACA_API_KEY")
+            secret_key = os.getenv("ALPACA_SECRET_KEY")
+            trading_mode = os.getenv("ALPACA_TRADING_MODE", "paper").lower()
+            is_paper = trading_mode == "paper"
+
+            if api_key and secret_key and "your_alpaca" not in api_key:
+                self.alpaca_client = TradingClient(api_key, secret_key, paper=is_paper)
+                self.db.log(
+                    "INFO",
+                    f"Cliente de ejecución de Alpaca inicializado (Modo: {trading_mode.upper()}).",
+                    self.worker_id,
+                )
+            else:
+                self.db.log(
+                    "WARNING",
+                    "Cliente de ejecución de Alpaca no configurado debido a credenciales faltantes o por defecto.",
+                    self.worker_id,
+                )
+
+        # Credenciales de OANDA
+        self.oanda_account_id = os.getenv("OANDA_ACCOUNT_ID")
+        self.oanda_token = os.getenv("OANDA_API_TOKEN")
+        self.oanda_env = os.getenv("OANDA_ENV", "practice").lower()
+        if self.oanda_env == "trade":
+            self.oanda_rest_url = (
+                f"https://api-fxtrade.oanda.com/v3/accounts/{self.oanda_account_id}"
+            )
+        else:
+            self.oanda_rest_url = (
+                f"https://api-fxpractice.oanda.com/v3/accounts/{self.oanda_account_id}"
+            )
+
+        # Credenciales de Kalshi
+        self.kalshi_api_key_id = os.getenv("KALSHI_API_KEY_ID")
+        self.kalshi_private_key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH")
+        self.kalshi_env = os.getenv("KALSHI_ENV", "demo").lower()
+        if self.kalshi_env == "prod":
+            self.kalshi_rest_url = "https://external-api.kalshi.com/trade-api/v2"
+        else:
+            self.kalshi_rest_url = "https://external-api.demo.kalshi.co/trade-api/v2"
+
+        # Saldo virtual inicial
+        self._init_portfolio()
+
+    def _get_balances(self) -> dict:
+        """Balances actuales por asset para este worker (una sola consulta a DB)."""
+        return {
+            item["asset"]: float(item["free_balance"])
+            for item in self.db.get_portfolio(self.worker_id)
+        }
 
     def _parse_symbol(self) -> tuple:
         symbol = self.symbol
@@ -529,10 +603,9 @@ class TradingWorker:
                     security_guard.update_equity(total)
 
                     from src.engine.circuit_breaker import circuit_breaker
-                    if circuit_breaker.starting_capital_day <= 0:
-                        circuit_breaker.starting_capital_day = total
+                    baseline = circuit_breaker.update_daily_baseline(total)
                     safe, reason = circuit_breaker.check_portfolio_safety(
-                        circuit_breaker.starting_capital_day, total
+                        baseline, total
                     )
                     if not safe:
                         self.db.log("WARNING", f"[CIRCUIT BREAKER] {reason}", self.worker_id)
@@ -900,10 +973,7 @@ class TradingWorker:
                                 )
                                 
                                 # PREVENTION: Verify balance covers all legs + gas
-                                balances = {
-                                    item["asset"]: float(item["free_balance"])
-                                    for item in self.db.get_portfolio(self.worker_id)
-                                }
+                                balances = self._get_balances()
                                 quote_balance = balances.get(self.quote_asset, 0.0)
                                 
                                 fill_guard = FillGuard(self.db, self.worker_id)
@@ -929,26 +999,50 @@ class TradingWorker:
                                             return True, None, None
                                         except Exception as e:
                                             return False, e, None
-                                    
-                                    async def sell_fn(sig):
-                                        try:
-                                            await self._execute_order(sig)
-                                            return True
-                                        except:
-                                            return False
-                                    
+
+                                    # Patas ya llenadas (leg 1 se ejecutó arriba, antes del batch).
+                                    # Si una pata posterior falla, TODAS estas deben cerrarse — no
+                                    # solo la primera — o quedan expuestas sin cobertura direccional.
+                                    filled_legs = [signal]
+
+                                    async def emergency_sell_filled(reason: str):
+                                        self.db.log(
+                                            "CRITICAL",
+                                            f"[FillGuard] EMERGENCY SELL: vendiendo {len(filled_legs)} "
+                                            f"pata(s) llenada(s). Razón: {reason}",
+                                            self.worker_id,
+                                        )
+                                        for leg in filled_legs:
+                                            try:
+                                                sell_signal = SignalEvent(
+                                                    symbol=leg.symbol,
+                                                    side="SELL",
+                                                    price=leg.price,
+                                                    reason=f"Emergency sell: {reason}",
+                                                    position_size_usd=getattr(leg, 'position_size_usd', None),
+                                                )
+                                                await self._execute_order(sell_signal)
+                                            except Exception as e_sell:
+                                                self.db.log(
+                                                    "CRITICAL",
+                                                    f"[FillGuard] Emergency sell FALLÓ para {leg.symbol}: {e_sell}. "
+                                                    f"Posición expuesta sin cobertura.",
+                                                    self.worker_id,
+                                                )
+
                                     # Execute pending signals (first already done)
                                     remaining = list(pending)
                                     while pending:
                                         pending.pop(0)
-                                    
+
                                     for next_signal in remaining:
                                         next_signal._queue_latency_ms = signal._queue_latency_ms
                                         next_signal._strategy_latency_ms = 0.0
-                                        
+
                                         success, error, _ = await execute_fn(next_signal)
-                                        
+
                                         if success:
+                                            filled_legs.append(next_signal)
                                             if ws_server.has_clients(self.worker_id):
                                                 await ws_server.broadcast(
                                                     self.worker_id,
@@ -965,25 +1059,18 @@ class TradingWorker:
                                         else:
                                             # Classify error and handle recovery
                                             category = fill_guard.classify_error(error)
-                                            
+
                                             if category.value in ("balance", "market"):
                                                 # No retry - sell immediately
                                                 self.db.log(
                                                     "ERROR",
                                                     f"[FillGuard] Pata falló ({category.value}): {error}. "
-                                                    f"Vendiendo pata 1 inmediatamente.",
+                                                    f"Vendiendo {len(filled_legs)} pata(s) llenada(s).",
                                                     self.worker_id,
                                                 )
-                                                sell_signal = SignalEvent(
-                                                    symbol=signal.symbol,
-                                                    side="SELL",
-                                                    price=signal.price,
-                                                    reason=f"Emergency sell: fill_partial_{category.value}",
-                                                    position_size_usd=getattr(signal, 'position_size_usd', None),
-                                                )
-                                                await self._execute_order(sell_signal)
+                                                await emergency_sell_filled(f"fill_partial_{category.value}")
                                                 break
-                                            
+
                                             elif category.value == "network":
                                                 # Retry with backoff
                                                 retry_success = False
@@ -994,10 +1081,11 @@ class TradingWorker:
                                                         self.worker_id,
                                                     )
                                                     await asyncio.sleep(delay)
-                                                    
+
                                                     success2, error2, _ = await execute_fn(next_signal)
                                                     if success2:
                                                         retry_success = True
+                                                        filled_legs.append(next_signal)
                                                         if ws_server.has_clients(self.worker_id):
                                                             await ws_server.broadcast(
                                                                 self.worker_id,
@@ -1012,43 +1100,29 @@ class TradingWorker:
                                                                 ),
                                                             )
                                                         break
-                                                    
+
                                                     # If error changed to balance/market, stop retrying
                                                     cat2 = fill_guard.classify_error(error2)
                                                     if cat2.value in ("balance", "market"):
                                                         break
-                                                
+
                                                 if not retry_success:
                                                     self.db.log(
                                                         "ERROR",
-                                                        f"[FillGuard] Reintentos agotados. Vendiendo pata 1.",
+                                                        f"[FillGuard] Reintentos agotados. Vendiendo {len(filled_legs)} pata(s) llenada(s).",
                                                         self.worker_id,
                                                     )
-                                                    sell_signal = SignalEvent(
-                                                        symbol=signal.symbol,
-                                                        side="SELL",
-                                                        price=signal.price,
-                                                        reason="Emergency sell: retries_exhausted",
-                                                        position_size_usd=getattr(signal, 'position_size_usd', None),
-                                                    )
-                                                    await self._execute_order(sell_signal)
+                                                    await emergency_sell_filled("retries_exhausted")
                                                     break
-                                            
+
                                             else:
                                                 # Unknown error - sell for safety
                                                 self.db.log(
                                                     "ERROR",
-                                                    f"[FillGuard] Error desconocido: {error}. Vendiendo pata 1.",
+                                                    f"[FillGuard] Error desconocido: {error}. Vendiendo {len(filled_legs)} pata(s) llenada(s).",
                                                     self.worker_id,
                                                 )
-                                                sell_signal = SignalEvent(
-                                                    symbol=signal.symbol,
-                                                    side="SELL",
-                                                    price=signal.price,
-                                                    reason="Emergency sell: unknown_error",
-                                                    position_size_usd=getattr(signal, 'position_size_usd', None),
-                                                )
-                                                await self._execute_order(sell_signal)
+                                                await emergency_sell_filled("unknown_error")
                                                 break
                 except Exception as e:
                     self.db.log("ERROR", f"Error en event_loop: {e}", self.worker_id)
@@ -1087,10 +1161,7 @@ class TradingWorker:
             security_guard.record_trade()
 
         # Cargar balances actuales de la base de datos para este worker
-        balances = {
-            item["asset"]: float(item["free_balance"])
-            for item in self.db.get_portfolio(self.worker_id)
-        }
+        balances = self._get_balances()
         quote_balance = balances.get(self.quote_asset, 0.0)
         base_balance = balances.get(self.base_asset, 0.0)
 

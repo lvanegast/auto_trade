@@ -31,30 +31,33 @@ app = FastAPI(
     description="API para el control y monitoreo del Bot de Trading",
 )
 
-_protected_mutations = {
-    "/api/start",
-    "/api/stop",
-    "/api/order",
-    "/api/order/cancel",
-    "/api/position/close",
-}
-
-
 @app.middleware("http")
 async def protect_remote_mutations(request: Request, call_next):
-    """Require a bearer token for state-changing control endpoints when configured."""
+    """
+    Require a bearer token for ANY state-changing /api/* endpoint when configured.
+    Protege por prefijo (no por un set de rutas literales) para que también cubra
+    rutas parametrizadas como /api/unpause-worker/{worker_id} sin necesidad de
+    mantener manualmente cada ruta nueva en un allowlist.
+    """
     expected = os.getenv("API_AUTH_TOKEN", "")
-    if expected and request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path in _protected_mutations:
+    if expected and request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path.startswith("/api/"):
         supplied = request.headers.get("authorization", "")
         token = supplied.removeprefix("Bearer ").strip()
         if not hmac.compare_digest(token, expected):
             return JSONResponse(status_code=401, content={"detail": "Authentication required"})
     return await call_next(request)
 
-# Permitir CORS para desarrollo local de la UI
+# CORS: allowlist explícito. "*" + allow_credentials=True es inválido (los browsers
+# lo rechazan) y si algún cliente lo aceptara, expondría credenciales a cualquier origen.
+_cors_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+_cors_origins = (
+    [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+    if _cors_origins_env
+    else ["http://localhost:5173", "http://localhost:8080", "http://127.0.0.1:5173", "http://127.0.0.1:8080"]
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1420,25 +1423,34 @@ async def emergency_stop():
     # Close all open positions
     open_positions = db.get_open_positions()
     closed_count = 0
+    skipped_ids = []
     for pos in open_positions:
+        entry_price = pos.get("entry_price")
+        if entry_price is None:
+            # Sin precio real disponible: no inventar un valor. Dejar abierta para
+            # revisión manual en vez de registrar un cierre con P&L fabricado.
+            skipped_ids.append(pos.get("id"))
+            continue
         try:
-            close_price = float(pos.get("entry_price", 0.5))
             db.close_position(
-                pos["id"], close_price, "EMERGENCY STOP", worker_id=pos["worker_id"]
+                pos["id"], float(entry_price), "EMERGENCY STOP", worker_id=pos["worker_id"]
             )
             closed_count += 1
         except Exception as e:
             print(f"[EmergencyStop] Error closing position {pos.get('id')}: {e}")
+            skipped_ids.append(pos.get("id"))
 
     db.log(
         "CRITICAL",
-        f"EMERGENCY STOP ejecutado. {closed_count} posiciones cerradas. Trading detenido.",
+        f"EMERGENCY STOP ejecutado. {closed_count} posiciones cerradas. Trading detenido. "
+        + (f"Posiciones SIN cerrar (requieren revisión manual): {skipped_ids}." if skipped_ids else ""),
         "ALL",
     )
 
     return {
         "status": "EMERGENCY_STOP",
         "positions_closed": closed_count,
+        "positions_requiring_manual_review": skipped_ids,
         "message": "Kill switch activado. Trading detenido. Use /api/release-stop para reanudar.",
     }
 
