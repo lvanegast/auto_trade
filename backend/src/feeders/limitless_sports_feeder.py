@@ -305,7 +305,15 @@ class LimitlessSportsFeeder(BaseFeeder):
         except Exception:
             pass
 
-        event_id = make_match_event_id(group_title, group_title)
+        # IMPORTANTE: make_match_event_id() normaliza solo por nombres de equipo,
+        # sin fecha ni identificador de partido — dos partidos REALES distintos
+        # entre los mismos equipos (jornadas distintas, ida/vuelta) colisionan en
+        # el mismo event_id. Se agrega el group_slug real de Limitless (único por
+        # partido) para desambiguar el tracking interno / resolución / Telegram.
+        # cross_platform_tracker sigue usando el event_id normalizado (sin slug)
+        # abajo, porque ese sí necesita ser platform-agnostic para matchear con
+        # Kalshi/Polymarket.
+        event_id = f"{make_match_event_id(group_title, group_title)}::{group_slug}"
         primary_price = outcomes[0]["yes_price"]
 
         # Group data is still published to the tracker only when every outcome
@@ -396,7 +404,9 @@ class LimitlessSportsFeeder(BaseFeeder):
         if abs(edge) > 0.15:
             return
 
-        event_id = make_match_event_id(title, title)
+        # Ver comentario equivalente en _process_group_market: se agrega el slug
+        # real para no colisionar con otro partido entre los mismos equipos.
+        event_id = f"{make_match_event_id(title, title)}::{slug}"
         cross_platform_tracker.update_book(
             event_id=make_match_event_id(title, f"{title} YES"),
             platform="limitless",

@@ -84,8 +84,6 @@ class ResolutionSniperStrategy(BaseStrategy):
         # recolección de datos hasta que su worker_id esté en ALLOWED_REAL_WORKERS.
         self.observation_only = observation_only
 
-        # Active sniper positions: {event_id: {entry_time, buy_price, amount, title, slug}}
-        self._active_positions = {}
         # Cooldowns: {event_id: last_exit_time} — auto-expire after 1h
         self._last_exit_time = BoundedTimeDict(max_size=200, ttl_seconds=3600)
         # Pending signals queue
@@ -114,11 +112,7 @@ class ResolutionSniperStrategy(BaseStrategy):
         event_id = event.symbol
         now = _time.time()
 
-        # 2. Check if we have an active position — monitor for resolution
-        if event_id in self._active_positions:
-            return self._check_resolution(event_id, event.price, now)
-
-        # 3. Skip if already claimed
+        # 2. Skip if already claimed
         if event_id in self._pending_event_ids:
             return None
 
@@ -195,114 +189,6 @@ class ResolutionSniperStrategy(BaseStrategy):
 
         # Deliberately no SignalEvent: this strategy is structurally read-only.
         return None
-
-    def _check_resolution(self, event_id: str, current_price: float, now: float) -> SignalEvent | None:
-        """Check if position has resolved (price dropped to 0 or jumped to 1.0)."""
-        position = self._active_positions.get(event_id)
-        if not position:
-            return None
-
-        elapsed = now - position["entry_time"]
-        buy_price = position["buy_price"]
-        num_contracts = position["num_contracts"]
-        title = position["title"]
-
-        # Check for resolution signals:
-        # - Price dropped significantly (outcome lost): YES price → 0
-        # - Price jumped to 1.0 (outcome won): YES price → 1.0
-        # - Price stable (event still live): do nothing
-
-        # Resolution detected if price moved significantly from entry
-        price_change = current_price - buy_price
-
-        # Case 1: Outcome won (price → 1.0 or very close)
-        if current_price >= 0.99:
-            payout = num_contracts * 1.0
-            profit = payout - position["total_spend"]
-            self._close_position(event_id, "WON", profit, payout)
-            return None  # No signal needed — settlement handles payout
-
-        # Case 2: Outcome lost (price → 0 or very close)
-        if current_price <= 0.01:
-            loss = position["total_spend"]
-            self._close_position(event_id, "LOST", -loss, 0)
-            return None  # No signal needed — settlement handles loss
-
-        # Case 3: Extended hold (24+ hours) — might be stuck
-        if elapsed > 86400:  # 24 hours
-            if self.db:
-                self.db.log(
-                    "WARNING",
-                    f"[Resolution Sniper] Position held > 24h: {title} | "
-                    f"Entry: {buy_price:.4f} | Current: {current_price:.4f} | "
-                    f"Elapsed: {elapsed/3600:.1f}h",
-                    self.worker_id,
-                )
-
-        # Still live — no action
-        return None
-
-    def _close_position(self, event_id: str, outcome: str, profit: float, payout: float):
-        """Close a sniper position after resolution."""
-        position = self._active_positions.pop(event_id, None)
-        if not position:
-            return
-
-        self._pending_event_ids.discard(event_id)
-        self._last_exit_time[event_id] = _time.time()
-
-        title = position["title"]
-        buy_price = position["buy_price"]
-        num_contracts = position["num_contracts"]
-        total_spend = position["total_spend"]
-
-        # Update tracking with resolution
-        if self.db:
-            opp_id = getattr(self, '_tracked_opportunities', {}).get(event_id)
-            if opp_id:
-                self.db.update_opportunity_resolution(
-                    opp_id, 
-                    "won" if outcome == "WON" else "lost",
-                    profit
-                )
-
-        if self.db:
-            if outcome == "WON":
-                self.db.log(
-                    "INFO",
-                    f"[Resolution Sniper] WON: {title} | "
-                    f"Bought @ {buy_price:.4f} | "
-                    f"{num_contracts:.2f} contracts | "
-                    f"Payout: ${payout:.2f} | "
-                    f"Profit: ${profit:.4f} ({profit/total_spend*100:.1f}%)",
-                    self.worker_id,
-                )
-                # Telegram alert for win (clears dedup so new cycle can alert)
-                from src.telegram_bot import telegram_bot
-                if telegram_bot.enabled:
-                    telegram_bot.send_alert("profit", 
-                        f"Resolution Sniper WON: {title}\n"
-                        f"Bought @ {buy_price:.4f}\n"
-                        f"Payout: ${payout:.2f}\n"
-                        f"Profit: +${profit:.4f} (+{profit/total_spend*100:.1f}%)",
-                        event_id=event_id)
-            else:
-                self.db.log(
-                    "INFO",
-                    f"[Resolution Sniper] LOST: {title} | "
-                    f"Bought @ {buy_price:.4f} | "
-                    f"{num_contracts:.2f} contracts | "
-                    f"Loss: ${abs(profit):.2f}",
-                    self.worker_id,
-                )
-                # Telegram alert for loss (clears dedup so new cycle can alert)
-                from src.telegram_bot import telegram_bot
-                if telegram_bot.enabled:
-                    telegram_bot.send_alert("loss",
-                        f"Resolution Sniper LOST: {title}\n"
-                        f"Bought @ {buy_price:.4f}\n"
-                        f"Loss: -${abs(profit):.2f}",
-                        event_id=event_id)
 
     def evaluate_signal(self, event: PriceUpdateEvent) -> SignalEvent | None:
         return None
