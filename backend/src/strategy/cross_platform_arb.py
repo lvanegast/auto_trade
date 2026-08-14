@@ -219,6 +219,43 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
                         f"[Intra-Arb] Oportunidad: YES_ask={real_ask:.4f} + NO_ask={no_ask:.4f} = {total_intra_cost:.4f} | Edge: {intra_edge:.2%}",
                         self.worker_id,
                     )
+                if self.observation_only:
+                    num_sets_preview = self.position_size_usd / max(total_intra_cost, 0.01)
+                    if self.db and hasattr(self.db, "record_opportunity"):
+                        try:
+                            self.db.record_opportunity({
+                                "platform_a": self.feeder_type,
+                                "platform_b": self.feeder_type,
+                                "event_id": self.event_id or self.symbol,
+                                "event_title": self.symbol,
+                                "gross_edge_pct": intra_edge * 100,
+                                "net_edge_pct": intra_edge * 100,
+                                "platform_a_yes_ask": real_ask,
+                                "platform_b_no_ask": no_ask,
+                                "liquidity_verified": True,
+                                "viable": intra_edge >= 0.02,
+                                "category": "sports",
+                                "direction": "BUY_ALL_NO_1XN",
+                                "outcomes_count": 2,
+                                "entry_price": total_intra_cost,
+                                "expected_profit": intra_edge * self.position_size_usd,
+                            })
+                        except Exception:
+                            pass
+                    if intra_edge >= 0.02:
+                        from src.telegram_bot import telegram_bot
+                        legs_detail = (
+                            f"<b>Patas (2):</b>\n"
+                            f"  • YES @ ${real_ask:.4f} → ${real_ask * num_sets_preview:.2f}\n"
+                            f"  • NO @ ${no_ask:.4f} → ${no_ask * num_sets_preview:.2f}\n"
+                            f"<b>Total estimado:</b> ${total_intra_cost * num_sets_preview:.2f}"
+                        )
+                        telegram_bot.send_opportunity(
+                            self.symbol, intra_edge * 100, self.feeder_type, self.feeder_type,
+                            event_id=self.event_id or self.symbol, category="sports",
+                            worker_id=self.worker_id, legs_detail=legs_detail,
+                        )
+                    return None
                 return SignalEvent(
                     symbol=self.symbol,
                     side="BUY",
@@ -283,6 +320,15 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
                         pass
                 if net_edge >= 0.02:
                     from src.telegram_bot import telegram_bot
+                    num_sets_preview = self.position_size_usd / max(opp["buy_ask"] + opp["hedge_ask"], 0.01)
+                    legs_detail = (
+                        f"<b>Patas (2):</b>\n"
+                        f"  • {opp['buy_platform']} {opp['buy_side']} @ ${opp['buy_ask']:.4f} "
+                        f"→ ${opp['buy_ask'] * num_sets_preview:.2f}\n"
+                        f"  • {opp['hedge_platform']} {opp['hedge_side']} @ ${opp['hedge_ask']:.4f} "
+                        f"→ ${opp['hedge_ask'] * num_sets_preview:.2f}\n"
+                        f"<b>Total estimado:</b> ${(opp['buy_ask'] + opp['hedge_ask']) * num_sets_preview:.2f}"
+                    )
                     telegram_bot.send_opportunity(
                         opp["event_id"],
                         net_edge * 100,
@@ -291,6 +337,7 @@ class CrossPlatformArbitrageStrategy(BaseStrategy):
                         event_id=opp["event_id"],
                         category="sports",
                         worker_id=self.worker_id,
+                        legs_detail=legs_detail,
                     )
                 continue
 

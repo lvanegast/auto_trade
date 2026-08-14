@@ -141,6 +141,9 @@ class TradingWorker:
                 position_size_pct=position_size,
                 db=self.db,
                 worker_id=self.worker_id,
+                # Mismo motivo que limitless_sports: sin esto la orden se bloquea
+                # en _execute_order sin dejar registro, y nunca llega el resultado.
+                observation_only=True,
             )
         elif self.feeder_type == "limitless_sports":
             min_edge = float(os.getenv("SPORTS_ARB_EDGE_PCT", "0.03"))
@@ -152,6 +155,10 @@ class TradingWorker:
                 position_size_usd=position_size_usd,
                 db=self.db,
                 worker_id=self.worker_id,
+                # Sin esto, la orden se bloquea silenciosamente en _execute_order
+                # (ALLOWED_REAL_WORKERS vacío) sin dejar registro en DB, y el
+                # monitor de resoluciones nunca tiene nada que verificar después.
+                observation_only=True,
             )
         elif self.feeder_type == "binary_arb":
             return OracleMomentumStrategy(

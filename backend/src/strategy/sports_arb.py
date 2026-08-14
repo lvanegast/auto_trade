@@ -347,7 +347,19 @@ class SportsArbitrageStrategy(BaseStrategy):
                 # Telegram alert for cross-platform opportunities (once per event per hour)
                 from src.telegram_bot import telegram_bot
                 if telegram_bot.enabled and net_edge >= 0.02:
-                    telegram_bot.send_opportunity(title, net_edge * 100, "Limitless", "Kalshi", event_id=event_id, category="sports", worker_id=self.worker_id)
+                    # Desglose por pata: cuánto se apostaría en cada outcome si se
+                    # ejecutara (num_sets = presupuesto / costo total de la canasta).
+                    num_sets_preview = self.position_size_usd / max(total_cost, 0.01)
+                    legs_lines = "\n".join(
+                        f"  • {sig['title']}: {sig['token']} @ ${sig['price']:.4f} "
+                        f"→ ${sig['price'] * num_sets_preview:.2f}"
+                        for sig in per_outcome_signals
+                    )
+                    legs_detail = (
+                        f"<b>Patas ({len(per_outcome_signals)}):</b>\n{legs_lines}\n"
+                        f"<b>Total estimado:</b> ${total_cost * num_sets_preview:.2f}"
+                    )
+                    telegram_bot.send_opportunity(title, net_edge * 100, "Limitless", "Kalshi", event_id=event_id, category="sports", worker_id=self.worker_id, legs_detail=legs_detail)
             return None
 
         expected_profit = (1.0 - total_cost) if arb_type == "YES" else ((len(outcomes) - 1.0) - total_cost)

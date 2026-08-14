@@ -70,7 +70,10 @@ class ResolutionMonitor:
         unresolved_opps = []
         try:
             if hasattr(self.db, "get_pending_opportunities"):
-                unresolved_opps = self.db.get_pending_opportunities() or []
+                # Scoped a ESTE worker — sin este filtro, todos los workers ven
+                # las mismas oportunidades pendientes y cada uno intenta resolverlas
+                # y alertar por su cuenta (mensajes de Telegram duplicados).
+                unresolved_opps = self.db.get_pending_opportunities(worker_id=self.worker_id) or []
         except Exception as e:
             print(f"[ResolutionMonitor Error] {e}")
 
@@ -158,6 +161,14 @@ class ResolutionMonitor:
         if market_slug in self._already_resolved:
             return None
 
+        # Reservar el slug ANTES de la llamada de red (que hace `await` y cede
+        # el control del event loop). Si no reservamos aquí, dos workers pueden
+        # pasar el check de arriba casi al mismo tiempo — mientras el primero
+        # todavía espera la respuesta de la API — y ambos terminan alertando
+        # por Telegram el mismo evento. Si resulta que NO estaba resuelto, se
+        # libera más abajo para poder re-chequear en el siguiente ciclo.
+        self._mark_resolved(market_slug)
+
         from limitless_sdk.api import HttpClient
         from limitless_sdk.markets import MarketFetcher
         from limitless_sdk.types.api_tokens import HMACCredentials
@@ -179,12 +190,13 @@ class ResolutionMonitor:
                     m.result = market
                 
                 if not market:
+                    self._already_resolved.discard(market_slug)
                     return None
-                
+
                 status = getattr(market, "status", None)
                 winning_index = getattr(market, "winning_outcome_index", None)
                 condition_id = getattr(market, "condition_id", None)
-                
+
                 # Verificar si el mercado resolvió
                 if status != "RESOLVED":
                     # Para grupos 1xN (N>2), el status del grupo puede permanecer
@@ -194,11 +206,13 @@ class ResolutionMonitor:
                     if market.market_type == "group" and subs:
                         resolved_subs = [s for s in subs if getattr(s, "winning_outcome_index", None) is not None]
                         if not resolved_subs:
+                            self._already_resolved.discard(market_slug)
                             return None
                         resolved_sub = resolved_subs[0]
                         winning_index = resolved_sub.winning_outcome_index
                         status = "RESOLVED"
                     else:
+                        self._already_resolved.discard(market_slug)
                         return None
                 
                 # Determinar outcome ganador
@@ -318,7 +332,9 @@ class ResolutionMonitor:
                 return resolved
                 
             except Exception as e:
-                # Mercado puede no existir o error de red
+                # Mercado puede no existir o error de red — liberar la reserva
+                # para poder reintentar en el próximo ciclo.
+                self._already_resolved.discard(market_slug)
                 return None
 
 

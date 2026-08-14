@@ -477,7 +477,7 @@ class TelegramBot:
 <b>Errores:</b> {stats.get('errors', 0)}"""
         return self.send_message(text)
     
-    def send_opportunity(self, event: str, edge: float, platform_a: str, platform_b: str, event_id: str = None, category: str = None, worker_id: str = None):
+    def send_opportunity(self, event: str, edge: float, platform_a: str, platform_b: str, event_id: str = None, category: str = None, worker_id: str = None, legs_detail: str = None):
         """Send an opportunity alert with dedup, routed to the category sub-room."""
         # Dedup por event_id (mismo slug/market)
         if event_id and self.has_been_alerted(event_id):
@@ -501,13 +501,14 @@ class TelegramBot:
         if event_ref.startswith("limitless_crypto_"):
             event_ref = event_ref[len("limitless_crypto_"):]
             
+        legs_block = f"\n{legs_detail}" if legs_detail else ""
         text = f"""🎯 <b>Oportunidad Detectada</b>
 
 <b>Worker:</b> {worker_id or 'N/A'}
 <b>Evento:</b> {event}
 <b>Contrato / ID:</b> <code>{event_ref}</code>
 <b>Edge:</b> {edge:.2f}%
-<b>Plataformas:</b> {platform_a} ↔ {platform_b}
+<b>Plataformas:</b> {platform_a} ↔ {platform_b}{legs_block}
 <b>Sala:</b> {category or 'general'}
 <b>Hora:</b> {datetime.now().strftime("%H:%M:%S")}"""
         target, thread_id = self._resolve_target(category)
