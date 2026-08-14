@@ -8,9 +8,23 @@ Strategy: Buy YES at 97.5-98¢, hold until resolution, receive $1.00.
 
 import asyncio
 import os
+import re
 import time
 from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
+
+
+def _asset_key(title: str) -> str:
+    """
+    Slug corto a partir del título (ej. "ETH" -> "eth"). El slug real de
+    Limitless para mercados up/down de N minutos codifica solo la ventana
+    temporal (ej. "...-5-min-1786741200"), NO el activo — dos activos
+    distintos que abren ventana en el mismo instante comparten ese slug.
+    Se antepone el activo al event_id para no colisionar.
+    """
+    key = (title or "").strip().lower()
+    key = re.sub(r"[^a-z0-9]+", "-", key).strip("-")
+    return key or "unknown"
 
 
 class ResolutionSniperFeeder(BaseFeeder):
@@ -297,7 +311,7 @@ class ResolutionSniperFeeder(BaseFeeder):
                             no_ask = 1.0 - yes_bid
                             # Lado YES casi-seguro
                             if _min_price <= yes_ask <= _max_price and book["ask_size"] > 0:
-                                event_id = f"limitless_sniper_{slug}"
+                                event_id = f"limitless_sniper_{_asset_key(title)}_{slug}"
                                 if self._confirm(event_id):
                                     snipers_found += 1
                                     print(f"[Resolution Sniper] Found YES ({category}): {title[:50]} YES_ASK={yes_ask:.4f} remaining={remaining:.0f}s")
@@ -306,7 +320,7 @@ class ResolutionSniperFeeder(BaseFeeder):
                                     _diag["waiting_confirmation"] += 1
                             # Lado NO casi-seguro (NO_ask = 1 - yes_bid)
                             elif _min_price <= no_ask <= _max_price and book["bid_size"] > 0:
-                                event_id = f"limitless_sniper_{slug}"
+                                event_id = f"limitless_sniper_{_asset_key(title)}_{slug}"
                                 if self._confirm(event_id):
                                     snipers_found += 1
                                     print(f"[Resolution Sniper] Found NO ({category}): {title[:50]} NO_ASK={no_ask:.4f} remaining={remaining:.0f}s")
@@ -349,7 +363,7 @@ class ResolutionSniperFeeder(BaseFeeder):
                                         sub_yes = sub_book["yes_ask"]
                                         sub_no = 1.0 - sub_book["yes_bid"]
                                         if _min_price <= sub_yes <= _max_price and sub_book["ask_size"] > 0:
-                                            event_id = f"limitless_sniper_{sub_slug}"
+                                            event_id = f"limitless_sniper_{_asset_key(sub_title)}_{sub_slug}"
                                             if self._confirm(event_id):
                                                 snipers_found += 1
                                                 print(f"[Resolution Sniper] Found YES ({category}): {sub_title[:50]} YES_ASK={sub_yes:.4f} remaining={sub_remaining:.0f}s")
@@ -357,7 +371,7 @@ class ResolutionSniperFeeder(BaseFeeder):
                                             else:
                                                 _diag["waiting_confirmation"] += 1
                                         elif _min_price <= sub_no <= _max_price and sub_book["bid_size"] > 0:
-                                            event_id = f"limitless_sniper_{sub_slug}"
+                                            event_id = f"limitless_sniper_{_asset_key(sub_title)}_{sub_slug}"
                                             if self._confirm(event_id):
                                                 snipers_found += 1
                                                 print(f"[Resolution Sniper] Found NO ({category}): {sub_title[:50]} NO_ASK={sub_no:.4f} remaining={sub_remaining:.0f}s")
@@ -399,7 +413,7 @@ class ResolutionSniperFeeder(BaseFeeder):
         """Emit a PriceUpdateEvent for the strategy to process."""
         from src.strategy.resolution_sniper import update_sniper_data
 
-        event_id = f"limitless_sniper_{slug}"
+        event_id = f"limitless_sniper_{_asset_key(title)}_{slug}"
 
         # Update strategy data
         update_sniper_data(

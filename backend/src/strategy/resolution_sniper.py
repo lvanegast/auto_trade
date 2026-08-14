@@ -172,6 +172,11 @@ class ResolutionSniperStrategy(BaseStrategy):
                 "outcomes_count": 2,
                 "entry_price": yes_price,
                 "expected_profit": self.edge * self.position_size_usd,
+                # slug real de Limitless para ESTE mercado — necesario para que
+                # ResolutionMonitor consulte la API correcta, ya que event_id
+                # ahora incluye el título/activo para desambiguar (dos activos
+                # distintos pueden compartir el mismo slug de ventana temporal).
+                "market_slug": sniper_data.get("slug", ""),
             })
             # Telegram alert for sniper opportunities (deduplicated via event_id)
             from src.telegram_bot import telegram_bot
