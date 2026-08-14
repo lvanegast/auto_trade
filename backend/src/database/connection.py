@@ -270,6 +270,11 @@ class DatabaseManager:
             "ALTER TABLE edge_snapshots ADD COLUMN IF NOT EXISTS direction VARCHAR(40);",
             "ALTER TABLE edge_snapshots ADD COLUMN IF NOT EXISTS outcomes_count INTEGER DEFAULT 0;",
             "ALTER TABLE edge_snapshots ADD COLUMN IF NOT EXISTS market_slug VARCHAR(255);",
+            # condition_id: identificador on-chain (CTF/NegRisk) de la pata específica
+            # comprada — necesario para poder redimir (RedeemExecutor) la pata ganadora
+            # al resolver, y para calcular el PnL real de toda la canasta 1xN.
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS condition_id VARCHAR(100);",
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS redeemed BOOLEAN NOT NULL DEFAULT FALSE;",
         ]
 
         conn = None
@@ -885,10 +890,11 @@ class DatabaseManager:
         amount: float = None,
         stop_loss_price: float = None,
         take_profit_price: float = None,
+        condition_id: str = None,
     ) -> int:
         query = """
-        INSERT INTO positions (worker_id, symbol, side, entry_price, status, entry_lead_price, amount, stop_loss_price, take_profit_price, highest_price_seen)
-        VALUES (%s, %s, %s, %s, 'OPEN', %s, %s, %s, %s, %s)
+        INSERT INTO positions (worker_id, symbol, side, entry_price, status, entry_lead_price, amount, stop_loss_price, take_profit_price, highest_price_seen, condition_id)
+        VALUES (%s, %s, %s, %s, 'OPEN', %s, %s, %s, %s, %s, %s)
         RETURNING id;
         """
         highest = entry_price
@@ -908,6 +914,7 @@ class DatabaseManager:
                         stop_loss_price,
                         take_profit_price,
                         highest,
+                        condition_id,
                     ),
                 )
                 row = cursor.fetchone()
@@ -974,6 +981,19 @@ class DatabaseManager:
         finally:
             self._return_connection(conn)
 
+    def mark_position_redeemed(self, pos_id: int):
+        """Marca una posición como redimida on-chain (evita reclamar dos veces)."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE positions SET redeemed = TRUE WHERE id = %s;", (pos_id,)
+                )
+                conn.commit()
+        finally:
+            self._return_connection(conn)
+
     def get_open_positions(self, worker_id: str = None):
         if worker_id:
             query = "SELECT * FROM positions WHERE status = 'OPEN' AND worker_id = %s ORDER BY entry_time DESC;"
@@ -1016,6 +1036,7 @@ class DatabaseManager:
         entry_lead_price: float = None,
         stop_loss_price: float = None,
         take_profit_price: float = None,
+        condition_id: str = None,
     ) -> int:
         return self.save_open_position(
             worker_id=worker_id,
@@ -1026,6 +1047,7 @@ class DatabaseManager:
             amount=amount,
             stop_loss_price=stop_loss_price,
             take_profit_price=take_profit_price,
+            condition_id=condition_id,
         )
 
     def get_all_positions(self, limit: int = 50, worker_id: str = None):

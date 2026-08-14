@@ -14,8 +14,15 @@ class MockDB:
         return self.trades_list
 
 
-def test_adaptive_controller_excellent_performance():
-    """Valida el escalamiento de posición cuando la retroalimentación es excelente."""
+def test_adaptive_controller_excellent_performance_does_not_scale_up():
+    """
+    La regla de escalado de posición por buen rendimiento fue eliminada: en
+    arbitraje puro el edge ya está garantizado matemáticamente al entrar, un
+    Win Rate alto no lo valida ni invalida, y para estrategias de payoff
+    asimétrico (Resolution Sniper) un WR~97% es justo lo esperado ANTES de la
+    primera pérdida catastrófica. Rendimiento excelente ya no debe escalar
+    la posición — solo se mantiene la protección defensiva.
+    """
     # 10 trades ganadores sin pérdidas (Win rate 100%, PF inf)
     mock_trades = [{"pnl": 5.0} for _ in range(10)]
     db = MockDB(mock_trades)
@@ -23,8 +30,8 @@ def test_adaptive_controller_excellent_performance():
 
     adj_edge, adj_pos, reason = controller.evaluate_and_adjust_worker("worker_3", current_min_edge=0.02, current_pos_size=50.0)
 
-    assert adj_pos > 50.0  # Posición escalada a +15%
-    assert "Escalar Posición" in reason
+    assert adj_pos == 50.0  # Sin escalado — el tamaño de posición no cambia
+    assert "Rendimiento Estable" in reason
 
 
 def test_adaptive_controller_degraded_performance():

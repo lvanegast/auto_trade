@@ -216,6 +216,7 @@ class ResolutionMonitor:
                         return None
                 
                 # Determinar outcome ganador
+                winning_sub_slug = None
                 if winning_index is not None:
                     if market.market_type == "group":
                         # Un grupo 1xN: el outcome ganador es el sub-market cuyo
@@ -224,8 +225,10 @@ class ResolutionMonitor:
                         winning_subs = [s for s in subs if s.winning_outcome_index == 0]
                         if winning_subs:
                             winning_outcome = winning_subs[0].title or "OUTCOME"
+                            winning_sub_slug = getattr(winning_subs[0], "slug", None)
                         elif 0 <= winning_index < len(subs):
                             winning_outcome = subs[winning_index].title or f"OUTCOME_{winning_index}"
+                            winning_sub_slug = getattr(subs[winning_index], "slug", None)
                         else:
                             winning_outcome = f"OUTCOME_{winning_index}"
                     else:
@@ -261,6 +264,66 @@ class ResolutionMonitor:
                         self.db.update_opportunity_resolution(db_event_id, f"resolved_{winning_outcome}")
                 except Exception:
                     pass
+
+                # Redimir on-chain la(s) pata(s) ganadora(s) que tengan condition_id
+                # guardado (posiciones reales, no de observación). De N patas de una
+                # canasta 1xN, solo la ganadora vale algo — las demás resuelven a $0
+                # y no requieren redeem.
+                if winning_outcome != "SPLIT":
+                    is_negrisk = market.market_type == "group"
+                    allowed_real_workers = [
+                        w.strip() for w in os.getenv("ALLOWED_REAL_WORKERS", "").split(",") if w.strip()
+                    ]
+                    for pos in positions:
+                        if not isinstance(pos, dict):
+                            continue
+                        pos_condition_id = pos.get("condition_id")
+                        if not pos_condition_id or pos.get("redeemed"):
+                            continue
+                        if pos.get("worker_id") not in allowed_real_workers:
+                            continue
+
+                        pos_symbol = pos.get("symbol", "")
+                        leg_token = "NO" if pos_symbol.upper().endswith("_NO") else "YES"
+                        if is_negrisk:
+                            leg_slug = self._extract_market_slug(pos_symbol)
+                            won_this_leg = bool(winning_sub_slug) and leg_slug == winning_sub_slug
+                        else:
+                            won_this_leg = leg_token == winning_outcome
+
+                        if not won_this_leg:
+                            continue
+
+                        try:
+                            from src.engine.redeem_executor import get_redeem_executor
+                            redeem_executor = get_redeem_executor(self.db, self.worker_id)
+                            redeem_result = await redeem_executor.redeem(
+                                condition_id=pos_condition_id,
+                                winning_outcome="YES",
+                                shares=float(pos.get("amount", 0) or 0),
+                                is_negrisk=is_negrisk,
+                            )
+                            if redeem_result.success:
+                                self.db.mark_position_redeemed(pos["id"])
+                                self.db.log(
+                                    "INFO",
+                                    f"[Redeem] Pata ganadora {pos_symbol} redimida on-chain: tx={redeem_result.tx_hash}",
+                                    self.worker_id,
+                                )
+                            else:
+                                self.db.log(
+                                    "CRITICAL",
+                                    f"[Redeem] Falló el redeem de {pos_symbol}: {redeem_result.error}. "
+                                    "Requiere reclamo manual.",
+                                    self.worker_id,
+                                )
+                        except Exception as e_redeem:
+                            self.db.log(
+                                "CRITICAL",
+                                f"[Redeem] Error inesperado redimiendo {pos_symbol}: {e_redeem}. "
+                                "Requiere reclamo manual.",
+                                self.worker_id,
+                            )
 
                 try:
                     from src.telegram_bot import telegram_bot

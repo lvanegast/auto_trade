@@ -81,7 +81,7 @@ class NegRiskMultiOutcomeStrategy(BaseStrategy):
         if abs(negrisk_edge) >= self.min_negrisk_edge_pct:
             from src.engine.friction_guard import friction_guard
             is_profitable, net_edge, _reason, _details = friction_guard.validate_arbitrage_profitability(
-                "limitless", "limitless", abs(negrisk_edge), self.position_size_usd
+                "limitless", "limitless", abs(negrisk_edge), self.position_size_usd, num_legs=outcomes_count
             )
 
             if is_profitable:

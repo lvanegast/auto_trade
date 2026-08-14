@@ -240,7 +240,7 @@ class SportsArbitrageStrategy(BaseStrategy):
         # Filtro de Rentabilidad Neta Anti-Fricción
         from src.engine.friction_guard import friction_guard
         is_profitable, net_edge, reason_guard, friction_details = friction_guard.validate_arbitrage_profitability(
-            self.feeder_type, self.feeder_type, abs(self.edge), self.position_size_usd
+            self.feeder_type, self.feeder_type, abs(self.edge), self.position_size_usd, num_legs=len(outcomes)
         )
         if not is_profitable:
             if self.db:
@@ -299,7 +299,7 @@ class SportsArbitrageStrategy(BaseStrategy):
         if self.observation_only:
             from src.engine.friction_guard import friction_guard
             is_profitable, net_edge, _, _ = friction_guard.validate_arbitrage_profitability(
-                "limitless", "kalshi", abs(self.edge), self.position_size_usd
+                "limitless", "kalshi", abs(self.edge), self.position_size_usd, num_legs=len(outcomes)
             )
             if self.db:
                 direction_label = "BUY_ALL_YES_1XN" if arb_type == "YES" else "BUY_ALL_NO_1XN"

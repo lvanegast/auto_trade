@@ -77,8 +77,15 @@ class ExecutionFrictionGuard:
         })
 
         if execution_role == "maker":
-            # Maker orders have 0% commission on prediction markets (Polymarket/Limitless) and 0 slippage
-            commission_pct = 0.00 if feeder_type in ("polymarket", "limitless", "limitless_sports", "kalshi") else info["commission_pct"] * 0.5
+            # Maker orders have 0% commission on prediction markets (Polymarket/Limitless) and 0 slippage.
+            # EXCEPCIÓN: Kalshi NO tiene un modelo maker/taker real como un CLOB cripto —
+            # "0% comisión" solo aplica al entorno demo. En producción (KALSHI_ENV=prod)
+            # las fees se cobran igual sin importar el tipo de orden, así que asumir 0%
+            # ahí sobreestimaría la rentabilidad real de cada arbitraje.
+            if feeder_type == "kalshi" and os.getenv("KALSHI_ENV", "demo").lower() == "prod":
+                commission_pct = info["commission_pct"]
+            else:
+                commission_pct = 0.00 if feeder_type in ("polymarket", "limitless", "limitless_sports", "kalshi") else info["commission_pct"] * 0.5
             slippage_pct = 0.00  # Limit Post-Only orders fill at or better than limit price
         else:
             commission_pct = info["commission_pct"]
@@ -100,28 +107,35 @@ class ExecutionFrictionGuard:
         }
 
     def calculate_total_friction(
-        self, leg1_feeder: str, leg2_feeder: str, position_size_usd: float, execution_role: str = "maker"
+        self, leg1_feeder: str, leg2_feeder: str, position_size_usd: float, execution_role: str = "maker",
+        num_legs: int = 2,
     ) -> Dict[str, Any]:
         leg1_friction = self.calculate_friction(leg1_feeder, position_size_usd, execution_role)
         leg2_friction = self.calculate_friction(leg2_feeder, position_size_usd, execution_role)
 
         # For 1xN intra-platform arb (same feeder for both legs),
-        # only charge gas ONCE since it's a single logical operation
+        # only charge gas ONCE since it's a single logical operation.
         same_platform = (leg1_feeder == leg2_feeder)
-        
+        # Patas adicionales más allá de las 2 originales (canastas NegRisk/Sports
+        # de 3, 4+ outcomes). Antes se ignoraban por completo — cada pata extra
+        # paga su propia comisión/slippage igual que la pata 2.
+        extra_legs = max(0, num_legs - 2)
+
         if same_platform:
             # Same platform: charge leg1 friction + leg2 commission/slippage (no double gas)
             total_friction_usd = (
-                leg1_friction["total_friction_usd"] + 
-                leg2_friction["commission_cost_usd"] + 
-                leg2_friction["slippage_cost_usd"]
+                leg1_friction["total_friction_usd"] +
+                leg2_friction["commission_cost_usd"] +
+                leg2_friction["slippage_cost_usd"] +
+                extra_legs * (leg2_friction["commission_cost_usd"] + leg2_friction["slippage_cost_usd"])
             )
         else:
             # Cross-platform: charge full friction for both legs
             total_friction_usd = (
-                leg1_friction["total_friction_usd"] + leg2_friction["total_friction_usd"]
+                leg1_friction["total_friction_usd"] + leg2_friction["total_friction_usd"] +
+                extra_legs * leg2_friction["total_friction_usd"]
             )
-        
+
         total_friction_pct = (
             total_friction_usd / position_size_usd if position_size_usd > 0 else 0.0
         )
@@ -129,6 +143,7 @@ class ExecutionFrictionGuard:
         return {
             "leg1": leg1_friction,
             "leg2": leg2_friction,
+            "num_legs": num_legs,
             "total_friction_usd": round(total_friction_usd, 4),
             "total_friction_pct": round(total_friction_pct, 4),
             "leg1_fee_per_asset": leg1_friction["commission_cost_usd"],
@@ -147,9 +162,10 @@ class ExecutionFrictionGuard:
         gross_edge_pct: float,
         position_size_usd: float = 50.0,
         execution_role: str = "maker",
+        num_legs: int = 2,
     ) -> Tuple[bool, float, str, Dict[str, Any]]:
         friction_details = self.calculate_total_friction(
-            leg1_feeder, leg2_feeder, position_size_usd, execution_role
+            leg1_feeder, leg2_feeder, position_size_usd, execution_role, num_legs=num_legs
         )
 
         net_edge_pct = gross_edge_pct - friction_details["total_friction_pct"]

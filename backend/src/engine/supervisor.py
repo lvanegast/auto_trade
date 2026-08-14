@@ -1454,6 +1454,26 @@ class TradingWorker:
                     if response.status_code in [200, 201]:
                         res_json = response.json()
                         order_id = res_json.get("order", {}).get("order_id", "N/A")
+
+                        # CONFIRMACIÓN DE FILL: una orden "limit" aceptada por Kalshi
+                        # puede quedar "resting" en el libro sin llenarse. No asumir
+                        # COMPLETED solo porque el POST fue aceptado — confirmar contra
+                        # GET /portfolio/orders/{id} y cancelar si no llena a tiempo.
+                        from src.engine.fill_confirmation import confirm_kalshi_fill, cancel_kalshi_order
+                        timeout_s = float(os.getenv("KALSHI_FILL_CONFIRM_TIMEOUT_SECONDS", "15"))
+                        confirm = await confirm_kalshi_fill(
+                            self.kalshi_rest_url, str(order_id), self.kalshi_api_key_id,
+                            private_key, timeout_seconds=timeout_s,
+                        )
+                        if not confirm.filled:
+                            await cancel_kalshi_order(
+                                self.kalshi_rest_url, str(order_id), self.kalshi_api_key_id, private_key
+                            )
+                            raise RuntimeError(
+                                f"rejected: orden Kalshi {order_id} no confirmó fill "
+                                f"({confirm.reason}), orden cancelada"
+                            )
+
                         _exec_ms = (time.time() - _t_exec_start) * 1000
                         _q_ms = getattr(signal, '_queue_latency_ms', None)
                         _s_ms = getattr(signal, '_strategy_latency_ms', None)
@@ -1475,15 +1495,17 @@ class TradingWorker:
                         )
                         await self._sync_kalshi_portfolio()
                     else:
-                        self.db.log(
-                            "ERROR",
-                            f"Fallo al enviar orden a Kalshi: {response.status_code} - {response.text}",
-                            self.worker_id,
+                        raise RuntimeError(
+                            f"Fallo al enviar orden a Kalshi: {response.status_code} - {response.text}"
                         )
                 except Exception as e:
                     self.db.log(
                         "ERROR", f"Error en ejecución Kalshi: {e}", self.worker_id
                     )
+                    # Re-lanzar para que el llamador (FillGuard/execute_fn) sepa que
+                    # esta pata falló — antes se registraba como si nada, sin
+                    # disparar el mecanismo de recuperación de patas ya llenadas.
+                    raise
                 return
             else:
                 # Simulación local para Kalshi si no hay keys
@@ -1656,6 +1678,10 @@ class TradingWorker:
 
                         # Resolve numeric token_id from the real market (the slug is NOT the token_id).
                         market = await limitless_c.markets.get_market(market_slug)
+                        # condition_id de ESTA pata específica (cada sub-mercado de un
+                        # grupo NegRisk/sports tiene el suyo) — se guarda con la posición
+                        # para poder redimir la pata ganadora al resolver.
+                        leg_condition_id = getattr(market, "condition_id", None)
                         if token == "NO" and getattr(market, "tokens", None):
                             token_id = market.tokens.no
                         elif token == "YES" and getattr(market, "tokens", None):
@@ -1763,6 +1789,35 @@ class TradingWorker:
                             )
                         
                         order_id = response.order.id if hasattr(response, "order") and response.order else "N/A"
+
+                        # CONFIRMACIÓN DE FILL: post_only=True garantiza que la orden GTC
+                        # NUNCA se llena en el instante de creación (se rechaza si cruzaría) —
+                        # "se creó sin error" no es "se llenó". Sin esto, una pata que queda
+                        # descansando sin llenarse en el libro se registraba como COMPLETED
+                        # igual, dejando la canasta 1xN sin cobertura real y sin que el
+                        # FillGuard se enterara.
+                        if is_gtc:
+                            timeout_s = float(os.getenv("LIMITLESS_FILL_CONFIRM_TIMEOUT_SECONDS", "30"))
+                            from src.engine.fill_confirmation import confirm_limitless_fill
+                            confirm = await confirm_limitless_fill(
+                                order_id, api_key, api_secret, timeout_seconds=timeout_s
+                            )
+                            if not confirm.filled:
+                                try:
+                                    await order_client.cancel(order_id)
+                                except Exception:
+                                    pass
+                                raise RuntimeError(
+                                    f"rejected: orden Limitless {order_id} no confirmó fill "
+                                    f"({confirm.reason}), orden cancelada"
+                                )
+                        else:
+                            # FOK: fill-or-kill. Sin maker_matches, se mató sin llenar nada.
+                            if not getattr(response, "maker_matches", None):
+                                raise RuntimeError(
+                                    f"rejected: orden FOK Limitless {order_id} no tuvo matches (killed)"
+                                )
+
                         _exec_ms = (time.time() - _t_exec_start) * 1000
                         _q_ms = getattr(signal, '_queue_latency_ms', None)
                         _s_ms = getattr(signal, '_strategy_latency_ms', None)
@@ -1818,6 +1873,7 @@ class TradingWorker:
                                     "BUY",
                                     price,
                                     pos_amount,
+                                    condition_id=leg_condition_id,
                                 )
                                 if position_id and hasattr(self.strategy, "_arb_groups"):
                                     for gid, grp in self.strategy._arb_groups.items():
@@ -1840,7 +1896,10 @@ class TradingWorker:
                         f"RECHAZADO: fallo en ejecución on-chain Limitless: {e}. No se crea posición simulada (Modo Estricto Real).",
                         self.worker_id,
                     )
-                    return
+                    # Re-lanzar para que el llamador (FillGuard/execute_fn) sepa que
+                    # esta pata falló — antes se registraba como si nada, sin
+                    # disparar el mecanismo de recuperación de patas ya llenadas.
+                    raise
             
         # 5. SIMULACIÓN LOCAL MOCK / FALLBACK GENERAL
         if signal.side == "BUY":
