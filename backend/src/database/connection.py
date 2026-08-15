@@ -228,6 +228,14 @@ class DatabaseManager:
                 resolved_at TIMESTAMP
             );
             """,
+            """
+            CREATE TABLE IF NOT EXISTS telegram_dedup (
+                event_id VARCHAR(500) NOT NULL,
+                alert_type VARCHAR(20) NOT NULL,
+                sent_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (event_id, alert_type)
+            );
+            """,
         ]
 
         migrations = [
@@ -422,37 +430,65 @@ class DatabaseManager:
             self._return_connection(conn)
 
     def record_edge_snapshot(self, snapshot: dict):
-        """Persist an observation without creating a trade or position."""
-        query = """
-            INSERT INTO edge_snapshots
-            (platform_a, platform_b, event_id, event_title, edge_pct,
-             gross_edge_pct, platform_a_yes_ask, platform_b_no_ask,
-             platform_a_depth, platform_b_depth, liquidity_verified, viable,
-             category, direction, outcomes_count)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """Persist an observation without creating a trade or position.
+
+        Delegates to record_opportunity which has dedup by event_id
+        (INSERT if new, UPDATE via _refresh_opportunity if exists).
         """
+        self.record_opportunity({
+            "worker_id": snapshot.get("worker_id", "worker_2"),
+            "platform_a": snapshot.get("platform_a", "limitless"),
+            "platform_b": snapshot.get("platform_b", "kalshi"),
+            "event_id": snapshot.get("event_id", ""),
+            "event_title": snapshot.get("event_title", ""),
+            "net_edge_pct": snapshot.get("net_edge_pct", 0.0),
+            "gross_edge_pct": snapshot.get("gross_edge_pct", 0.0),
+            "platform_a_yes_ask": snapshot.get("platform_a_yes_ask", 0.0),
+            "platform_b_no_ask": snapshot.get("platform_b_no_ask", 0.0),
+            "platform_a_depth": snapshot.get("platform_a_depth", 0.0),
+            "platform_b_depth": snapshot.get("platform_b_depth", 0.0),
+            "liquidity_verified": snapshot.get("liquidity_verified", False),
+            "viable": snapshot.get("viable", False),
+            "category": snapshot.get("category", "sports"),
+            "direction": snapshot.get("direction", ""),
+            "outcomes_count": snapshot.get("outcomes_count", 0),
+            "entry_price": snapshot.get("entry_price", 0.0),
+            "expected_profit": snapshot.get("expected_profit", 0.0),
+        })
+
+    # ---- Telegram dedup (persistente, sobrevive reinicios) ----
+
+    def has_telegram_alert_been_sent(self, event_id: str, alert_type: str = "opportunity") -> bool:
+        """Check if a Telegram alert was already sent for this event_id + alert_type."""
         conn = None
         try:
             conn = self._get_connection()
             with conn.cursor() as cursor:
-                cursor.execute(query, (
-                    snapshot.get("platform_a", "limitless"),
-                    snapshot.get("platform_b", "kalshi"),
-                    snapshot.get("event_id", ""),
-                    snapshot.get("event_title", ""),
-                    snapshot.get("net_edge_pct", 0.0),
-                    snapshot.get("gross_edge_pct", 0.0),
-                    snapshot.get("platform_a_yes_ask", 0.0),
-                    snapshot.get("platform_b_no_ask", 0.0),
-                    snapshot.get("platform_a_depth", 0.0),
-                    snapshot.get("platform_b_depth", 0.0),
-                    snapshot.get("liquidity_verified", False),
-                    snapshot.get("viable", False),
-                    snapshot.get("category", "sports"),
-                    snapshot.get("direction", ""),
-                    snapshot.get("outcomes_count", 0),
-                ))
+                cursor.execute(
+                    "SELECT 1 FROM telegram_dedup WHERE event_id = %s AND alert_type = %s",
+                    (event_id, alert_type),
+                )
+                return cursor.fetchone() is not None
+        except Exception:
+            return False
+        finally:
+            self._return_connection(conn)
+
+    def mark_telegram_alert_sent(self, event_id: str, alert_type: str = "opportunity"):
+        """Record that a Telegram alert was sent for this event_id + alert_type."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO telegram_dedup (event_id, alert_type) VALUES (%s, %s) "
+                    "ON CONFLICT (event_id, alert_type) DO NOTHING",
+                    (event_id, alert_type),
+                )
                 conn.commit()
+        except Exception:
+            if conn:
+                conn.rollback()
         finally:
             self._return_connection(conn)
 

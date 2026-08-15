@@ -381,12 +381,23 @@ class TelegramBot:
             return False
     
     def has_been_alerted(self, event_id: str) -> bool:
-        """Check if an opportunity alert was already sent for this event_id."""
-        return self._sent_event_alerts.get(event_id) is not None
+        """Check if an opportunity alert was already sent for this event_id.
+
+        Fast-path: in-memory cache. Authoritative: telegram_dedup table
+        (survives container restarts).
+        """
+        if self._sent_event_alerts.get(event_id) is not None:
+            return True
+        if self._db and self._db.has_telegram_alert_been_sent(event_id, "opportunity"):
+            self._sent_event_alerts[event_id] = time.time()
+            return True
+        return False
 
     def mark_alerted(self, event_id: str):
         """Mark an event_id as having received an opportunity alert."""
         self._sent_event_alerts[event_id] = time.time()
+        if self._db:
+            self._db.mark_telegram_alert_sent(event_id, "opportunity")
 
     def clear_alerted(self, event_id: str):
         """Clear an event_id after resolution — allows new alert if event reopens."""
@@ -428,11 +439,22 @@ class TelegramBot:
             self._sent_title_alerts[norm] = time.time()
 
     def has_resolution_alerted(self, event_id: str) -> bool:
-        """True si ya se envió el resultado de resolución para este evento."""
-        return self._sent_resolution_alerts.get(event_id) is not None
+        """True si ya se envió el resultado de resolución para este evento.
+
+        Fast-path: in-memory cache. Authoritative: telegram_dedup table.
+        """
+        if self._sent_resolution_alerts.get(event_id) is not None:
+            return True
+        if self._db and self._db.has_telegram_alert_been_sent(event_id, "resolution"):
+            self._sent_resolution_alerts[event_id] = time.time()
+            return True
+        return False
 
     def mark_resolution_alerted(self, event_id: str):
+        """Mark a resolution alert as sent (memory + DB)."""
         self._sent_resolution_alerts[event_id] = time.time()
+        if self._db:
+            self._db.mark_telegram_alert_sent(event_id, "resolution")
 
     def send_alert(self, alert_type: str, message: str, event_id: str = None, category: str = None):
         """Send a formatted alert. If event_id is provided, deduplicates.
