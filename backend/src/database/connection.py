@@ -665,20 +665,44 @@ class DatabaseManager:
         return value
 
     def mark_stale_pending_opportunities(self, stale_hours: int = 24) -> int:
-        """Marca oportunidades pendientes viejas como 'stale' para no generar alertas duplicadas."""
+        """Marca oportunidades pendientes viejas como 'stale' para no generar alertas duplicadas.
+
+        Para eventos deportivos (market_slug contiene timestamp), solo marca como
+        stale si el partido YA EMPEZÓ (timestamp del slug < ahora). Esto evita que
+        partidos programados para más adelante se marquen como stale prematuramente.
+        """
         if self.use_sqlite:
+            # SQLite: extraer timestamp del market_slug y comparar
             query = """
                 UPDATE edge_snapshots
                 SET resolution_status = 'stale', resolved_at = datetime('now')
                 WHERE resolution_status = 'pending'
-                  AND timestamp < datetime('now', '-' || ? || ' hours')
+                  AND (
+                    -- Crypto/events sin timestamp en slug: usar timestamp de detección
+                    (market_slug IS NULL OR market_slug = '' OR market_slug NOT LIKE '%-%-%')
+                    AND timestamp < datetime('now', '-' || ? || ' hours')
+                    OR
+                    -- Sports events: extraer timestamp del slug (último segmento después del último '-')
+                    market_slug IS NOT NULL AND market_slug != ''
+                    AND CAST(SUBSTR(market_slug, INSTR(market_slug, '-') + 1) AS INTEGER) / 1000
+                        < CAST(strftime('%s', 'now') AS INTEGER)
+                  )
             """
         else:
             query = """
                 UPDATE edge_snapshots
                 SET resolution_status = 'stale', resolved_at = CURRENT_TIMESTAMP
                 WHERE resolution_status = 'pending'
-                  AND timestamp < CURRENT_TIMESTAMP - (%s || ' hours')::interval
+                  AND (
+                    -- Crypto/events sin timestamp en slug: usar timestamp de detección
+                    (market_slug IS NULL OR market_slug = '' OR market_slug NOT LIKE '%-%-%')
+                    AND timestamp < CURRENT_TIMESTAMP - (%s || ' hours')::interval
+                    OR
+                    -- Sports events: extraer timestamp del slug y comparar con ahora
+                    market_slug IS NOT NULL AND market_slug != ''
+                    AND (regexp_replace(market_slug, '^.*-', '')::bigint / 1000)
+                        < EXTRACT(EPOCH FROM CURRENT_TIMESTAMP)::bigint
+                  )
             """
         conn = None
         try:
