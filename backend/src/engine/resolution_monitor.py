@@ -379,16 +379,22 @@ class ResolutionMonitor:
                                     position_won = (winning_outcome == "YES")
                                 position_pnl = (1.0 - entry_price) if position_won else -entry_price
 
-                        telegram_bot.send_opportunity_resolution(
-                            event_id=db_event_id,
-                            event_title=event_title,
-                            winning_outcome=winning_outcome,
-                            entry_price=entry_price,
-                            expected_profit=expected_profit,
-                            position_won=position_won,
-                            position_pnl=position_pnl,
-                            category=category,
-                        )
+                        # Skip Telegram for crypto sniper observations (high-frequency
+                        # hourly markets — resolution messages are noise, not signal).
+                        # Still send for sports and for any event with real positions.
+                        if category == "crypto" and not positions:
+                            pass  # No Telegram — paper PnL still tracked in DB
+                        else:
+                            telegram_bot.send_opportunity_resolution(
+                                event_id=db_event_id,
+                                event_title=event_title,
+                                winning_outcome=winning_outcome,
+                                entry_price=entry_price,
+                                expected_profit=expected_profit,
+                                position_won=position_won,
+                                position_pnl=position_pnl,
+                                category=category,
+                            )
                 except Exception as e_tg:
                     print(f"[ResolutionMonitor TG Error] {e_tg}")
                 
