@@ -504,19 +504,22 @@ class TelegramBot:
         # Dedup por event_id (mismo slug/market)
         if event_id and self.has_been_alerted(event_id):
             return False
-        # Dedup por título normalizado (mismo partido detectado por workers distintos)
-        # Usar tanto event como event_id para cubrir ambos casos:
-        # - sports_arb pasa título legible ("LP, Santa Clara vs Nacional")
-        # - cross_platform_arb pasa slug ("match_nacional-vs-santa-clara__...")
-        if self._title_already_alerted(event):
-            return False
-        if event_id and self._title_already_alerted(event_id):
-            return False
+        # Dedup por título normalizado: solo para sports (donde workers distintos
+        # detectan el mismo partido con event_id diferente). Para crypto sniper,
+        # el event_id ya es único (incluye timestamp de expiración) — el título
+        # dedup bloquearía TODAS las instancias después de la primera.
+        is_sniper = bool(event_id and event_id.startswith("limitless_sniper_"))
+        if not is_sniper:
+            if self._title_already_alerted(event):
+                return False
+            if event_id and self._title_already_alerted(event_id):
+                return False
         if event_id:
             self.mark_alerted(event_id)
-        self._mark_title_alerted(event)
-        if event_id:
-            self._mark_title_alerted(event_id)
+        if not is_sniper:
+            self._mark_title_alerted(event)
+            if event_id:
+                self._mark_title_alerted(event_id)
         
         # Format clean ID display from event_id or slug
         event_ref = event_id if event_id else "N/A"
