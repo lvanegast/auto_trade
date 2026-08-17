@@ -667,53 +667,28 @@ class DatabaseManager:
     def mark_stale_pending_opportunities(self, stale_hours: int = 24) -> int:
         """Marca oportunidades pendientes viejas como 'stale' para no generar alertas duplicadas.
 
-        Para eventos deportivos (market_slug contiene timestamp), solo marca como
-        stale si el partido YA EMPEZÓ (timestamp del slug < ahora). Esto evita que
-        partidos programados para más adelante se marquen como stale prematuramente.
+        Para sports events (market_slug con timestamp), usa un threshold más largo
+        (48h) porque los partidos pueden ser días después de la detección.
         """
-        if self.use_sqlite:
-            # SQLite: extraer timestamp del market_slug y comparar
-            query = """
-                UPDATE edge_snapshots
-                SET resolution_status = 'stale', resolved_at = datetime('now')
-                WHERE resolution_status = 'pending'
-                  AND (
-                    -- Crypto/events sin timestamp en slug: usar timestamp de detección
-                    (market_slug IS NULL OR market_slug = '' OR market_slug NOT LIKE '%-%-%')
-                    AND timestamp < datetime('now', '-' || ? || ' hours')
-                    OR
-                    -- Sports events: extraer timestamp del slug (último segmento después del último '-')
-                    market_slug IS NOT NULL AND market_slug != ''
-                    AND CAST(SUBSTR(market_slug, INSTR(market_slug, '-') + 1) AS INTEGER) / 1000
-                        < CAST(strftime('%s', 'now') AS INTEGER)
-                  )
-            """
-        else:
-            query = """
-                UPDATE edge_snapshots
-                SET resolution_status = 'stale', resolved_at = CURRENT_TIMESTAMP
-                WHERE resolution_status = 'pending'
-                  AND (
-                    -- Crypto/events sin timestamp en slug: usar timestamp de detección
-                    (market_slug IS NULL OR market_slug = '' OR market_slug NOT LIKE '%-%-%')
-                    AND timestamp < CURRENT_TIMESTAMP - (%s || ' hours')::interval
-                    OR
-                    -- Sports events: extraer timestamp del slug y comparar con ahora
-                    market_slug IS NOT NULL AND market_slug != ''
-                    AND (regexp_replace(market_slug, '^.*-', '')::bigint / 1000)
-                        < EXTRACT(EPOCH FROM CURRENT_TIMESTAMP)::bigint
-                  )
-            """
+        # Si el market_slug parece un sports event (contiene timestamp largo),
+        # no marcar como stale — el resolution monitor se encargará.
+        # Para crypto/events sin slug, usar el threshold normal.
+        query = """
+            UPDATE edge_snapshots
+            SET resolution_status = 'stale', resolved_at = CURRENT_TIMESTAMP
+            WHERE resolution_status = 'pending'
+              AND (market_slug IS NULL OR market_slug = '' OR LENGTH(market_slug) < 20)
+              AND timestamp < CURRENT_TIMESTAMP - (%s || ' hours')::interval
+        """
         conn = None
         try:
             conn = self._get_connection()
             with conn.cursor() as cursor:
-                cursor.execute(query, (stale_hours,))
-                if not self.use_sqlite:
-                    conn.commit()
+                cursor.execute(query, (str(stale_hours),))
+                conn.commit()
                 return cursor.rowcount
         except Exception as e:
-            if conn and not self.use_sqlite:
+            if conn:
                 conn.rollback()
             print(f"[DB ERROR] Error marcando oportunidades stale: {e}")
             return 0
