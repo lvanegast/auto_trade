@@ -796,6 +796,23 @@ class TradingWorker:
         except Exception:
             pass
 
+        # Marcar eventos deportivos que llevan demasiado tiempo sin resolver
+        try:
+            if hasattr(self.db, "mark_timeout_sports_opportunities"):
+                timeout_hours = int(os.getenv("SPORTS_TIMEOUT_HOURS", "48"))
+                timeout_marked = self.db.mark_timeout_sports_opportunities(timeout_hours)
+                if timeout_marked:
+                    self.db.log(
+                        "WARNING",
+                        f"[ResolutionMonitor] {timeout_marked} eventos deportivos marcados como timeout (>{timeout_hours}h sin resolver)",
+                        self.worker_id,
+                    )
+                    unresolved_opps = self.db.get_pending_opportunities() or []
+                    if not open_pos and not unresolved_opps:
+                        return
+        except Exception:
+            pass
+
         from src.engine.resolution_monitor import ResolutionMonitor
         from src.engine.pnl_calculator import PnLCalculator
 

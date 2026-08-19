@@ -695,6 +695,39 @@ class DatabaseManager:
         finally:
             self._return_connection(conn)
 
+    def mark_timeout_sports_opportunities(self, timeout_hours: int = 48) -> int:
+        """Marca eventos deportivos pendientes como 'timeout' si llevan demasiado tiempo.
+
+        Un evento deportivo se marca como timeout si:
+        1. Tiene market_slug (es un evento deportivo)
+        2. El timestamp del partido en el slug ya pasó
+        3. Han pasado más de timeout_hours desde que el partido debía empezar
+        """
+        query = """
+            UPDATE edge_snapshots
+            SET resolution_status = 'timeout', resolved_at = CURRENT_TIMESTAMP
+            WHERE resolution_status = 'pending'
+              AND market_slug IS NOT NULL 
+              AND market_slug != ''
+              AND LENGTH(market_slug) >= 20
+              AND (regexp_replace(market_slug, '^.*-', '')::bigint / 1000) < EXTRACT(EPOCH FROM CURRENT_TIMESTAMP)::bigint
+              AND (regexp_replace(market_slug, '^.*-', '')::bigint / 1000) < EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - (%s || ' hours')::interval)::bigint
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(query, (str(timeout_hours),))
+                conn.commit()
+                return cursor.rowcount
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            print(f"[DB ERROR] Error marcando deportivos timeout: {e}")
+            return 0
+        finally:
+            self._return_connection(conn)
+
     def get_pending_opportunities(self, worker_id: str = None):
         """Get all opportunities that haven't been resolved yet (optionally scoped to a worker)."""
         if worker_id:
