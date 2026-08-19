@@ -800,11 +800,11 @@ class TradingWorker:
         try:
             if hasattr(self.db, "mark_timeout_sports_opportunities"):
                 timeout_hours = int(os.getenv("SPORTS_TIMEOUT_HOURS", "48"))
-                timeout_marked = self.db.mark_timeout_sports_opportunities(timeout_hours)
-                if timeout_marked:
+                locked_marked = self.db.mark_timeout_sports_opportunities(timeout_hours)
+                if locked_marked:
                     self.db.log(
                         "WARNING",
-                        f"[ResolutionMonitor] {timeout_marked} eventos deportivos marcados como timeout (>{timeout_hours}h sin resolver)",
+                        f"[ResolutionMonitor] {locked_marked} eventos deportivos con capital bloqueado (>{timeout_hours}h sin resolver de Limitless)",
                         self.worker_id,
                     )
                     unresolved_opps = self.db.get_pending_opportunities() or []

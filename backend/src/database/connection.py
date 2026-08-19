@@ -696,16 +696,20 @@ class DatabaseManager:
             self._return_connection(conn)
 
     def mark_timeout_sports_opportunities(self, timeout_hours: int = 48) -> int:
-        """Marca eventos deportivos pendientes como 'timeout' si llevan demasiado tiempo.
+        """Marca eventos deportivos pendientes como 'locked' si llevan demasiado tiempo.
 
-        Un evento deportivo se marca como timeout si:
+        Un evento deportivo se marca como 'locked' si:
         1. Tiene market_slug (es un evento deportivo)
         2. El timestamp del partido en el slug ya pasó
         3. Han pasado más de timeout_hours desde que el partido debía empezar
+
+        NOTA: 'locked' NO es una pérdida. El capital sigue en Limitless.
+        Solo indica que el capital está atrapado y no se puede usar.
+        Cuando Limitless resuelva, el resolution monitor lo detectará.
         """
         query = """
             UPDATE edge_snapshots
-            SET resolution_status = 'timeout', resolved_at = CURRENT_TIMESTAMP
+            SET resolution_status = 'locked', resolved_at = CURRENT_TIMESTAMP
             WHERE resolution_status = 'pending'
               AND market_slug IS NOT NULL 
               AND market_slug != ''
@@ -723,7 +727,7 @@ class DatabaseManager:
         except Exception as e:
             if conn:
                 conn.rollback()
-            print(f"[DB ERROR] Error marcando deportivos timeout: {e}")
+            print(f"[DB ERROR] Error marcando deportivos locked: {e}")
             return 0
         finally:
             self._return_connection(conn)
