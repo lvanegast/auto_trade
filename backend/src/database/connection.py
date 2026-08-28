@@ -733,14 +733,18 @@ class DatabaseManager:
             self._return_connection(conn)
 
     def get_pending_opportunities(self, worker_id: str = None):
-        """Get all opportunities that haven't been resolved yet (optionally scoped to a worker)."""
+        """Get all opportunities that haven't been resolved yet (optionally scoped to a worker).
+
+        Returns events with status 'pending' OR 'locked' (locked = capital trapped
+        but still needs resolution checking).
+        """
         if worker_id:
             query = """
                 SELECT id, event_id, event_title, edge_pct, platform_a_yes_ask, 
                        platform_b_no_ask, entry_price, expected_profit, timestamp,
                        market_slug, category, direction, outcomes_count
                 FROM edge_snapshots 
-                WHERE resolution_status = 'pending' AND worker_id = %s
+                WHERE resolution_status IN ('pending', 'locked') AND worker_id = %s
                 ORDER BY timestamp DESC
             """
             params = (worker_id,)
@@ -750,7 +754,7 @@ class DatabaseManager:
                        platform_b_no_ask, entry_price, expected_profit, timestamp,
                        market_slug, category, direction, outcomes_count
                 FROM edge_snapshots 
-                WHERE resolution_status = 'pending'
+                WHERE resolution_status IN ('pending', 'locked')
                 ORDER BY timestamp DESC
             """
             params = ()
