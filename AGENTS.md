@@ -138,6 +138,9 @@ Event flow: Feeder → `PriceUpdateEvent` → Queue → `TradingWorker._process_
 1. **Alerta Telegram en Worker 6 y Worker 1 (`maker_two_leg_strategy.py`)**: Conectado `telegram_bot.send_opportunity()` con detalle de patas (YES/NO bid, profundidades en USD, costo total y margen neto). Anteriormente solo guardaba en PostgreSQL `edge_snapshots` sin emitir aviso a Telegram.
 2. **Reinicio de Resiliencia en Contenedores (`docker-compose.yml`)**: Añadido `restart: unless-stopped` a `trading_bot_db` y `trading_bot_backend` para arranque automático tras cortes de energía o reinicios en hardware físico (Jetson Nano).
 3. **CI/CD Desatendido en Jetson Nano (`bot-autodeploy.service`)**: Daemon en bash (`auto_deploy.sh`) integrado en `systemd` que consulta `git fetch` cada 30 segundos, sincroniza cambios y reinicia el backend sin necesidad de interacción manual por SSH. Cero consumo de RAM adicional. Documentado en `docs/JETSON_DEPLOYMENT.md`.
+4. **Arbitraje Combinatorio con Programación Lineal (`backend/src/strategy/combinatorial_arb.py`)**: Solver Dual Simplex puro en Python (cero dependencias C/scipy para máxima portabilidad en ARM64 Jetson Nano). Resuelve la canasta óptima de cobertura $\min c^T x$ sujeto a $A x \ge \mathbf{1}, x \ge 0$ sobre sub-mercados correlacionados (Tenis: Moneyline + 3+ sets; Esports Bo3: Match + Map 1 + Map 2; Fútbol: 3-way + Over/Under 2.5 + BTTS). Integrado directamente en `LimitlessSportsFeeder` con alertas Telegram en Topic 2 (Deportes).
+5. **Protección contra Adverse Selection / Flujo Tóxico (`BinanceTracker.detect_jump`)**: Detección de saltos bruscos en el precio de referencia spot (>15 bps en <500ms). Pausa inmediatamente las posturas pasivas de los creadores de mercado (`MakerTwoLegStrategy` en Worker 6 y `MakerLiquidityRewardsStrategy` en Worker 1) para evitar ser ejecutados por arbitrajistas de latencia.
+6. **Expansión de Sub-mercados en Resolution Sniper (`resolution_sniper_feeder.py`)**: Ahora itera por todos los sub-mercados (`for sub in subs:`) en lugar de limitarse a `subs[0]`. Monitorea simultáneamente Moneyline, sets, games y mapas en zona pre-settlement [0.975, 0.98].
 
 ## Resolution Sniper (Worker 7 CRYPTO + Worker 8 SPORTS) — Extensión a Deportes (Agosto 2026)
 
@@ -150,19 +153,7 @@ Event flow: Feeder → `PriceUpdateEvent` → Queue → `TradingWorker._process_
 - **Protecciones (idénticas)**: `observation_only=True` a nivel de estrategia, la estrategia **nunca** emite `SignalEvent` (estructuralmente read-only), y `ALLOWED_REAL_WORKERS` vacío bloquea `_execute_order` en el motor. Solo recolección de datos.
 - **Monitor global de resoluciones**: solo corre en UN worker (`SNIPER_RESOLUTION_MONITOR_WORKER`, default `worker_8`) para no duplicar mensajes de Telegram; cada worker resuelve sus propias posiciones.
 - **Umbral temporal deportes**: `SNIPER_SPORTS_MAX_SECONDS_TO_RESOLUTION` (default 14400s = 4h) — la casi-certeza deportiva aparece en los minutos/horas finales del partido; crypto usa `SNIPER_MAX_SECONDS_TO_RESOLUTION` (1800s).
-
-### Sub-mercados deportivos (exploración futura)
-
-Los mercados deportivos de Limitless tienen **sub-mercados** independientes por cada partido. Ejemplo tenis:
-- **Moneyline**: ¿Quién gana el partido? (este es el que snipeamos hoy)
-- **3+ sets**: ¿El partido tendrá 3 o más sets? (YES/NO independiente)
-- **22+ games**: ¿Habrá 22+ juegos en total? (YES/NO independiente)
-- **Spread**: Handicap de sets/juegos
-- **Total**: Over/under de sets/juegos
-
-Cada sub-mercado tiene su propio orderbook y se resuelve independientemente. El sniper actualmente solo procesa el **moneyline** (primer sub-mercado del grupo). Los demás sub-mercados son candidatos a explorar como oportunidades adicionales de sniper, especialmente cuando un resultado es casi seguro (ej: si Swiatek va ganando 5-2 en el tercer set, tanto moneyline NO como "3+ sets" YES pueden estar en rango).
-
-**Limitación actual**: el feeder solo procesa `subs[0]` (moneyline). Para explorar sub-mercados, hay que iterar `subs[1:]` y evaluar cada uno por separado.
+- **Sub-mercados cubiertos**: Evalúa todos los sub-mercados de un evento (moneyline, sets, totals, handicaps). Cuando un favorito lidera con margen amplio, los sub-mercados se vuelven elegibles para captura segura pre-settlement.
 
 ### Advertencia estadística (obligatoria al interpretar el Paper PnL)
 

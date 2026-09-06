@@ -2,6 +2,8 @@ import asyncio
 import logging
 import os
 import time as _time
+from collections import deque
+from typing import Tuple
 from src.strategy.base import BaseStrategy
 from src.events import PriceUpdateEvent, SignalEvent
 from src.feeders.connection_manager import AsyncWebSocketManager
@@ -16,6 +18,48 @@ class BinanceTracker:
     latest_eth_price: float = 0.0
     last_update_time: float = 0.0
 
+    # Historial de ticks para detección de saltos bruscos / Adverse Selection Protection
+    btc_ticks: deque = deque(maxlen=250)
+    eth_ticks: deque = deque(maxlen=250)
+
+    @classmethod
+    def record_tick(cls, symbol: str, price: float, t: float):
+        if price <= 0:
+            return
+        dq = cls.btc_ticks if "btc" in symbol.lower() else cls.eth_ticks
+        dq.append((t, price))
+
+    @classmethod
+    def detect_jump(cls, asset: str = "BTC", window_seconds: float = 0.5, threshold_bps: float = 15.0) -> Tuple[bool, float]:
+        """
+        Detecta si el precio de referencia se movió bruscamente en una ventana corta.
+        Protege a las estrategias Maker contra toxic flow / adverse selection.
+
+        Returns:
+            (is_jump, jump_bps)
+        """
+        now = _time.monotonic()
+        dq = cls.btc_ticks if "btc" in asset.lower() else cls.eth_ticks
+        if not dq or len(dq) < 2:
+            return False, 0.0
+
+        current_price = dq[-1][1]
+        cutoff = now - window_seconds
+
+        baseline_price = None
+        for t_stamp, p in dq:
+            if t_stamp >= cutoff:
+                baseline_price = p
+                break
+
+        if baseline_price is None or baseline_price <= 0:
+            baseline_price = dq[0][1]
+
+        diff_pct = abs(current_price - baseline_price) / baseline_price
+        jump_bps = diff_pct * 10000.0
+
+        return (jump_bps >= threshold_bps), round(jump_bps, 2)
+
 
 class _BinanceWebSocketManager(AsyncWebSocketManager):
     """Gestor del WebSocket de Binance para el tracker de precios líder."""
@@ -27,13 +71,18 @@ class _BinanceWebSocketManager(AsyncWebSocketManager):
         ticker_data = data.get("data", {})
 
         price = float(ticker_data.get("c", 0.0))
+        if price <= 0:
+            return
 
+        now_mono = _time.monotonic()
         if "btcusdt" in stream:
             BinanceTracker.latest_btc_price = price
-            BinanceTracker.last_update_time = _time.monotonic()
+            BinanceTracker.last_update_time = now_mono
+            BinanceTracker.record_tick("btc", price, now_mono)
         elif "ethusdt" in stream:
             BinanceTracker.latest_eth_price = price
-            BinanceTracker.last_update_time = _time.monotonic()
+            BinanceTracker.last_update_time = now_mono
+            BinanceTracker.record_tick("eth", price, now_mono)
 
 
 # Singleton del WebSocket de Binance (compartido entre todos los workers)

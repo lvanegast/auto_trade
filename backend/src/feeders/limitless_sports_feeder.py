@@ -197,6 +197,66 @@ class LimitlessSportsFeeder(BaseFeeder):
                     await asyncio.sleep(0.1)
 
                 print(f"[Sports Feeder] Scan complete: {len(markets)} markets checked | stats: {_stats}")
+
+                # Combinatorial Arbitrage across multi-market match clusters (Tennis sets/moneyline, Esports maps/match)
+                try:
+                    from src.strategy.combinatorial_arb import CombinatorialArbitrage
+                    clusters = CombinatorialArbitrage.cluster_markets_by_match(markets)
+                    if not hasattr(self, "_last_comb_alert"):
+                        self._last_comb_alert = {}
+
+                    for match_key, cluster_items in clusters.items():
+                        if len(cluster_items) >= 2:
+                            comb_opp = await CombinatorialArbitrage.evaluate_cluster(match_key, cluster_items)
+                            if comb_opp:
+                                _last_sent = self._last_comb_alert.get(match_key, 0.0)
+                                if (now - _last_sent) >= 300.0:
+                                    self._last_comb_alert[match_key] = now
+                                    print(f"[Sports Feeder] 🎯 Combinatorial Arb Found for {match_key}: Net Edge {comb_opp['net_edge_pct']:.2%}")
+                                    try:
+                                        from src.api.app import db
+                                        db.save_edge_snapshot(
+                                            worker_id="worker_3",
+                                            platform_a="limitless",
+                                            platform_b="limitless",
+                                            event_id=f"comb_arb_{match_key}",
+                                            event_title=f"Combinatorial Arb: {match_key}",
+                                            edge_pct=comb_opp["gross_edge_pct"],
+                                            gross_edge_pct=comb_opp["gross_edge_pct"],
+                                            platform_a_yes_ask=comb_opp["optimal_cost"],
+                                            platform_b_no_ask=0.0,
+                                            platform_a_depth=comb_opp["bottleneck_size"],
+                                            platform_b_depth=comb_opp["bottleneck_size"],
+                                            liquidity_verified=True,
+                                            viable=True,
+                                            direction="COMBINATORIAL_LP",
+                                            outcomes_count=comb_opp["num_legs"],
+                                            market_slug=match_key,
+                                            entry_price=comb_opp["optimal_cost"],
+                                            expected_profit=comb_opp["gross_edge_pct"] * 2.0,
+                                            category="sports",
+                                        )
+                                    except Exception:
+                                        pass
+
+                                    try:
+                                        from src.telegram_bot import telegram_bot
+                                        legs_detail = f"{comb_opp['legs_summary']}\n• Costo total canasta: ${comb_opp['optimal_cost']:.4f}\n• Payout garantizado: $1.0000"
+                                        telegram_bot.send_opportunity(
+                                            event=f"Combinatorial Arb: {match_key}",
+                                            edge=comb_opp["net_edge_pct"] * 100.0,
+                                            platform_a="Limitless",
+                                            platform_b="Limitless",
+                                            event_id=f"comb_arb_{match_key}",
+                                            category="sports",
+                                            worker_id="worker_3",
+                                            legs_detail=legs_detail,
+                                        )
+                                    except Exception:
+                                        pass
+                except Exception as ce:
+                    print(f"[Sports Feeder] Error evaluating combinatorial arb: {ce}")
+
                 try:
                     from src.api.app import db
                     db.log("INFO", f"[Sports Feeder] Scan complete: {len(markets)} markets checked", "worker_3")

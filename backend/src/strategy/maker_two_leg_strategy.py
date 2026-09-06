@@ -144,6 +144,17 @@ class MakerTwoLegStrategy(BaseStrategy):
             self._diag["edge_filtered"] += 1
             return None
 
+        # ADVERSE SELECTION PROTECTION: Si el spot líder (BTC/ETH en Binance)
+        # se movió > 15 bps en los últimos 500ms, NO cotizar pasivamente para
+        # evitar toxic fills (ser tomado por arbitrajistas más rápidos).
+        asset = "BTC" if "btc" in slug.lower() else ("ETH" if "eth" in slug.lower() else "")
+        if asset:
+            from src.strategy.lead_lag_arbitrage import BinanceTracker
+            is_jump, jump_bps = BinanceTracker.detect_jump(asset, window_seconds=0.5, threshold_bps=15.0)
+            if is_jump:
+                self._diag["adverse_selection"] = self._diag.get("adverse_selection", 0) + 1
+                return None
+
         # Liquidez real en ambas patas (shares -> USD)
         yes_depth = round(bid_size * cost_yes, 2)   # USD de profundidad en el lado YES
         no_depth = round(ask_size * cost_no, 2)     # USD de profundidad en el lado NO

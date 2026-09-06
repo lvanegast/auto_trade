@@ -335,16 +335,12 @@ class ResolutionSniperFeeder(BaseFeeder):
 
                     # Check sub-markets in groups
                     if _has_subs:
-                        # Solo procesar el PRIMER sub-mercado del grupo (moneyline).
-                        # Los demás (sets, games, spread, total) son mercados
-                        # independientes que por ahora NO se snipean.
-                        # TODO: explorar sub-mercados como oportunidades adicionales.
-                        sub = subs[0]
-                        sub_slug = getattr(sub, "slug", "") if hasattr(sub, "slug") else (sub.get("slug", "") if isinstance(sub, dict) else "")
-                        sub_title = getattr(sub, "title", "") if hasattr(sub, "title") else (sub.get("title", "") if isinstance(sub, dict) else "")
-                        if not sub_slug:
-                            self._reject(f"limitless_sniper_{sub_slug}")
-                        else:
+                        # Evaluar todos los sub-mercados del grupo (moneyline, sets, games, spread, total)
+                        for sub in subs:
+                            sub_slug = getattr(sub, "slug", "") if hasattr(sub, "slug") else (sub.get("slug", "") if isinstance(sub, dict) else "")
+                            sub_title = getattr(sub, "title", "") if hasattr(sub, "title") else (sub.get("title", "") if isinstance(sub, dict) else "")
+                            if not sub_slug:
+                                continue
                             if category == "sports":
                                 sub_exp_ts = getattr(sub, "expiration_timestamp", None) or (sub.get("expiration_timestamp") if isinstance(sub, dict) else None)
                                 sub_exp = (float(sub_exp_ts) / 1000.0) if sub_exp_ts else exp
@@ -356,33 +352,34 @@ class ResolutionSniperFeeder(BaseFeeder):
                                 if sub_remaining < 0 or sub_remaining > max_res_secs:
                                     self._reject(f"limitless_sniper_{sub_slug}")
                                     _diag["exp_filtered"] += 1
-                                else:
-                                    from src.limitless_price_cache import async_get_limitless_executable_price
-                                    sub_book = await async_get_limitless_executable_price(sub_slug)
-                                    if sub_book:
-                                        sub_yes = sub_book["yes_ask"]
-                                        sub_no = 1.0 - sub_book["yes_bid"]
-                                        if _min_price <= sub_yes <= _max_price and sub_book["ask_size"] > 0:
-                                            event_id = f"limitless_sniper_{_asset_key(sub_title)}_{sub_slug}"
-                                            if self._confirm(event_id):
-                                                snipers_found += 1
-                                                print(f"[Resolution Sniper] Found YES ({category}): {sub_title[:50]} YES_ASK={sub_yes:.4f} remaining={sub_remaining:.0f}s")
-                                                await self._emit_sniper_signal(sub_slug, sub_title, sub_yes, side="YES", category=category)
-                                            else:
-                                                _diag["waiting_confirmation"] += 1
-                                        elif _min_price <= sub_no <= _max_price and sub_book["bid_size"] > 0:
-                                            event_id = f"limitless_sniper_{_asset_key(sub_title)}_{sub_slug}"
-                                            if self._confirm(event_id):
-                                                snipers_found += 1
-                                                print(f"[Resolution Sniper] Found NO ({category}): {sub_title[:50]} NO_ASK={sub_no:.4f} remaining={sub_remaining:.0f}s")
-                                                await self._emit_sniper_signal(sub_slug, sub_title, sub_no, side="NO", category=category)
-                                            else:
-                                                _diag["waiting_confirmation"] += 1
-                                        else:
-                                            self._reject(f"limitless_sniper_{sub_slug}")
-                                            _diag["price_out_of_range"] += 1
+                                    continue
+
+                            from src.limitless_price_cache import async_get_limitless_executable_price
+                            sub_book = await async_get_limitless_executable_price(sub_slug)
+                            if sub_book:
+                                sub_yes = sub_book["yes_ask"]
+                                sub_no = 1.0 - sub_book["yes_bid"]
+                                if _min_price <= sub_yes <= _max_price and sub_book["ask_size"] > 0:
+                                    event_id = f"limitless_sniper_{_asset_key(sub_title)}_{sub_slug}"
+                                    if self._confirm(event_id):
+                                        snipers_found += 1
+                                        print(f"[Resolution Sniper] Found YES ({category}): {sub_title[:50]} YES_ASK={sub_yes:.4f} remaining={sub_remaining:.0f}s")
+                                        await self._emit_sniper_signal(sub_slug, sub_title, sub_yes, side="YES", category=category)
                                     else:
-                                        _diag["no_liquidity"] += 1
+                                        _diag["waiting_confirmation"] += 1
+                                elif _min_price <= sub_no <= _max_price and sub_book["bid_size"] > 0:
+                                    event_id = f"limitless_sniper_{_asset_key(sub_title)}_{sub_slug}"
+                                    if self._confirm(event_id):
+                                        snipers_found += 1
+                                        print(f"[Resolution Sniper] Found NO ({category}): {sub_title[:50]} NO_ASK={sub_no:.4f} remaining={sub_remaining:.0f}s")
+                                        await self._emit_sniper_signal(sub_slug, sub_title, sub_no, side="NO", category=category)
+                                    else:
+                                        _diag["waiting_confirmation"] += 1
+                                else:
+                                    self._reject(f"limitless_sniper_{sub_slug}")
+                                    _diag["price_out_of_range"] += 1
+                            else:
+                                _diag["no_liquidity"] += 1
 
                     # Delay between markets
                     await asyncio.sleep(0.1)
