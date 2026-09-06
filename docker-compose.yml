@@ -4,6 +4,7 @@ services:
   db_trading:
     image: postgres:16-alpine
     container_name: trading_bot_db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: trading_user
       POSTGRES_PASSWORD: trading_password
@@ -18,6 +19,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     container_name: trading_bot_backend
+    restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
