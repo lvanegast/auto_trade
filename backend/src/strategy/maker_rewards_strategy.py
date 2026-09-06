@@ -129,6 +129,24 @@ class MakerLiquidityRewardsStrategy(BaseStrategy):
                                 "outcomes_count": 2,
                                 "market_slug": slug,
                             })
+                        try:
+                            from src.telegram_bot import telegram_bot
+                            bid_depth = float(getattr(event, "bid_size", 0.0) or 0.0)
+                            ask_depth = float(getattr(event, "ask_size", 0.0) or 0.0)
+                            legs_detail = f"• YES @ {maker_buy_price:.4f} (depth: ${bid_depth:.2f})\n• NO @ {maker_no_price:.4f} (depth: ${ask_depth:.2f})\n• Costo total: ${total_maker_cost:.4f}"
+                            telegram_bot.send_opportunity(
+                                event=f"Maker Rewards: {slug[:40]}",
+                                edge=net_edge * 100,
+                                platform_a="Limitless",
+                                platform_b="Limitless",
+                                event_id=f"limitless_crypto_{slug}",
+                                category="crypto",
+                                worker_id=self.worker_id,
+                                legs_detail=legs_detail,
+                            )
+                        except Exception as tg_err:
+                            if self.db:
+                                self.db.log("WARNING", f"[Maker-Reward] error enviando alerta Telegram: {tg_err}", self.worker_id)
                     except Exception:
                         pass
                     return None
