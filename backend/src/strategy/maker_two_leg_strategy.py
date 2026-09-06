@@ -199,6 +199,22 @@ class MakerTwoLegStrategy(BaseStrategy):
                         f"Cost={total_maker_cost:.4f} | Edge(spread)={maker_edge:.2%} | Net={net_edge:.2%}",
                         self.worker_id,
                     )
+                try:
+                    from src.telegram_bot import telegram_bot
+                    legs_detail = f"• YES @ {cost_yes:.4f} (prof: ${yes_depth:.2f})\n• NO @ {cost_no:.4f} (prof: ${no_depth:.2f})\n• Costo total: ${total_maker_cost:.4f}"
+                    telegram_bot.send_opportunity(
+                        event=f"Crypto Maker 2-Leg: {slug[:40]}",
+                        edge=net_edge * 100,
+                        platform_a="Limitless",
+                        platform_b="Limitless",
+                        event_id=event_id,
+                        category="crypto",
+                        worker_id=self.worker_id,
+                        legs_detail=legs_detail,
+                    )
+                except Exception as tg_err:
+                    if self.db:
+                        self.db.log("WARNING", f"[Maker 2-Leg] error enviando alerta Telegram: {tg_err}", self.worker_id)
             except Exception as e:
                 if self.db:
                     self.db.log("WARNING", f"[Maker 2-Leg] error registrando oportunidad: {e}", self.worker_id)

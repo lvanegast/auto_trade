@@ -1,3 +1,5 @@
+version: "3.3"
+
 services:
   db_trading:
     image: postgres:16-alpine
@@ -10,11 +12,6 @@ services:
       - "5432:5432"
     volumes:
       - pgdata_trading:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trading_user -d trading_bot"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
 
   backend:
     build:
@@ -33,11 +30,8 @@ services:
       - .env:/app/.env
       - ./web:/app/web
       - ./backend/scripts:/app/scripts
-      - C:\Users\User\Downloads\kalshi_private_key.pem:/app/kalshi_private_key.pem
-      - C:\Users\User\Downloads\arb.pem:/app/arb.pem
     depends_on:
-      db_trading:
-        condition: service_healthy
+      - db_trading
     dns:
       - 8.8.8.8
       - 8.8.4.4
