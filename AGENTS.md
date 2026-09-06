@@ -100,6 +100,14 @@ Event flow: Feeder → `PriceUpdateEvent` → Queue → `TradingWorker._process_
 | `GET /api/observation/performance` | **Paper PnL** de oportunidades en observación (sin trades reales), filtrable por `category=sports|crypto` |
 | `POST /api/position/close` | Cerrar posición manualmente |
 
+## Despliegue Permanente en NVIDIA Jetson Nano & CI/CD (Septiembre 2026)
+
+- **Servidor Físico**: NVIDIA Jetson Nano 4GB ARM64 (`192.168.10.12`).
+  - Backend: `http://192.168.10.12:8080`
+  - PostgreSQL: `192.168.10.12:5432` (Alpine 16, persistente en `pgdata_trading`).
+- **Resiliencia de Energía**: Contenedores configurados con `restart: unless-stopped` en `docker-compose.yml`. Si la Jetson se reinicia o sufre un microcorte eléctrico, el stack de base de datos y bot se levanta automáticamente.
+- **CI/CD Auto-Deploy**: Servicio nativo `bot-autodeploy.service` gestionado por `systemd`. Consulta `git fetch` cada 30 segundos; si detecta un nuevo commit en `feat/executable-arbitrage-engine`, ejecuta `git pull` y `docker restart trading_bot_backend` de forma desatendida. Cero consumo adicional de memoria RAM. Ver [`docs/JETSON_DEPLOYMENT.md`](docs/JETSON_DEPLOYMENT.md).
+
 ## Sub-salas (Deportes vs Crypto)
 
 - **Dashboard**: selector de sala (Todos/Deportes/Crypto) en el panel Arbitraje filtra `market_prices` y oportunidades por `category`.
@@ -124,6 +132,12 @@ Event flow: Feeder → `PriceUpdateEvent` → Queue → `TradingWorker._process_
 - **Simulación realista**: OrderBookWalker camina el book real
 - **WebSocket feeder**: Para crypto workers (evita polling)
 - **Logging diferenciado**: fail_no_liquidity vs fail_timeout vs fail_rate_limited
+
+## Mejoras y Correcciones (Septiembre 2026)
+
+1. **Alerta Telegram en Worker 6 y Worker 1 (`maker_two_leg_strategy.py`)**: Conectado `telegram_bot.send_opportunity()` con detalle de patas (YES/NO bid, profundidades en USD, costo total y margen neto). Anteriormente solo guardaba en PostgreSQL `edge_snapshots` sin emitir aviso a Telegram.
+2. **Reinicio de Resiliencia en Contenedores (`docker-compose.yml`)**: Añadido `restart: unless-stopped` a `trading_bot_db` y `trading_bot_backend` para arranque automático tras cortes de energía o reinicios en hardware físico (Jetson Nano).
+3. **CI/CD Desatendido en Jetson Nano (`bot-autodeploy.service`)**: Daemon en bash (`auto_deploy.sh`) integrado en `systemd` que consulta `git fetch` cada 30 segundos, sincroniza cambios y reinicia el backend sin necesidad de interacción manual por SSH. Cero consumo de RAM adicional. Documentado en `docs/JETSON_DEPLOYMENT.md`.
 
 ## Resolution Sniper (Worker 7 CRYPTO + Worker 8 SPORTS) — Extensión a Deportes (Agosto 2026)
 
