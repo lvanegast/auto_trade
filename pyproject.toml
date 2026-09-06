@@ -19,5 +19,5 @@ dependencies = [
     "limitless-sdk>=1.0.12",
 ]
 
-[tool.uv]
-dev-dependencies = []
+[dependency-groups]
+dev = []

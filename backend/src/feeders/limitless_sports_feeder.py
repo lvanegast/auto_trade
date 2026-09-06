@@ -232,33 +232,13 @@ class LimitlessSportsFeeder(BaseFeeder):
                 if not book:
                     skipped_no_liquidity += 1
                     continue
+                # Validar liquidez real en ambas puntas directamente del orderbook cacheado
+                if book.get("bid_size", 0) <= 0 or book.get("ask_size", 0) <= 0:
+                    skipped_no_liquidity += 1
+                    continue
                 yes_price = book["yes_ask"]
             except (ValueError, TypeError):
                 skipped_no_price += 1
-                continue
-
-            # Check real liquidity via orderbook
-            # If bids == 0 AND asks == 0, this sub-market has no real liquidity
-            has_real_liquidity = False
-            try:
-                from limitless_sdk.markets import MarketFetcher
-                from limitless_sdk.api import HttpClient
-                
-                async with HttpClient() as http:
-                    fetcher = MarketFetcher(http)
-                    ob = await fetcher.get_orderbook(slug)
-                    bids = ob.bids if hasattr(ob, 'bids') else []
-                    asks = ob.asks if hasattr(ob, 'asks') else []
-                    
-                    if len(bids) > 0 and len(asks) > 0:
-                        has_real_liquidity = True
-                    else:
-                        skipped_no_liquidity += 1
-            except Exception:
-                # If we can't fetch orderbook, assume no liquidity
-                skipped_no_liquidity += 1
-
-            if not has_real_liquidity:
                 continue
 
             total_yes += yes_price
@@ -268,6 +248,7 @@ class LimitlessSportsFeeder(BaseFeeder):
                     "title": title,
                     "yes_price": yes_price,
                     "no_price": 1.0 - yes_price,
+                    "book": book,
                 }
             )
 
@@ -319,7 +300,7 @@ class LimitlessSportsFeeder(BaseFeeder):
         # Group data is still published to the tracker only when every outcome
         # has a real executable book. Individual outcome books remain distinct.
         for outcome in outcomes:
-            book = await async_get_limitless_executable_price(outcome["slug"])
+            book = outcome.get("book") or await async_get_limitless_executable_price(outcome["slug"])
             if not book:
                 return
             cross_platform_tracker.update_book(
@@ -379,22 +360,19 @@ class LimitlessSportsFeeder(BaseFeeder):
 
     async def _process_single_market(self, slug, title, prices):
         from src.strategy.cross_platform_tracker import cross_platform_tracker
-        from limitless_sdk.markets import MarketFetcher
-        from limitless_sdk.api import HttpClient
+        from src.limitless_price_cache import async_get_limitless_executable_price
 
-        # Fetch real orderbook via SDK (not HTTP cache)
+        # Fetch real executable book via price cache (evita crear HttpClient() desechables)
         try:
-            async with HttpClient() as http:
-                fetcher = MarketFetcher(http)
-                ob = await fetcher.get_orderbook(slug)
-                bids = ob.bids if hasattr(ob, 'bids') else []
-                asks = ob.asks if hasattr(ob, 'asks') else []
-                
-                if not bids or not asks:
-                    return  # No real liquidity
-                
-                yes_bid = float(bids[0].price)
-                yes_ask = float(asks[0].price)
+            book = await async_get_limitless_executable_price(slug)
+            if not book:
+                return  # No real liquidity or phantom book
+            yes_bid = book["yes_bid"]
+            yes_ask = book["yes_ask"]
+            bid_depth = book.get("bid_size", 0.0)
+            ask_depth = book.get("ask_size", 0.0)
+            if bid_depth <= 0 or ask_depth <= 0:
+                return
         except Exception:
             return
 
@@ -412,8 +390,8 @@ class LimitlessSportsFeeder(BaseFeeder):
             platform="limitless",
             yes_bid=yes_bid,
             yes_ask=yes_ask,
-            bid_depth=float(bids[0].size) if bids else 0,
-            ask_depth=float(asks[0].size) if asks else 0,
+            bid_depth=bid_depth,
+            ask_depth=ask_depth,
         )
 
         from src.strategy.sports_arb import update_sports_edge
