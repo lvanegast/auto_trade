@@ -317,15 +317,11 @@ class MultiPlatformFeeder(BaseFeeder):
                             continue
                         markets = ev.get("markets", []) or []
                         for market in markets:
-                            # Solo moneyline (winner del partido) — matchea 1:1 con
-                            # los outcomes de Limitless. Spreads/totals usarían el
-                            # mismo team.name y colisionarían el event_id.
-                            if market.get("marketType") != "moneyline":
+                            mtype = market.get("marketType")
+                            # Soporta tanto moneyline (tenis/NFL/MLB/UFC) como drawable_outcome (fútbol 3-way)
+                            if mtype not in ("moneyline", "drawable_outcome"):
                                 continue
-                            sides = market.get("marketSides", []) or []
-                            if len(sides) < 2:
-                                continue
-                            # Precios ejecutables del contrato (best bid/ask del instrumento)
+
                             try:
                                 best_bid = float(market["bestBidQuote"]["value"])
                                 best_ask = float(market["bestAskQuote"]["value"])
@@ -334,22 +330,47 @@ class MultiPlatformFeeder(BaseFeeder):
                             if best_ask <= 0 or best_bid <= 0 or best_ask < best_bid:
                                 continue
 
+                            no_ask = round(1.0 - best_bid, 4)
+                            no_bid = round(1.0 - best_ask, 4)
+
+                            # Caso 1: Fútbol 3-way (drawable_outcome)
+                            if mtype == "drawable_outcome":
+                                m_title = (market.get("title") or "").strip()
+                                if "tie" in m_title.lower() or "draw" in m_title.lower():
+                                    outcome_name = "Draw"
+                                else:
+                                    outcome_name = m_title.replace("(Reg. Time)", "").strip()
+
+                                if not outcome_name:
+                                    continue
+
+                                ev_id = make_match_event_id(event_title, outcome_name)
+                                self._tracker.update_book(
+                                    event_id=ev_id,
+                                    platform="polymarket",
+                                    yes_bid=round(best_bid, 4),
+                                    yes_ask=round(best_ask, 4),
+                                    no_bid=no_bid,
+                                    no_ask=no_ask,
+                                    bid_depth=float(market.get("bestBidSize") or 0.0) or 10.0,
+                                    ask_depth=float(market.get("bestAskSize") or 0.0) or 10.0,
+                                    ts_origin=time.time(),
+                                )
+                                cycle_updates += 1
+                                continue
+
+                            # Caso 2: Moneyline 2-way binario
+                            sides = market.get("marketSides", []) or []
+                            if len(sides) < 2:
+                                continue
+
                             # Equipos de cada lado (long=True = YES / instrumento principal)
                             side_long = next((s for s in sides if s.get("long")), None)
                             side_short = next((s for s in sides if not s.get("long")), None)
                             team_long = (side_long or {}).get("team", {}).get("name", "")
                             team_short = (side_short or {}).get("team", {}).get("name", "")
 
-                            # NO del instrumento: NO_ask = 1 - YES_bid ; NO_bid = 1 - YES_ask
-                            no_ask = round(1.0 - best_bid, 4)
-                            no_bid = round(1.0 - best_ask, 4)
-
-                            # event_id CANÓNICO: el que usa Limitless para el winner
-                            # depende de la representación del partido:
-                            #   - Grupo/sub-markets (fútbol/esports):  match_X__<team>
-                            #   - Mercado individual binario (tenis):   match_X__<X>-yes
-                            # Publicamos AMBAS representaciones para cubrir las dos.
-                            # El book YES corresponde al team long; el NO al team short.
+                            # event_id CANÓNICO:
                             book_yes = {
                                 "event_id": make_match_event_id(event_title, f"{event_title} YES"),
                                 "yes_bid": round(best_bid, 4),
@@ -371,7 +392,6 @@ class MultiPlatformFeeder(BaseFeeder):
 
                             publications = [
                                 book_yes, book_no,
-                                # Representación por equipo (grupo)
                                 {
                                     "event_id": make_match_event_id(event_title, team_long),
                                     **book_yes,
@@ -645,19 +665,22 @@ class MultiPlatformFeeder(BaseFeeder):
                     candidates.append(m)
 
                 if candidates:
-                    # 3. Orderbooks de cada mercado (agrupados para reducir llamadas)
+                    # 3. Orderbooks de cada mercado (agrupados en lotes de 10 para no saturar el URL ni causar 400 Bad Request)
                     batch = [c["marketHash"] for c in candidates if c.get("marketHash")]
+                    orders = []
                     if batch:
-                        try:
-                            ob_url = (
-                                f"{self._SX_BET_BASE}/orders?marketHashes={','.join(batch)}"
-                                f"&perPage=1000"
-                            )
-                            ob_resp = await asyncio.to_thread(fetch_json, ob_url)
-                            orders = ob_resp.get("data", []) or []
-                        except Exception as e:
-                            orders = []
-                            print(f"[MultiPlatform-SXBet] Orderbook error: {type(e).__name__}: {e}")
+                        for chunk_start in range(0, len(batch), 10):
+                            chunk = batch[chunk_start:chunk_start + 10]
+                            try:
+                                ob_url = (
+                                    f"{self._SX_BET_BASE}/orders?marketHashes={','.join(chunk)}"
+                                    f"&perPage=1000"
+                                )
+                                ob_resp = await asyncio.to_thread(fetch_json, ob_url)
+                                chunk_orders = ob_resp.get("data", []) or []
+                                orders.extend(chunk_orders)
+                            except Exception as e:
+                                pass
 
                         by_market: dict = {}
                         for o in orders:

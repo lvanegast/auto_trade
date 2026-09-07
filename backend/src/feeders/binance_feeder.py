@@ -34,6 +34,13 @@ class _BinanceFeederWebSocket(AsyncWebSocketManager):
         if stream.endswith("@bookTicker"):
             self._bid = float(ticker.get("b", 0.0))
             self._ask = float(ticker.get("a", 0.0))
+            bid_qty = float(ticker.get("B", 0.0))
+            ask_qty = float(ticker.get("A", 0.0))
+            try:
+                from src.engine.order_flow_imbalance import ofi_tracker
+                ofi_tracker.record_book_ticker(self.symbol, self._bid, bid_qty, self._ask, ask_qty)
+            except Exception:
+                pass
             price = (
                 round((self._bid + self._ask) / 2.0, 4)
                 if self._bid > 0 and self._ask > 0

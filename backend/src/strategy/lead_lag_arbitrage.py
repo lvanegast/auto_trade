@@ -228,9 +228,22 @@ class LeadLagArbitrageStrategy(BaseStrategy):
 
         deviation = (lead_price - current_price) / current_price
 
+        # Order Flow Imbalance (OFI) Filter: evitar entrar contra la presión de flujo del libro líder
+        try:
+            from src.engine.order_flow_imbalance import ofi_tracker
+            ofi_norm, ofi_regime = ofi_tracker.get_normalized_ofi(self.symbol, window_seconds=3.0)
+        except Exception:
+            ofi_regime = "NEUTRAL"
+
         if deviation > self.arbitrage_threshold:
+            # Si hay presión vendedora masiva en el oráculo (BEARISH_PRESSURE), descartar BUY falso
+            if ofi_regime == "BEARISH_PRESSURE":
+                return None
             return self._enter_position("BUY", current_price, lead_price, deviation, event)
         elif deviation < -self.arbitrage_threshold:
+            # Si hay presión compradora masiva en el oráculo (BULLISH_PRESSURE), descartar SELL falso
+            if ofi_regime == "BULLISH_PRESSURE":
+                return None
             return self._enter_position("SELL", current_price, lead_price, deviation, event)
 
         return None
