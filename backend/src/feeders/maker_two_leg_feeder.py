@@ -114,9 +114,9 @@ class MakerTwoLegFeeder(BaseFeeder):
                     except (TypeError, ValueError):
                         market_volume = 0.0
 
-                    # Book real (bid/ask ejecutables)
+                    # Book real (bid/ask ejecutables con spread estrecho para maker)
                     from src.limitless_price_cache import async_get_limitless_executable_price
-                    book = await async_get_limitless_executable_price(slug)
+                    book = await async_get_limitless_executable_price(slug, validate_maker_spread=True)
                     if not book:
                         continue
 

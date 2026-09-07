@@ -23,12 +23,18 @@ _cache: Dict[str, dict] = BoundedDict(max_size=200)
 CACHE_TTL_SECONDS = 10  # Cache for 10 seconds
 
 
-def _fetch_limitless_executable_price(slug: str) -> Optional[dict]:
+def _fetch_limitless_executable_price(slug: str, validate_maker_spread: bool = False) -> Optional[dict]:
     """
     Get real executable bid/ask from Limitless orderbook.
 
+    Args:
+        slug: Limitless market slug
+        validate_maker_spread: If True, rejects books where spread > maxSpread (for maker strategies).
+                               If False (default for takers), returns real executable book as long as
+                               it is not uninitialized dust.
+
     Returns:
-        {"yes_bid": float, "yes_ask": float, "bid_size": float, "ask_size": float}
+        {"yes_bid": float, "yes_ask": float, "bid_size": float, "ask_size": float, ...}
         or None if error.
     """
     now = time.time()
@@ -51,18 +57,25 @@ def _fetch_limitless_executable_price(slug: str) -> Optional[dict]:
             bid_size = float(bids[0].get("size", 0))
             ask_size = float(asks[0].get("size", 0))
 
+            if best_bid <= 0 or best_ask <= 0 or best_ask <= best_bid:
+                return None
+
+            # Reject uninitialized placeholder dust (seed spread >= 98% with 0.001/0.999)
+            if best_bid <= 0.01 and best_ask >= 0.99:
+                return None
+
             spread = best_ask - best_bid
             max_spread = float(data.get("maxSpread", 0.035))
             adjusted_mid = data.get("adjustedMidpoint")
 
-            # Reject phantom books: wide spread + no real activity = unfillable maker orders.
-            # Platform caps normal spread at maxSpread (3.5%); beyond that the book is stale/decided
-            # and BOTH legs of a 2-leg maker never fill -> fake edge.
-            if spread > max_spread:
+            # For maker 2-leg strategies, reject wide spreads where maker orders will never fill.
+            # For takers, spreads outside maxSpread are completely valid executable books.
+            if validate_maker_spread and spread > max_spread:
                 return None
+
             if adjusted_mid is not None:
                 adjusted_mid = float(adjusted_mid)
-                if adjusted_mid < 0.01 or adjusted_mid > 0.99:
+                if adjusted_mid < 0.001 or adjusted_mid > 0.999:
                     return None
 
             result = {
@@ -80,24 +93,28 @@ def _fetch_limitless_executable_price(slug: str) -> Optional[dict]:
             _cache[slug] = {"data": result, "ts": now}
 
             return result
-    except Exception as e:
+    except Exception:
         return None
 
 
-def get_limitless_executable_price(slug: str) -> Optional[dict]:
+def get_limitless_executable_price(slug: str, validate_maker_spread: bool = False) -> Optional[dict]:
     """Return only a fresh cached executable book; never block the event loop."""
     cached = _cache.get(slug)
     if cached and time.time() - cached["ts"] < CACHE_TTL_SECONDS:
-        return cached["data"]
+        data = cached["data"]
+        if validate_maker_spread and data.get("spread", 0) > data.get("max_spread", 0.035):
+            return None
+        return data
     return None
 
 
-async def async_get_limitless_executable_price(slug: str) -> Optional[dict]:
+async def async_get_limitless_executable_price(slug: str, validate_maker_spread: bool = False) -> Optional[dict]:
     """Async entry point; keeps blocking legacy HTTP off the event loop."""
-    cached = get_limitless_executable_price(slug)
+    cached = get_limitless_executable_price(slug, validate_maker_spread=validate_maker_spread)
     if cached is not None:
         return cached
-    return await asyncio.to_thread(_fetch_limitless_executable_price, slug)
+    return await asyncio.to_thread(_fetch_limitless_executable_price, slug, validate_maker_spread)
+
 
 
 def clear_cache():

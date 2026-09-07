@@ -134,13 +134,11 @@ class MultiPlatformFeeder(BaseFeeder):
             if not slug:
                 continue
 
-            # Strict Intraday Horizon Filter: Reject events > 48h into the future
+            # Strict Intraday Horizon Filter: Reject events > 48h into the future using real expiration_timestamp
             try:
-                parts = slug.split("-")
-                ts_str = parts[-1]
-                if ts_str.isdigit():
-                    ts_val = int(ts_str)
-                    expiration_s = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
+                exp_ts = getattr(m, "expiration_timestamp", None) or (m.get("expiration_timestamp") if isinstance(m, dict) else None)
+                if exp_ts:
+                    expiration_s = float(exp_ts) / 1000.0 if float(exp_ts) > 1000000000000 else float(exp_ts)
                     if (time.time() - expiration_s) > 86400 or (expiration_s - time.time()) > 172800:
                         continue
             except Exception:
