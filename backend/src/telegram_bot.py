@@ -20,15 +20,16 @@ from src.utils.bounded_dict import BoundedTimeDict
 
 class TelegramBot:
     def __init__(self):
-        self.token = os.getenv("TELEGRAM_BOT_TOKEN", "8912365256:AAFhCTgOtuND9znGvrtksBSPBZCWaRrbOv8")
-        self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "1594137492")
+        self.token = (os.getenv("TELEGRAM_BOT_TOKEN") or "8912365256:AAFhCTgOtuND9znGvrtksBSPBZCWaRrbOv8").strip()
+        self.chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "1594137492").replace(" ", "").strip()
         # Sub-salones en supergrupo forum (Arby_Team)
         # Default group: -1003565488576, Topic 2 (Sports), Topic 3 (Crypto)
-        self.group_id = os.getenv("TELEGRAM_GROUP_ID", "-1003565488576")
-        self.topic_sports = os.getenv("TELEGRAM_TOPIC_SPORTS", "2")
-        self.topic_crypto = os.getenv("TELEGRAM_TOPIC_CRYPTO", "3")
-        self.chat_id_sports = os.getenv("TELEGRAM_CHAT_ID_SPORTS", "") or self.group_id
-        self.chat_id_crypto = os.getenv("TELEGRAM_CHAT_ID_CRYPTO", "") or self.group_id
+        raw_group = os.getenv("TELEGRAM_GROUP_ID") or "-1003565488576"
+        self.group_id = raw_group.replace(" ", "").strip()
+        self.topic_sports = (os.getenv("TELEGRAM_TOPIC_SPORTS") or "2").replace(" ", "").strip()
+        self.topic_crypto = (os.getenv("TELEGRAM_TOPIC_CRYPTO") or "3").replace(" ", "").strip()
+        self.chat_id_sports = (os.getenv("TELEGRAM_CHAT_ID_SPORTS") or "").replace(" ", "").strip() or self.group_id
+        self.chat_id_crypto = (os.getenv("TELEGRAM_CHAT_ID_CRYPTO") or "").replace(" ", "").strip() or self.group_id
         self.enabled = bool(self.token and (self.chat_id or self.group_id))
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         self._chat_ids = {
@@ -347,6 +348,8 @@ class TelegramBot:
             return False
 
         target = chat_id or self._reply_chat_id or self.group_id or self.chat_id
+        if target:
+            target = str(target).replace(" ", "").strip()
         thread_id = message_thread_id
         if thread_id is None and chat_id is None:
             thread_id = self._reply_thread_id
