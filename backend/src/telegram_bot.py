@@ -20,18 +20,17 @@ from src.utils.bounded_dict import BoundedTimeDict
 
 class TelegramBot:
     def __init__(self):
-        self.token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-        self.enabled = bool(self.token and self.chat_id)
+        self.token = os.getenv("TELEGRAM_BOT_TOKEN", "8912365256:AAFhCTgOtuND9znGvrtksBSPBZCWaRrbOv8")
+        self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "1594137492")
+        # Sub-salones en supergrupo forum (Arby_Team)
+        # Default group: -1003565488576, Topic 2 (Sports), Topic 3 (Crypto)
+        self.group_id = os.getenv("TELEGRAM_GROUP_ID", "-1003565488576")
+        self.topic_sports = os.getenv("TELEGRAM_TOPIC_SPORTS", "2")
+        self.topic_crypto = os.getenv("TELEGRAM_TOPIC_CRYPTO", "3")
+        self.chat_id_sports = os.getenv("TELEGRAM_CHAT_ID_SPORTS", "") or self.group_id
+        self.chat_id_crypto = os.getenv("TELEGRAM_CHAT_ID_CRYPTO", "") or self.group_id
+        self.enabled = bool(self.token and (self.chat_id or self.group_id))
         self.base_url = f"https://api.telegram.org/bot{self.token}"
-        # Sub-salones: chats dedicados por categoría. Si no están configurados,
-        # todo cae al chat_id principal. Alternativa con topics: si TELEGRAM_GROUP_ID
-        # es un supergrupo forum, cada categoría se enruta a su topic por message_thread_id.
-        self.chat_id_sports = os.getenv("TELEGRAM_CHAT_ID_SPORTS", "") or self.chat_id
-        self.chat_id_crypto = os.getenv("TELEGRAM_CHAT_ID_CRYPTO", "") or self.chat_id
-        self.group_id = os.getenv("TELEGRAM_GROUP_ID", "") or self.chat_id
-        self.topic_sports = os.getenv("TELEGRAM_TOPIC_SPORTS", "")
-        self.topic_crypto = os.getenv("TELEGRAM_TOPIC_CRYPTO", "")
         self._chat_ids = {
             "sports": self.chat_id_sports,
             "crypto": self.chat_id_crypto,
@@ -306,19 +305,27 @@ class TelegramBot:
     def _resolve_target(self, category: str = None):
         """Retorna (chat_id, message_thread_id) para una categoría.
 
-        Si hay un supergrupo forum (TELEGRAM_GROUP_ID) y el topic de la categoría
-        está configurado (TELEGRAM_TOPIC_SPORTS/CRYPTO), envía al topic del grupo.
-        Si no, usa el chat dedicado por categoría (TELEGRAM_CHAT_ID_SPORTS/CRYPTO)
-        o el chat principal como fallback.
+        Enruta consistentemente a los sub-temas del supergrupo forum:
+        - sports: group_id, topic 2
+        - crypto / finance: group_id, topic 3
         """
         cat = (category or "").lower()
-        # Topics: prioridad si el grupo es un forum y hay topic configurado.
-        if self.group_id and cat in self._topics and self._topics[cat]:
+        group = self.group_id or "-1003565488576"
+        if cat == "sports":
             try:
-                thread_id = int(self._topics[cat])
-                return self.group_id, thread_id
+                thread_id = int(self._topics.get("sports") or 2)
+                return group, thread_id
             except (TypeError, ValueError):
                 pass
+        elif cat in ("crypto", "finance"):
+            try:
+                thread_id = int(self._topics.get("crypto") or 3)
+                return group, thread_id
+            except (TypeError, ValueError):
+                pass
+
+        if group:
+            return group, None
         return self._resolve_chat_id(category), None
 
     def _topic_thread_id(self, chat_id: str, message_thread_id=None):
@@ -339,15 +346,12 @@ class TelegramBot:
         if not self.enabled:
             return False
 
-        target = chat_id or self._reply_chat_id or self.chat_id
+        target = chat_id or self._reply_chat_id or self.group_id or self.chat_id
         thread_id = message_thread_id
         if thread_id is None and chat_id is None:
             thread_id = self._reply_thread_id
 
         # Rate limit: skip envíos más frecuentes que el intervalo mínimo.
-        # Se implementa como "skip" (no sleep) para no bloquear el event loop.
-        # Se aplica SOLO a envíos espontáneos (alertas): las respuestas a comandos
-        # (reply context activo) siempre se envían.
         if self._reply_chat_id is None:
             now = time.time()
             with self._send_lock:
@@ -361,7 +365,7 @@ class TelegramBot:
             "parse_mode": parse_mode,
             "disable_web_page_preview": True
         }
-        if thread_id is not None:
+        if thread_id is not None and str(target).startswith("-100"):
             payload["message_thread_id"] = thread_id
 
         try:
@@ -375,9 +379,16 @@ class TelegramBot:
             )
             with urllib.request.urlopen(req, timeout=10) as r:
                 result = json.loads(r.read().decode("utf-8"))
-                return result.get("ok", False)
+                ok = result.get("ok", False)
+                if not ok:
+                    print(f"[Telegram] Send returned ok=False: {result}")
+                return ok
+        except urllib.error.HTTPError as he:
+            err_body = he.read().decode("utf-8", errors="replace")
+            print(f"[Telegram] HTTP {he.code} Error: {he.reason} | Body: {err_body} | Target: {target} | Thread: {thread_id}")
+            return False
         except Exception as e:
-            print(f"[Telegram] Error sending message: {e}")
+            print(f"[Telegram] Error sending message: {e} | Target: {target} | Thread: {thread_id}")
             return False
     
     def has_been_alerted(self, event_id: str) -> bool:
@@ -463,7 +474,6 @@ class TelegramBot:
         if event_id and alert_type == "opportunity":
             if self.has_been_alerted(event_id):
                 return False
-            self.mark_alerted(event_id)
         
         icons = {
             "opportunity": "🎯",
@@ -484,7 +494,10 @@ class TelegramBot:
             self.clear_alerted(event_id)
         
         target, thread_id = self._resolve_target(category)
-        return self.send_message(text, chat_id=target, message_thread_id=thread_id)
+        ok = self.send_message(text, chat_id=target, message_thread_id=thread_id)
+        if ok and event_id and alert_type == "opportunity":
+            self.mark_alerted(event_id)
+        return ok
     
     def send_daily_report(self, stats: dict):
         """Send a daily summary report."""
@@ -504,22 +517,13 @@ class TelegramBot:
         # Dedup por event_id (mismo slug/market)
         if event_id and self.has_been_alerted(event_id):
             return False
-        # Dedup por título normalizado: solo para sports (donde workers distintos
-        # detectan el mismo partido con event_id diferente). Para crypto sniper,
-        # el event_id ya es único (incluye timestamp de expiración) — el título
-        # dedup bloquearía TODAS las instancias después de la primera.
+        # Dedup por título normalizado: solo para sports
         is_sniper = bool(event_id and event_id.startswith("limitless_sniper_"))
         if not is_sniper:
             if self._title_already_alerted(event):
                 return False
             if event_id and self._title_already_alerted(event_id):
                 return False
-        if event_id:
-            self.mark_alerted(event_id)
-        if not is_sniper:
-            self._mark_title_alerted(event)
-            if event_id:
-                self._mark_title_alerted(event_id)
         
         # Format clean ID display from event_id or slug
         event_ref = event_id if event_id else "N/A"
@@ -537,7 +541,15 @@ class TelegramBot:
 <b>Sala:</b> {category or 'general'}
 <b>Hora:</b> {datetime.now().strftime("%H:%M:%S")}"""
         target, thread_id = self._resolve_target(category)
-        return self.send_message(text, chat_id=target, message_thread_id=thread_id)
+        ok = self.send_message(text, chat_id=target, message_thread_id=thread_id)
+        if ok:
+            if event_id:
+                self.mark_alerted(event_id)
+            if not is_sniper:
+                self._mark_title_alerted(event)
+                if event_id:
+                    self._mark_title_alerted(event_id)
+        return ok
     
     def send_opportunity_resolution(self, event_id: str, event_title: str, winning_outcome: str, entry_price: float, expected_profit: float, position_won: bool = None, position_pnl: float = None, category: str = None):
         """Send a dedicated resolution report showing if the paper trade / fish opportunity won or lost."""
@@ -546,15 +558,9 @@ class TelegramBot:
             event_ref = event_ref[len("limitless_crypto_"):]
             
         # Dedup de resolución: un mismo evento solo se informa UNA vez.
-        # Evita mensajes repetidos con el mismo código cuando el mercado se re-verifica.
         if event_id:
             if self.has_resolution_alerted(event_id):
                 return False
-            self.mark_resolution_alerted(event_id)
-
-        # Clear opportunity dedup memory for this event (permite re-alertar si reabre)
-        if event_id:
-            self.clear_alerted(event_id)
 
         # Si conocemos si nuestra pata ganó, mostrarlo con precisión
         if position_won is not None:
@@ -576,7 +582,11 @@ class TelegramBot:
 <b>Sala:</b> {category or 'general'}
 <b>Hora de Cierre:</b> {datetime.now().strftime("%H:%M:%S")}"""
         target, thread_id = self._resolve_target(category)
-        return self.send_message(text, chat_id=target, message_thread_id=thread_id)
+        ok = self.send_message(text, chat_id=target, message_thread_id=thread_id)
+        if ok and event_id:
+            self.mark_resolution_alerted(event_id)
+            self.clear_alerted(event_id)
+        return ok
     
     def send_trade_executed(self, event: str, side: str, price: float, amount: float):
         """Send a trade execution alert."""
