@@ -337,7 +337,7 @@ class TelegramBot:
             return message_thread_id
         return None
 
-    def send_message(self, text: str, parse_mode: str = "HTML", chat_id: str = None, message_thread_id=None) -> bool:
+    def send_message(self, text: str, parse_mode: str = "HTML", chat_id: str = None, message_thread_id=None, force: bool = False) -> bool:
         """Send a message to the configured chat (or a specific chat_id/topic).
 
         Si chat_id es None, responde en el chat/topic del comando que se está
@@ -351,11 +351,13 @@ class TelegramBot:
         if thread_id is None and chat_id is None:
             thread_id = self._reply_thread_id
 
-        # Rate limit: skip envíos más frecuentes que el intervalo mínimo.
-        if self._reply_chat_id is None:
+        # Rate limit: skip envíos más frecuentes que el intervalo mínimo (a menos que sea force=True).
+        if not force and self._reply_chat_id is None:
             now = time.time()
             with self._send_lock:
                 if now < self._next_allowed_send:
+                    wait_left = self._next_allowed_send - now
+                    print(f"[Telegram] Rate limited (cooldown: {wait_left:.1f}s left)")
                     return False
                 self._next_allowed_send = now + self._min_send_interval
         
@@ -385,10 +387,22 @@ class TelegramBot:
                 return ok
         except urllib.error.HTTPError as he:
             err_body = he.read().decode("utf-8", errors="replace")
-            print(f"[Telegram] HTTP {he.code} Error: {he.reason} | Body: {err_body} | Target: {target} | Thread: {thread_id}")
+            err_msg = f"[Telegram] HTTP {he.code} Error: {he.reason} | Body: {err_body} | Target: {target} | Thread: {thread_id}"
+            print(err_msg)
+            if self._db:
+                try:
+                    self._db.log("ERROR", err_msg, "telegram")
+                except Exception:
+                    pass
             return False
         except Exception as e:
-            print(f"[Telegram] Error sending message: {e} | Target: {target} | Thread: {thread_id}")
+            err_msg = f"[Telegram] Error sending message: {e} | Target: {target} | Thread: {thread_id}"
+            print(err_msg)
+            if self._db:
+                try:
+                    self._db.log("ERROR", err_msg, "telegram")
+                except Exception:
+                    pass
             return False
     
     def has_been_alerted(self, event_id: str) -> bool:
@@ -467,7 +481,7 @@ class TelegramBot:
         if self._db:
             self._db.mark_telegram_alert_sent(event_id, "resolution")
 
-    def send_alert(self, alert_type: str, message: str, event_id: str = None, category: str = None):
+    def send_alert(self, alert_type: str, message: str, event_id: str = None, category: str = None, force: bool = False):
         """Send a formatted alert. If event_id is provided, deduplicates.
         category routes the alert to the sub-room/topic (sports/crypto)."""
         # Dedup: skip if already alerted for this event (except resolution results)
@@ -494,7 +508,7 @@ class TelegramBot:
             self.clear_alerted(event_id)
         
         target, thread_id = self._resolve_target(category)
-        ok = self.send_message(text, chat_id=target, message_thread_id=thread_id)
+        ok = self.send_message(text, chat_id=target, message_thread_id=thread_id, force=force)
         if ok and event_id and alert_type == "opportunity":
             self.mark_alerted(event_id)
         return ok

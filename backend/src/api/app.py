@@ -1637,10 +1637,17 @@ async def telegram_report():
 async def telegram_test():
     """Send test message to Telegram."""
     if not telegram_bot.enabled:
-        return {"error": "Telegram bot not configured"}
+        return {"error": "Telegram bot not configured", "enabled": False}
     
-    result = telegram_bot.send_alert("info", "Test message from AutoTrade bot")
-    return {"status": "sent" if result else "failed"}
+    res_sports = telegram_bot.send_alert("info", "🧪 Test de Conexión: Topic 2 (Sports) Activo ✅", category="sports", force=True)
+    res_crypto = telegram_bot.send_alert("info", "🧪 Test de Conexión: Topic 3 (Crypto) Activo ✅", category="crypto", force=True)
+    return {
+        "status": "sent" if (res_sports or res_crypto) else "failed",
+        "sports_topic": res_sports,
+        "crypto_topic": res_crypto,
+        "group_id": telegram_bot.group_id,
+        "topics": telegram_bot._topics,
+    }
 
 
 @app.get("/api/opportunities/tracking")
