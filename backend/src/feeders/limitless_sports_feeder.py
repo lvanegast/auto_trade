@@ -275,7 +275,8 @@ class LimitlessSportsFeeder(BaseFeeder):
         from src.limitless_price_cache import async_get_limitless_executable_price
 
         total_subs = len(subs)
-        total_yes = 0
+        total_yes_ask = 0.0
+        total_no_ask = 0.0
         outcomes = []
         skipped_no_price = 0
         skipped_no_liquidity = 0
@@ -296,18 +297,26 @@ class LimitlessSportsFeeder(BaseFeeder):
                 if book.get("bid_size", 0) <= 0 or book.get("ask_size", 0) <= 0:
                     skipped_no_liquidity += 1
                     continue
-                yes_price = book["yes_ask"]
+                yes_ask = book["yes_ask"]
+                yes_bid = book["yes_bid"]
+                no_ask = round(1.0 - yes_bid, 4)
+                no_bid = round(1.0 - yes_ask, 4)
             except (ValueError, TypeError):
                 skipped_no_price += 1
                 continue
 
-            total_yes += yes_price
+            total_yes_ask += yes_ask
+            total_no_ask += no_ask
             outcomes.append(
                 {
                     "slug": slug,
                     "title": title,
-                    "yes_price": yes_price,
-                    "no_price": 1.0 - yes_price,
+                    "yes_price": yes_ask,
+                    "no_price": no_ask,
+                    "yes_ask": yes_ask,
+                    "yes_bid": yes_bid,
+                    "no_ask": no_ask,
+                    "no_bid": no_bid,
                     "book": book,
                 }
             )
@@ -319,16 +328,13 @@ class LimitlessSportsFeeder(BaseFeeder):
         if len(outcomes) < 2 or skipped_no_price > 0:
             return
 
-        edge = 1.0 - total_yes
-        if abs(edge) > 0.15:
-            return
+        # 1xN Pure Arbitrage:
+        # Condición 1 (Comprar todos los YES): Sum(yes_ask) < 1.00 -> Payout = $1.00
+        edge_yes = 1.0 - total_yes_ask
 
-        # 1xN: edge_NO = total_yes - 1 = -edge_YES. Negative edge means the
-        # profitable side is NO. Normalize to the profitable direction.
-        arb_type = "YES" if edge >= 0 else "NO"
-        gross_edge = round(abs(edge), 4)
-        direction_label = "BUY_ALL_YES_1XN" if arb_type == "YES" else "BUY_ALL_NO_1XN"
-        entry_price = total_yes if arb_type == "YES" else round(len(outcomes) - total_yes, 4)
+        # Condición 2 (Comprar todos los NO): Sum(no_ask) < (N - 1) -> Payout = $(N - 1)
+        payout_no = float(len(outcomes) - 1)
+        edge_no = payout_no - total_no_ask
 
         # Dynamic viability threshold: si el partido está a más de 2 días, el
         # edge mínimo exigido sube (SPORTS_FAR_MIN_EDGE_PCT, default 7%) para
@@ -346,6 +352,24 @@ class LimitlessSportsFeeder(BaseFeeder):
         except Exception:
             pass
 
+        if edge_yes >= min_edge_req and edge_yes <= 0.20:
+            arb_type = "YES"
+            gross_edge = round(edge_yes, 4)
+            direction_label = "BUY_ALL_YES_1XN"
+            entry_price = round(total_yes_ask, 4)
+            expected_profit = gross_edge * 1.0
+            primary_price = outcomes[0]["yes_price"]
+        elif edge_no >= min_edge_req and edge_no <= 0.20:
+            arb_type = "NO"
+            gross_edge = round(edge_no, 4)
+            direction_label = "BUY_ALL_NO_1XN"
+            entry_price = round(total_no_ask, 4)
+            expected_profit = gross_edge * payout_no
+            primary_price = outcomes[0]["no_price"]
+        else:
+            # Overround normal de la casa de apuestas (sin arbitraje puro real)
+            return
+
         # IMPORTANTE: make_match_event_id() normaliza solo por nombres de equipo,
         # sin fecha ni identificador de partido — dos partidos REALES distintos
         # entre los mismos equipos (jornadas distintas, ida/vuelta) colisionan en
@@ -355,7 +379,6 @@ class LimitlessSportsFeeder(BaseFeeder):
         # abajo, porque ese sí necesita ser platform-agnostic para matchear con
         # Kalshi/Polymarket.
         event_id = f"{make_match_event_id(group_title, group_title)}::{group_slug}"
-        primary_price = outcomes[0]["yes_price"]
 
         # Group data is still published to the tracker only when every outcome
         # has a real executable book. Individual outcome books remain distinct.
@@ -375,13 +398,15 @@ class LimitlessSportsFeeder(BaseFeeder):
         from src.strategy.sports_arb import update_sports_edge
         update_sports_edge(
             event_id=event_id,
-            total_yes=total_yes,
-            edge=edge,
+            total_yes=total_yes_ask,
+            edge=gross_edge,
             outcomes_count=len(outcomes),
             title=group_title,
             outcomes=outcomes,
             group_slug=group_slug,
             expiration_ts=expiration_ts,
+            arb_type=arb_type,
+            entry_price=entry_price,
         )
 
         try:
@@ -404,7 +429,7 @@ class LimitlessSportsFeeder(BaseFeeder):
                 outcomes_count=len(outcomes),
                 market_slug=group_slug,
                 entry_price=entry_price,
-                expected_profit=gross_edge * 2.0,
+                expected_profit=expected_profit,
                 category="sports",
             )
         except Exception:

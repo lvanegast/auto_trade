@@ -1366,7 +1366,7 @@ class DatabaseManager:
                 return -entry
 
             # Arbitraje 1xN garantizado: comprar todo el paquete a entry_price.
-            if direction in ("BUY_ALL_YES", "BUY_ALL_YES_1XN"):
+            if direction in ("BUY_ALL_YES", "BUY_ALL_YES_1XN", "CROSS_YES_NO"):
                 payout = 1.0
                 return payout - entry
             if direction in ("BUY_ALL_NO", "BUY_ALL_NO_1XN"):

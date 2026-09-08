@@ -34,6 +34,8 @@ def update_sports_edge(
     outcomes: list = None,
     group_slug: str = "",
     expiration_ts: float = None,
+    arb_type: str = "YES",
+    entry_price: float = 0.0,
 ):
     """Called by LimitlessSportsFeeder to pass edge data to the strategy."""
     _sports_edge_data[event_id] = {
@@ -44,6 +46,8 @@ def update_sports_edge(
         "outcomes": outcomes or [],
         "group_slug": group_slug,
         "expiration_ts": expiration_ts,
+        "arb_type": arb_type,
+        "entry_price": entry_price,
     }
 
 
@@ -202,17 +206,16 @@ class SportsArbitrageStrategy(BaseStrategy):
             
             self.edge = round(1.0 - total_yes, 4)
             outcomes = best_outcomes
-            arb_type = "YES" if self.edge > 0 else "NO"
+            if self.edge <= 0:
+                # No hay arbitraje cross-platform en YES
+                return None
+            arb_type = "YES"
         else:
             self.edge = edge_data["edge"]
-            arb_type = edge_data.get("arb_type", "YES" if self.edge > 0 else "NO")
+            arb_type = edge_data.get("arb_type", "YES")
 
-        # 5b. Normalize edge to the chosen direction.
-        # For 1xN: edge_NO = total_yes - 1 = -edge_YES. A negative edge on the
-        # YES side means the profitable side is NO. self.edge is kept >= 0 so
-        # filters, snapshots and alerts never report a guaranteed loss as an arb.
-        if arb_type == "NO":
-            self.edge = round(-self.edge, 4)
+        if self.edge <= 0:
+            return None
 
         # 6. Validate: need minimum edge and outcomes
         # Dynamic threshold: si el partido está a más de 2 días, el edge mínimo

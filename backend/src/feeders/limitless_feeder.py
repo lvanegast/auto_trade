@@ -338,7 +338,7 @@ class LimitlessFeeder(BaseFeeder):
                     "title": title,
                     "yes_price": yes_ask,
                     "yes_bid": yes_bid,
-                    "no_price": round(1.0 - yes_ask, 6),
+                    "no_price": round(1.0 - yes_bid, 6),
                 }
             )
 
@@ -358,11 +358,20 @@ class LimitlessFeeder(BaseFeeder):
             group_slug=parent_slug,
         )
 
-        if abs(edge) > 0.02:
-            arb_type = "YES" if edge > 0 else "NO"
+        total_no_cost = sum(o["no_price"] for o in outcomes)
+        payout_no = float(len(outcomes) - 1)
+        edge_no = payout_no - total_no_cost
+
+        if edge > 0.02:
             print(
-                f"[Macro ARB {arb_type}] {parent_slug} | "
+                f"[Macro ARB YES] {parent_slug} | "
                 f"Total YES={total_yes:.4f} | Edge={edge:+.2%} | "
+                f"{len(outcomes)} outcomes"
+            )
+        elif edge_no > 0.02:
+            print(
+                f"[Macro ARB NO] {parent_slug} | "
+                f"Total NO={total_no_cost:.4f} | Edge={edge_no:+.2%} | "
                 f"{len(outcomes)} outcomes"
             )
 

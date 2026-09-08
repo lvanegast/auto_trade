@@ -75,60 +75,70 @@ class NegRiskMultiOutcomeStrategy(BaseStrategy):
             return None
 
         total_yes_cost = edge_data.get("total_yes", 1.0)
-        negrisk_edge = 1.0 - total_yes_cost
-        self.edge = negrisk_edge
+        edge_yes = 1.0 - total_yes_cost
+        total_no_cost = sum(float(out.get("no_price", 1.0)) for out in outcomes)
+        payout_no = float(outcomes_count - 1)
+        edge_no = payout_no - total_no_cost
 
-        if abs(negrisk_edge) >= self.min_negrisk_edge_pct:
-            from src.engine.friction_guard import friction_guard
-            is_profitable, net_edge, _reason, _details = friction_guard.validate_arbitrage_profitability(
-                "limitless", "limitless", abs(negrisk_edge), self.position_size_usd, num_legs=outcomes_count
-            )
+        if edge_yes >= self.min_negrisk_edge_pct:
+            arb_type = "YES"
+            self.edge = edge_yes
+            total_cost = total_yes_cost
+            payout = 1.0
+        elif edge_no >= self.min_negrisk_edge_pct:
+            arb_type = "NO"
+            self.edge = edge_no
+            total_cost = total_no_cost
+            payout = payout_no
+        else:
+            return None
 
-            if is_profitable:
-                expected_profit = abs(negrisk_edge) * self.position_size_usd
-                title = edge_data.get("title", event.symbol)
+        from src.engine.friction_guard import friction_guard
+        is_profitable, net_edge, _reason, _details = friction_guard.validate_arbitrage_profitability(
+            "limitless", "limitless", self.edge, self.position_size_usd, num_legs=outcomes_count
+        )
 
-                self._arb_groups[event_id] = {
-                    "entry_time": now,
-                    "total_cost": total_yes_cost,
-                    "expected_profit": expected_profit,
-                    "outcomes": outcomes,
-                    "title": title,
-                    "entry_price": total_yes_cost,
-                }
+        if is_profitable:
+            expected_profit = self.edge * self.position_size_usd
+            title = edge_data.get("title", event.symbol)
 
-                if self.db:
-                    self.db.log(
-                        "INFO",
-                        f"[NegRisk {outcomes_count}x] Entrada: '{title}' | "
-                        f"Cost: ${total_yes_cost:.4f} | Edge: {negrisk_edge:.2%} | "
-                        f"Profit: ${expected_profit:.2f}",
-                        self.worker_id,
-                    )
+            self._arb_groups[event_id] = {
+                "entry_time": now,
+                "total_cost": total_cost,
+                "expected_profit": expected_profit,
+                "outcomes": outcomes,
+                "title": title,
+                "entry_price": total_cost,
+                "arb_type": arb_type,
+            }
 
-                arb_type = "YES" if negrisk_edge > 0 else "NO"
-                pending_signals = []
-                for out in outcomes:
-                    if negrisk_edge > 0:
-                        token_price = out.get("yes_price")
-                    else:
-                        no_price = out.get("no_price")
-                        yes_price = out.get("yes_price")
-                        token_price = no_price if no_price is not None else (
-                            round(1.0 - yes_price, 6) if yes_price is not None else None
+            if self.db:
+                self.db.log(
+                    "INFO",
+                    f"[NegRisk {outcomes_count}x {arb_type}] Entrada: '{title}' | "
+                    f"Cost: ${total_cost:.4f} | Edge: {self.edge:.2%} | "
+                    f"Profit: ${expected_profit:.2f}",
+                    self.worker_id,
+                )
+
+            pending_signals = []
+            for out in outcomes:
+                if arb_type == "YES":
+                    token_price = out.get("yes_price")
+                else:
+                    token_price = out.get("no_price")
+                if token_price is None:
+                    # Precio real no disponible para esta pata: abortar todo el
+                    # grupo en vez de inventar un precio (rompería el 1x$1.00 garantizado).
+                    if self.db:
+                        self.db.log(
+                            "WARNING",
+                            f"[NegRisk] Abortando entrada '{title}': falta precio real para "
+                            f"'{out.get('title')}' ({'yes_price' if arb_type == 'YES' else 'no_price'}).",
+                            self.worker_id,
                         )
-                    if token_price is None:
-                        # Precio real no disponible para esta pata: abortar todo el
-                        # grupo en vez de inventar un precio (rompería el 1x$1.00 garantizado).
-                        if self.db:
-                            self.db.log(
-                                "WARNING",
-                                f"[NegRisk] Abortando entrada '{title}': falta precio real para "
-                                f"'{out.get('title')}' ({'yes_price' if negrisk_edge > 0 else 'no_price'}).",
-                                self.worker_id,
-                            )
-                        del self._arb_groups[event_id]
-                        return None
+                    del self._arb_groups[event_id]
+                    return None
                     pending_signals.append(
                         SignalEvent(
                             symbol=out.get("slug", self.symbol),

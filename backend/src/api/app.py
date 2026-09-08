@@ -1119,20 +1119,26 @@ async def get_arbitrage_opportunities():
         title = edge_info.get("title", event_id)
         outcomes = edge_info.get("outcomes", [])
 
-        # Profit REAL por lado, igual que SportsArbitrageStrategy:
+        # Profit REAL por lado:
         #  - BUY_ALL_YES: costo = sum(yes_price), paga $1.00
         #  - BUY_ALL_NO:  costo = sum(no_price), paga $(N-1) (todos menos 1 outcome ganan)
-        if edge_val > 0:
-            direction = "BUY_ALL_YES_1XN"
-            total_cost = sum(float(o.get("yes_price", 0.0)) for o in outcomes)
-            guaranteed_profit = 1.0 - total_cost
-        else:
-            direction = "BUY_ALL_NO_1XN"
-            total_cost = sum(float(o.get("no_price", 0.0)) for o in outcomes)
-            guaranteed_profit = (len(outcomes) - 1.0) - total_cost
+        total_yes_cost = sum(float(o.get("yes_price", 0.0)) for o in outcomes)
+        total_no_cost = sum(float(o.get("no_price", 0.0)) for o in outcomes)
+        profit_yes = 1.0 - total_yes_cost
+        payout_no = float(len(outcomes) - 1.0) if len(outcomes) > 1 else 1.0
+        profit_no = payout_no - total_no_cost
 
-        # Filtrar falsos positivos: si el profit real <= 0 NO es oportunidad.
-        # Ej: binarios (2 outcomes) donde sum(no_price) > 1.0 => comprar NO paga $1 -> pérdida.
+        if profit_yes > 0 and profit_yes >= profit_no:
+            direction = "BUY_ALL_YES_1XN"
+            total_cost = total_yes_cost
+            guaranteed_profit = profit_yes
+        elif profit_no > 0:
+            direction = "BUY_ALL_NO_1XN"
+            total_cost = total_no_cost
+            guaranteed_profit = profit_no
+        else:
+            continue
+
         if guaranteed_profit <= 0:
             continue
 
