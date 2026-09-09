@@ -303,30 +303,77 @@ class ResolutionSniperFeeder(BaseFeeder):
                     subs = getattr(m, "markets", None) or (m.get("markets") if isinstance(m, dict) else None)
                     _has_subs = subs and isinstance(subs, list) and len(subs) > 0
 
+                    # Check for single/binary markets
+                    from src.limitless_price_cache import async_get_limitless_executable_price
+                    from src.engine.spot_oracle_guard import SpotOracleGuard
+
+                    # Si el grupo tiene sub-mercados, NO procesar el slug principal
+                    # (es solo el wrapper del grupo). Procesar sub-mercados abajo
+                    # usando el slug del grupo como event_id para dedup de Telegram.
+                    subs = getattr(m, "markets", None) or (m.get("markets") if isinstance(m, dict) else None)
+                    _has_subs = subs and isinstance(subs, list) and len(subs) > 0
+
                     if not _has_subs:
                         book = await async_get_limitless_executable_price(slug)
                         if book:
                             yes_ask = book["yes_ask"]
                             yes_bid = book["yes_bid"]
                             no_ask = 1.0 - yes_bid
-                            # Lado YES casi-seguro
+
+                            target_side = None
+                            entry_price = None
+                            depth = 0
                             if _min_price <= yes_ask <= _max_price and book["ask_size"] > 0:
-                                event_id = f"limitless_sniper_{_asset_key(title)}_{slug}"
-                                if self._confirm(event_id):
-                                    snipers_found += 1
-                                    print(f"[Resolution Sniper] Found YES ({category}): {title[:50]} YES_ASK={yes_ask:.4f} remaining={remaining:.0f}s")
-                                    await self._emit_sniper_signal(slug, title, yes_ask, side="YES", category=category)
-                                else:
-                                    _diag["waiting_confirmation"] += 1
-                            # Lado NO casi-seguro (NO_ask = 1 - yes_bid)
+                                target_side = "YES"
+                                entry_price = yes_ask
+                                depth = book["ask_size"]
                             elif _min_price <= no_ask <= _max_price and book["bid_size"] > 0:
-                                event_id = f"limitless_sniper_{_asset_key(title)}_{slug}"
-                                if self._confirm(event_id):
-                                    snipers_found += 1
-                                    print(f"[Resolution Sniper] Found NO ({category}): {title[:50]} NO_ASK={no_ask:.4f} remaining={remaining:.0f}s")
-                                    await self._emit_sniper_signal(slug, title, no_ask, side="NO", category=category)
+                                target_side = "NO"
+                                entry_price = no_ask
+                                depth = book["bid_size"]
+
+                            if target_side:
+                                # Validación Oracular de Seguridad (Z-Score y Spot Distance)
+                                is_safe = True
+                                safety_reason = "OK"
+                                if category == "crypto":
+                                    asset, strike = SpotOracleGuard.extract_market_info(m)
+                                    if strike is None or asset == "UNKNOWN":
+                                        is_safe = False
+                                        safety_reason = f"No se pudo verificar strike ({strike}) o activo ({asset})"
+                                    else:
+                                        spot = SpotOracleGuard.get_spot_price(asset)
+                                        if spot is None or spot <= 0:
+                                            is_safe = False
+                                            safety_reason = f"Sin cotización spot de Binance para {asset}"
+                                        else:
+                                            is_safe, z, delta_pct, safety_reason = SpotOracleGuard.evaluate_safety(
+                                                asset=asset,
+                                                spot_price=spot,
+                                                strike_price=strike,
+                                                side=target_side,
+                                                remaining_seconds=remaining,
+                                            )
+
+                                elif category == "sports":
+                                    # En deportes, la casi-certeza solo es válida cerca de la resolución final
+                                    if remaining > 1800:
+                                        is_safe = False
+                                        safety_reason = f"Tiempo restante excesivo para certeza deportiva ({remaining:.0f}s > 1800s)"
+
+                                if not is_safe:
+                                    self._reject(f"limitless_sniper_{slug}")
+                                    _diag["adverse_selection_blocked"] = _diag.get("adverse_selection_blocked", 0) + 1
+                                    if _diag.get("adverse_selection_blocked", 0) <= 5:
+                                        print(f"[Resolution Sniper BLOCKED] {title[:40]} {target_side}@{entry_price:.4f}: {safety_reason}")
                                 else:
-                                    _diag["waiting_confirmation"] += 1
+                                    event_id = f"limitless_sniper_{_asset_key(title)}_{slug}"
+                                    if self._confirm(event_id):
+                                        snipers_found += 1
+                                        print(f"[Resolution Sniper] Found {target_side} ({category}): {title[:50]} ASK={entry_price:.4f} remaining={remaining:.0f}s | {safety_reason}")
+                                        await self._emit_sniper_signal(slug, title, entry_price, side=target_side, category=category)
+                                    else:
+                                        _diag["waiting_confirmation"] += 1
                             else:
                                 self._reject(f"limitless_sniper_{slug}")
                                 _diag["price_out_of_range"] += 1
@@ -359,22 +406,52 @@ class ResolutionSniperFeeder(BaseFeeder):
                             if sub_book:
                                 sub_yes = sub_book["yes_ask"]
                                 sub_no = 1.0 - sub_book["yes_bid"]
+                                sub_target_side = None
+                                sub_entry_price = None
                                 if _min_price <= sub_yes <= _max_price and sub_book["ask_size"] > 0:
-                                    event_id = f"limitless_sniper_{_asset_key(sub_title)}_{sub_slug}"
-                                    if self._confirm(event_id):
-                                        snipers_found += 1
-                                        print(f"[Resolution Sniper] Found YES ({category}): {sub_title[:50]} YES_ASK={sub_yes:.4f} remaining={sub_remaining:.0f}s")
-                                        await self._emit_sniper_signal(sub_slug, sub_title, sub_yes, side="YES", category=category)
-                                    else:
-                                        _diag["waiting_confirmation"] += 1
+                                    sub_target_side = "YES"
+                                    sub_entry_price = sub_yes
                                 elif _min_price <= sub_no <= _max_price and sub_book["bid_size"] > 0:
-                                    event_id = f"limitless_sniper_{_asset_key(sub_title)}_{sub_slug}"
-                                    if self._confirm(event_id):
-                                        snipers_found += 1
-                                        print(f"[Resolution Sniper] Found NO ({category}): {sub_title[:50]} NO_ASK={sub_no:.4f} remaining={sub_remaining:.0f}s")
-                                        await self._emit_sniper_signal(sub_slug, sub_title, sub_no, side="NO", category=category)
+                                    sub_target_side = "NO"
+                                    sub_entry_price = sub_no
+
+                                if sub_target_side:
+                                    # Validación de seguridad para submercados
+                                    sub_safe = True
+                                    sub_safety_reason = "OK"
+                                    if category == "crypto":
+                                        sub_asset, sub_strike = SpotOracleGuard.extract_market_info(sub)
+                                        if sub_strike is None or sub_asset == "UNKNOWN":
+                                            sub_safe = False
+                                            sub_safety_reason = f"No se pudo verificar strike ({sub_strike}) o activo ({sub_asset})"
+                                        else:
+                                            sub_spot = SpotOracleGuard.get_spot_price(sub_asset)
+                                            if sub_spot is None or sub_spot <= 0:
+                                                sub_safe = False
+                                                sub_safety_reason = f"Sin spot Binance para {sub_asset}"
+                                            else:
+                                                sub_safe, z, delta_pct, sub_safety_reason = SpotOracleGuard.evaluate_safety(
+                                                    asset=sub_asset,
+                                                    spot_price=sub_spot,
+                                                    strike_price=sub_strike,
+                                                    side=sub_target_side,
+                                                    remaining_seconds=sub_remaining,
+                                                )
+                                    elif category == "sports" and sub_remaining > 1800:
+                                        sub_safe = False
+                                        sub_safety_reason = f"Tiempo restante excesivo ({sub_remaining:.0f}s > 1800s)"
+
+                                    if not sub_safe:
+                                        self._reject(f"limitless_sniper_{sub_slug}")
+                                        _diag["adverse_selection_blocked"] = _diag.get("adverse_selection_blocked", 0) + 1
                                     else:
-                                        _diag["waiting_confirmation"] += 1
+                                        event_id = f"limitless_sniper_{_asset_key(sub_title)}_{sub_slug}"
+                                        if self._confirm(event_id):
+                                            snipers_found += 1
+                                            print(f"[Resolution Sniper] Found {sub_target_side} ({category}): {sub_title[:50]} ASK={sub_entry_price:.4f} remaining={sub_remaining:.0f}s | {sub_safety_reason}")
+                                            await self._emit_sniper_signal(sub_slug, sub_title, sub_entry_price, side=sub_target_side, category=category)
+                                        else:
+                                            _diag["waiting_confirmation"] += 1
                                 else:
                                     self._reject(f"limitless_sniper_{sub_slug}")
                                     _diag["price_out_of_range"] += 1

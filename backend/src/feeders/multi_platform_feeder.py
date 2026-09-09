@@ -276,154 +276,178 @@ class MultiPlatformFeeder(BaseFeeder):
 
     async def _run_polymarket(self):
         """Conecta a Polymarket US (gateway.polymarket.us) y alimenta el tracker
-        con mercados deportivos match-level (moneyline/spread/total/props)."""
-        print("[MultiPlatform-Polymarket] Conectando a Polymarket US (gateway.polymarket.us)...")
+        con mercados deportivos match-level concurrentemente con aiohttp."""
+        import aiohttp
+        print("[MultiPlatform-Polymarket] Conectando a Polymarket US (gateway.polymarket.us) en streaming asíncrono...")
         self._polymarket_connected = True
+        poly_interval = float(os.getenv("POLYMARKET_POLL_INTERVAL", "3.0"))
 
-        def fetch_json(url, timeout=15):
-            import urllib.request
-            import json as _json
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                return _json.loads(response.read().decode("utf-8"))
+        connector = aiohttp.TCPConnector(limit=30, ttl_dns_cache=300)
+        timeout = aiohttp.ClientTimeout(total=6.0)
 
-        def fetch_leagues():
-            out = {}
-            for league in self._POLYMARKET_LEAGUES:
-                url = (
-                    f"https://gateway.polymarket.us/v2/leagues/{league}/events"
-                    f"?active=true&closed=false&limit=10"
-                )
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            headers = {"User-Agent": "AutoTradeBot/1.0", "Accept": "application/json"}
+
+            async def fetch_league_data(league: str):
+                url = f"https://gateway.polymarket.us/v2/leagues/{league}/events?active=true&closed=false&limit=10"
                 try:
-                    out[league] = fetch_json(url)
+                    async with session.get(url, headers=headers) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            return league, data
+                except asyncio.CancelledError:
+                    raise
                 except Exception as e:
-                    print(f"[MultiPlatform-Polymarket] League {league} error: {type(e).__name__}: {e}")
-            return out
+                    pass
+                return league, None
 
-        while self.running:
-            try:
-                cycle_updates = 0
-                leagues_data = await asyncio.to_thread(fetch_leagues)
+            while self.running:
+                try:
+                    cycle_updates = 0
+                    t_start = time.time()
 
-                for league, data in leagues_data.items():
-                    events = data.get("events", []) or []
-                    for ev in events:
-                        if not self.running:
-                            break
-                        event_title = ev.get("title", "") or ""
-                        if not event_title:
+                    # Consultar todas las ligas concurrentemente en paralelo
+                    tasks = [fetch_league_data(league) for league in self._POLYMARKET_LEAGUES]
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                    first_ask = None
+                    first_bid = None
+
+                    for res in results:
+                        if isinstance(res, Exception) or not res:
                             continue
-                        markets = ev.get("markets", []) or []
-                        for market in markets:
-                            mtype = market.get("marketType")
-                            # Soporta tanto moneyline (tenis/NFL/MLB/UFC) como drawable_outcome (fútbol 3-way)
-                            if mtype not in ("moneyline", "drawable_outcome"):
+                        league, data = res
+                        if not data or not isinstance(data, dict):
+                            continue
+
+                        events = data.get("events", []) or []
+                        for ev in events:
+                            if not self.running:
+                                break
+                            event_title = ev.get("title", "") or ""
+                            if not event_title:
                                 continue
-
-                            try:
-                                best_bid = float(market["bestBidQuote"]["value"])
-                                best_ask = float(market["bestAskQuote"]["value"])
-                            except (KeyError, TypeError, ValueError):
-                                continue
-                            if best_ask <= 0 or best_bid <= 0 or best_ask < best_bid:
-                                continue
-
-                            no_ask = round(1.0 - best_bid, 4)
-                            no_bid = round(1.0 - best_ask, 4)
-
-                            # Caso 1: Fútbol 3-way (drawable_outcome)
-                            if mtype == "drawable_outcome":
-                                m_title = (market.get("title") or "").strip()
-                                if "tie" in m_title.lower() or "draw" in m_title.lower():
-                                    outcome_name = "Draw"
-                                else:
-                                    outcome_name = m_title.replace("(Reg. Time)", "").strip()
-
-                                if not outcome_name:
+                            markets = ev.get("markets", []) or []
+                            for market in markets:
+                                mtype = market.get("marketType")
+                                if mtype not in ("moneyline", "drawable_outcome"):
                                     continue
 
-                                ev_id = make_match_event_id(event_title, outcome_name)
-                                self._tracker.update_book(
-                                    event_id=ev_id,
-                                    platform="polymarket",
-                                    yes_bid=round(best_bid, 4),
-                                    yes_ask=round(best_ask, 4),
-                                    no_bid=no_bid,
-                                    no_ask=no_ask,
-                                    bid_depth=float(market.get("bestBidSize") or 0.0) or 10.0,
-                                    ask_depth=float(market.get("bestAskSize") or 0.0) or 10.0,
-                                    ts_origin=time.time(),
-                                )
-                                cycle_updates += 1
-                                continue
-
-                            # Caso 2: Moneyline 2-way binario
-                            sides = market.get("marketSides", []) or []
-                            if len(sides) < 2:
-                                continue
-
-                            # Equipos de cada lado (long=True = YES / instrumento principal)
-                            side_long = next((s for s in sides if s.get("long")), None)
-                            side_short = next((s for s in sides if not s.get("long")), None)
-                            team_long = (side_long or {}).get("team", {}).get("name", "")
-                            team_short = (side_short or {}).get("team", {}).get("name", "")
-
-                            # event_id CANÓNICO:
-                            book_yes = {
-                                "event_id": make_match_event_id(event_title, f"{event_title} YES"),
-                                "yes_bid": round(best_bid, 4),
-                                "yes_ask": round(best_ask, 4),
-                                "no_bid": no_bid,
-                                "no_ask": no_ask,
-                                "bid_depth": float(market.get("bestBidSize") or 0) or 0.0,
-                                "ask_depth": float(market.get("bestAskSize") or 0) or 0.0,
-                            }
-                            book_no = {
-                                "event_id": make_match_event_id(event_title, f"{event_title} NO"),
-                                "yes_bid": no_bid,
-                                "yes_ask": no_ask,
-                                "no_bid": round(best_bid, 4),
-                                "no_ask": round(best_ask, 4),
-                                "bid_depth": float(market.get("bestAskSize") or 0) or 0.0,
-                                "ask_depth": float(market.get("bestBidSize") or 0) or 0.0,
-                            }
-
-                            publications = [
-                                book_yes, book_no,
-                                {
-                                    "event_id": make_match_event_id(event_title, team_long),
-                                    **book_yes,
-                                },
-                                {
-                                    "event_id": make_match_event_id(event_title, team_short),
-                                    **book_no,
-                                },
-                            ]
-                            for pub in publications:
-                                if not pub["event_id"]:
+                                try:
+                                    best_bid = float(market["bestBidQuote"]["value"])
+                                    best_ask = float(market["bestAskQuote"]["value"])
+                                except (KeyError, TypeError, ValueError):
                                     continue
-                                self._tracker.update_book(
-                                    event_id=pub["event_id"],
-                                    platform="polymarket",
-                                    yes_bid=pub["yes_bid"],
-                                    yes_ask=pub["yes_ask"],
-                                    no_bid=pub["no_bid"],
-                                    no_ask=pub["no_ask"],
-                                    bid_depth=pub["bid_depth"],
-                                    ask_depth=pub["ask_depth"],
-                                    ts_origin=time.time(),
-                                )
-                                cycle_updates += 1
+                                if best_ask <= 0 or best_bid <= 0 or best_ask < best_bid:
+                                    continue
 
-                if cycle_updates > 0:
-                    print(f"[MultiPlatform-Polymarket] Updated {cycle_updates} sports markets in tracker")
+                                if first_ask is None:
+                                    first_ask = best_ask
+                                    first_bid = best_bid
 
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"[MultiPlatform-Polymarket] Error: {e}")
+                                no_ask = round(1.0 - best_bid, 4)
+                                no_bid = round(1.0 - best_ask, 4)
 
-            await asyncio.sleep(self.poll_interval)
+                                # Caso 1: Fútbol 3-way (drawable_outcome)
+                                if mtype == "drawable_outcome":
+                                    m_title = (market.get("title") or "").strip()
+                                    if "tie" in m_title.lower() or "draw" in m_title.lower():
+                                        outcome_name = "Draw"
+                                    else:
+                                        outcome_name = m_title.replace("(Reg. Time)", "").strip()
+
+                                    if not outcome_name:
+                                        continue
+
+                                    ev_id = make_match_event_id(event_title, outcome_name)
+                                    self._tracker.update_book(
+                                        event_id=ev_id,
+                                        platform="polymarket",
+                                        yes_bid=round(best_bid, 4),
+                                        yes_ask=round(best_ask, 4),
+                                        no_bid=no_bid,
+                                        no_ask=no_ask,
+                                        bid_depth=float(market.get("bestBidSize") or 0.0) or 10.0,
+                                        ask_depth=float(market.get("bestAskSize") or 0.0) or 10.0,
+                                        ts_origin=time.time(),
+                                    )
+                                    cycle_updates += 1
+                                    continue
+
+                                # Caso 2: Moneyline 2-way binario
+                                sides = market.get("marketSides", []) or []
+                                if len(sides) < 2:
+                                    continue
+
+                                side_long = next((s for s in sides if s.get("long")), None)
+                                side_short = next((s for s in sides if not s.get("long")), None)
+                                team_long = (side_long or {}).get("team", {}).get("name", "")
+                                team_short = (side_short or {}).get("team", {}).get("name", "")
+
+                                book_yes = {
+                                    "event_id": make_match_event_id(event_title, f"{event_title} YES"),
+                                    "yes_bid": round(best_bid, 4),
+                                    "yes_ask": round(best_ask, 4),
+                                    "no_bid": no_bid,
+                                    "no_ask": no_ask,
+                                    "bid_depth": float(market.get("bestBidSize") or 0) or 0.0,
+                                    "ask_depth": float(market.get("bestAskSize") or 0) or 0.0,
+                                }
+                                book_no = {
+                                    "event_id": make_match_event_id(event_title, f"{event_title} NO"),
+                                    "yes_bid": no_bid,
+                                    "yes_ask": no_ask,
+                                    "no_bid": round(best_bid, 4),
+                                    "no_ask": round(best_ask, 4),
+                                    "bid_depth": float(market.get("bestAskSize") or 0) or 0.0,
+                                    "ask_depth": float(market.get("bestBidSize") or 0) or 0.0,
+                                }
+
+                                publications = [
+                                    book_yes, book_no,
+                                    {
+                                        "event_id": make_match_event_id(event_title, team_long),
+                                        **book_yes,
+                                    },
+                                    {
+                                        "event_id": make_match_event_id(event_title, team_short),
+                                        **book_no,
+                                    },
+                                ]
+                                for pub in publications:
+                                    if not pub["event_id"]:
+                                        continue
+                                    self._tracker.update_book(
+                                        event_id=pub["event_id"],
+                                        platform="polymarket",
+                                        yes_bid=pub["yes_bid"],
+                                        yes_ask=pub["yes_ask"],
+                                        no_bid=pub["no_bid"],
+                                        no_ask=pub["no_ask"],
+                                        bid_depth=pub["bid_depth"],
+                                        ask_depth=pub["ask_depth"],
+                                        ts_origin=time.time(),
+                                    )
+                                    cycle_updates += 1
+
+                    elapsed_ms = (time.time() - t_start) * 1000
+                    if cycle_updates > 0:
+                        print(f"[MultiPlatform-Polymarket] Actualizados {cycle_updates} mercados en tracker ({elapsed_ms:.0f}ms)")
+                        # Disparar evaluación inmediata en Worker 2
+                        if first_ask is not None:
+                            await self.queue.put(PriceUpdateEvent(
+                                symbol="multi_platform_polymarket_tick",
+                                price=first_ask,
+                                ask=first_ask,
+                                bid=first_bid or first_ask,
+                            ))
+
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    print(f"[MultiPlatform-Polymarket] Error: {e}")
+
+                await asyncio.sleep(poly_interval)
 
         self._polymarket_connected = False
 

@@ -144,15 +144,24 @@ class MakerTwoLegStrategy(BaseStrategy):
             self._diag["edge_filtered"] += 1
             return None
 
-        # ADVERSE SELECTION PROTECTION: Si el spot líder (BTC/ETH en Binance)
-        # se movió > 15 bps en los últimos 500ms, NO cotizar pasivamente para
+        # ADVERSE SELECTION PROTECTION: Si el spot líder (BTC/ETH/SOL/BNB/XRP/DOGE en Binance)
+        # se movió > 12 bps en los últimos 500ms, NO cotizar pasivamente para
         # evitar toxic fills (ser tomado por arbitrajistas más rápidos).
-        asset = "BTC" if "btc" in slug.lower() else ("ETH" if "eth" in slug.lower() else "")
-        if asset:
+        if now < getattr(self, "_pause_until", 0.0):
+            return None
+
+        target_asset = None
+        for sym in ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]:
+            if sym.lower() in slug.lower():
+                target_asset = sym
+                break
+
+        if target_asset:
             from src.strategy.lead_lag_arbitrage import BinanceTracker
-            is_jump, jump_bps = BinanceTracker.detect_jump(asset, window_seconds=0.5, threshold_bps=15.0)
+            is_jump, jump_bps = BinanceTracker.detect_jump(target_asset, window_seconds=0.5, threshold_bps=12.0)
             if is_jump:
                 self._diag["adverse_selection"] = self._diag.get("adverse_selection", 0) + 1
+                self._pause_until = now + 10.0  # Pausar cotizaciones maker 10s tras salto tóxico
                 return None
 
         # Liquidez real en ambas patas (shares -> USD)

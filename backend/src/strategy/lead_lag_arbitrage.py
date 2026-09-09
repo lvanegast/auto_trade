@@ -16,18 +16,41 @@ class BinanceTracker:
 
     latest_btc_price: float = 0.0
     latest_eth_price: float = 0.0
+    latest_prices: dict = {}
     last_update_time: float = 0.0
 
     # Historial de ticks para detección de saltos bruscos / Adverse Selection Protection
     btc_ticks: deque = deque(maxlen=250)
     eth_ticks: deque = deque(maxlen=250)
+    asset_ticks: dict = {}
 
     @classmethod
     def record_tick(cls, symbol: str, price: float, t: float):
         if price <= 0:
             return
-        dq = cls.btc_ticks if "btc" in symbol.lower() else cls.eth_ticks
-        dq.append((t, price))
+        sym_lower = symbol.lower()
+        if "btc" in sym_lower:
+            cls.btc_ticks.append((t, price))
+            cls.latest_btc_price = price
+        elif "eth" in sym_lower:
+            cls.eth_ticks.append((t, price))
+            cls.latest_eth_price = price
+        
+        asset = sym_lower.replace("usdt", "").upper()
+        cls.latest_prices[asset] = price
+        if asset not in cls.asset_ticks:
+            cls.asset_ticks[asset] = deque(maxlen=250)
+        cls.asset_ticks[asset].append((t, price))
+
+    @classmethod
+    def get_price(cls, asset: str) -> float:
+        """Obtiene el último precio spot de un activo (ej. BTC, ETH, SOL, DOGE)."""
+        asset_norm = asset.strip().upper().replace("USDT", "")
+        if asset_norm == "BTC" and cls.latest_btc_price > 0:
+            return cls.latest_btc_price
+        if asset_norm == "ETH" and cls.latest_eth_price > 0:
+            return cls.latest_eth_price
+        return cls.latest_prices.get(asset_norm, 0.0)
 
     @classmethod
     def detect_jump(cls, asset: str = "BTC", window_seconds: float = 0.5, threshold_bps: float = 15.0) -> Tuple[bool, float]:
@@ -39,7 +62,14 @@ class BinanceTracker:
             (is_jump, jump_bps)
         """
         now = _time.monotonic()
-        dq = cls.btc_ticks if "btc" in asset.lower() else cls.eth_ticks
+        asset_norm = asset.strip().upper().replace("USDT", "")
+        if asset_norm == "BTC":
+            dq = cls.btc_ticks
+        elif asset_norm == "ETH":
+            dq = cls.eth_ticks
+        else:
+            dq = cls.asset_ticks.get(asset_norm)
+
         if not dq or len(dq) < 2:
             return False, 0.0
 
@@ -75,14 +105,12 @@ class _BinanceWebSocketManager(AsyncWebSocketManager):
             return
 
         now_mono = _time.monotonic()
-        if "btcusdt" in stream:
-            BinanceTracker.latest_btc_price = price
-            BinanceTracker.last_update_time = now_mono
-            BinanceTracker.record_tick("btc", price, now_mono)
-        elif "ethusdt" in stream:
-            BinanceTracker.latest_eth_price = price
-            BinanceTracker.last_update_time = now_mono
-            BinanceTracker.record_tick("eth", price, now_mono)
+        BinanceTracker.last_update_time = now_mono
+
+        # Parsear stream (ej. "btcusdt@ticker" -> asset "BTC")
+        stream_prefix = stream.split("@")[0].lower()
+        asset = stream_prefix.replace("usdt", "").upper()
+        BinanceTracker.record_tick(asset, price, now_mono)
 
 
 # Singleton del WebSocket de Binance (compartido entre todos los workers)
@@ -106,9 +134,15 @@ async def ensure_binance_websocket():
                 pass
             _binance_ws_manager = None
 
-        url = (
-            "wss://stream.binance.com:9443/stream?streams=btcusdt@ticker/ethusdt@ticker"
-        )
+        streams = [
+            "btcusdt@ticker",
+            "ethusdt@ticker",
+            "solusdt@ticker",
+            "dogeusdt@ticker",
+            "bnbusdt@ticker",
+            "xrpusdt@ticker",
+        ]
+        url = f"wss://stream.binance.com:9443/stream?streams={'/'.join(streams)}"
         _binance_ws_manager = _BinanceWebSocketManager(
             url=url,
             ping_interval=20,
@@ -117,7 +151,7 @@ async def ensure_binance_websocket():
             name="BinanceTracker",
         )
         await _binance_ws_manager.connect()
-        logger.info("BinanceTracker WebSocket iniciado (singleton).")
+        logger.info("BinanceTracker WebSocket multi-asset iniciado (singleton).")
 
 
 class LeadLagArbitrageStrategy(BaseStrategy):

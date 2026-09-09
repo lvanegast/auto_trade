@@ -82,14 +82,23 @@ class MakerLiquidityRewardsStrategy(BaseStrategy):
         self.edge = maker_edge
 
         if maker_edge >= self.min_rebate_edge_pct:
-            # ADVERSE SELECTION PROTECTION: Si el spot líder (BTC/ETH en Binance)
-            # tuvo un salto brusco (> 15 bps en últimos 500ms), pausar para evitar toxic fills
+            # ADVERSE SELECTION PROTECTION: Si el spot líder (BTC/ETH/SOL/BNB/XRP/DOGE en Binance)
+            # tuvo un salto brusco (> 12 bps en últimos 500ms), pausar para evitar toxic fills
+            if now < getattr(self, "_pause_until", 0.0):
+                return None
+
             slug = getattr(event, "market_slug", None) or self.symbol
-            asset = "BTC" if "btc" in slug.lower() else ("ETH" if "eth" in slug.lower() else "")
-            if asset:
+            target_asset = None
+            for sym in ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]:
+                if sym.lower() in slug.lower():
+                    target_asset = sym
+                    break
+
+            if target_asset:
                 from src.strategy.lead_lag_arbitrage import BinanceTracker
-                is_jump, jump_bps = BinanceTracker.detect_jump(asset, window_seconds=0.5, threshold_bps=15.0)
+                is_jump, jump_bps = BinanceTracker.detect_jump(target_asset, window_seconds=0.5, threshold_bps=12.0)
                 if is_jump:
+                    self._pause_until = now + 10.0
                     return None
 
             # Validar con el escudo de fricción Maker (0% fee + $0 gas en Maker Limit Orders)
