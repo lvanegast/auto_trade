@@ -102,9 +102,9 @@ Event flow: Feeder → `PriceUpdateEvent` → Queue → `TradingWorker._process_
 
 ## Despliegue Permanente en NVIDIA Jetson Nano & CI/CD (Septiembre 2026)
 
-- **Servidor Físico**: NVIDIA Jetson Nano 4GB ARM64 (`192.168.10.12`).
-  - Backend: `http://192.168.10.12:8080`
-  - PostgreSQL: `192.168.10.12:5432` (Alpine 16, persistente en `pgdata_trading`).
+- **Servidor Físico**: NVIDIA Jetson Nano 4GB ARM64 (`192.168.10.10`, MAC: `d0:37:45:b0:f0:57`).
+  - Backend: `http://192.168.10.10:8080`
+  - PostgreSQL: `192.168.10.10:5432` (Alpine 16, persistente en `pgdata_trading`).
 - **Resiliencia de Energía**: Contenedores configurados con `restart: unless-stopped` en `docker-compose.yml`. Si la Jetson se reinicia o sufre un microcorte eléctrico, el stack de base de datos y bot se levanta automáticamente.
 - **CI/CD Auto-Deploy**: Servicio nativo `bot-autodeploy.service` gestionado por `systemd`. Consulta `git fetch` cada 30 segundos; si detecta un nuevo commit en `feat/executable-arbitrage-engine`, ejecuta `git pull` y `docker restart trading_bot_backend` de forma desatendida. Cero consumo adicional de memoria RAM. Ver [`docs/JETSON_DEPLOYMENT.md`](docs/JETSON_DEPLOYMENT.md).
 
