@@ -159,6 +159,7 @@ class ResolutionSniperFeeder(BaseFeeder):
         from limitless_sdk.markets import MarketFetcher
 
         http_client = HttpClient()
+        self._http_client = http_client
         self._page_fetcher = MarketPageFetcher(http_client)
         self._market_fetcher = MarketFetcher(http_client)
 
@@ -183,6 +184,7 @@ class ResolutionSniperFeeder(BaseFeeder):
             self._prune_confirmations()
             try:
                 from src.engine.latency_tracker import latency_tracker
+                from src.utils.limitless_api_helper import fetch_markets_safe, get_page_id_safe
 
                 # Lista de (market, category). category = "crypto" | "sports"
                 # para enrutar la oportunidad a la sala correcta en edge_snapshots
@@ -196,11 +198,8 @@ class ResolutionSniperFeeder(BaseFeeder):
 
                     for page_id in page_ids:
                         try:
-                            async with latency_tracker.measure("resolution_sniper", "get_markets") as m:
-                                resp = await self._page_fetcher.get_markets(page_id, {"limit": 50})
-                                m.result = resp
-
-                            page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
+                            async with latency_tracker.measure("resolution_sniper", "get_markets"):
+                                page_m = await fetch_markets_safe(self._http_client, page_id, limit=50)
                             for mk in page_m:
                                 scan_items.append((mk, "crypto"))
                         except Exception as pe:
@@ -209,28 +208,25 @@ class ResolutionSniperFeeder(BaseFeeder):
 
                 if self.scope in ("sports", "both"):
                     # Páginas deportivas (mismo patrón: YES casi-cerrado pre-resolución).
-                    # Los mercados sports exponen expiration_timestamp (ms) como atributo
-                    # del objeto, no como patrón del slug (a diferencia de crypto up/down).
                     for path in ["/sport", "/esports"]:
                         try:
-                            page = await self._page_fetcher.get_market_page_by_path(path)
-                            resp = await self._page_fetcher.get_markets(page.id, {"limit": 100})
-                            page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
-                            for mk in page_m:
-                                scan_items.append((mk, "sports"))
+                            page_id = await get_page_id_safe(self._http_client, path)
+                            if page_id:
+                                page_m = await fetch_markets_safe(self._http_client, page_id, limit=100)
+                                for mk in page_m:
+                                    scan_items.append((mk, "sports"))
                         except Exception as pe:
                             if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
                                 print(f"[Resolution Sniper] Error fetching sports page {path}: {pe}")
 
                     # Finance: Gold, Meta, NVIDIA, ETFs — menos volátil que crypto,
-                    # rango más amplio [0.95, 0.985]. Mismo patrón up-or-down.
                     for path in ["/finance"]:
                         try:
-                            page = await self._page_fetcher.get_market_page_by_path(path)
-                            resp = await self._page_fetcher.get_markets(page.id, {"limit": 50})
-                            page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
-                            for mk in page_m:
-                                scan_items.append((mk, "finance"))
+                            page_id = await get_page_id_safe(self._http_client, path)
+                            if page_id:
+                                page_m = await fetch_markets_safe(self._http_client, page_id, limit=50)
+                                for mk in page_m:
+                                    scan_items.append((mk, "finance"))
                         except Exception as pe:
                             if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
                                 print(f"[Resolution Sniper] Error fetching finance page: {pe}")

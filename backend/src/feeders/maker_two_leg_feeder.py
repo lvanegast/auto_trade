@@ -56,6 +56,7 @@ class MakerTwoLegFeeder(BaseFeeder):
         from limitless_sdk.market_pages import MarketPageFetcher
 
         http_client = HttpClient()
+        self._http_client = http_client
         self._page_fetcher = MarketPageFetcher(http_client)
 
         try:
@@ -79,14 +80,13 @@ class MakerTwoLegFeeder(BaseFeeder):
             _last_maker_scan_time = now
             try:
                 from src.engine.latency_tracker import latency_tracker
+                from src.utils.limitless_api_helper import fetch_markets_safe
 
                 markets = []
                 for page_id in self.page_ids:
                     try:
-                        async with latency_tracker.measure("maker_two_leg", "get_markets") as m:
-                            resp = await self._page_fetcher.get_markets(page_id, {"limit": 50})
-                            m.result = resp
-                        page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
+                        async with latency_tracker.measure("maker_two_leg", "get_markets"):
+                            page_m = await fetch_markets_safe(self._http_client, page_id, limit=50)
                         markets.extend(page_m)
                     except Exception as pe:
                         if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):

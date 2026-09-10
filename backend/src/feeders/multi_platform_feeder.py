@@ -82,7 +82,6 @@ class MultiPlatformFeeder(BaseFeeder):
         from limitless_sdk.market_pages import MarketPageFetcher
 
         http_client = HttpClient()
-        page_fetcher = MarketPageFetcher(http_client)
 
         print("[MultiPlatform-Limitless] Conectado a Limitless Sports")
         self._limitless_connected = True
@@ -90,7 +89,7 @@ class MultiPlatformFeeder(BaseFeeder):
         try:
             while self.running:
                 try:
-                    await self._scan_limitless_markets(page_fetcher)
+                    await self._scan_limitless_markets(http_client)
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
@@ -100,9 +99,10 @@ class MultiPlatformFeeder(BaseFeeder):
             await http_client.close()
             self._limitless_connected = False
 
-    async def _scan_limitless_markets(self, page_fetcher):
+    async def _scan_limitless_markets(self, http_client):
         """Escanea mercados de Limitless y actualiza el tracker."""
         from src.engine.latency_tracker import latency_tracker
+        from src.utils.limitless_api_helper import fetch_markets_safe
 
         page_ids = [
             "2a91349c-3308-4234-afb7-0663e42968c1",  # Sport
@@ -112,11 +112,8 @@ class MultiPlatformFeeder(BaseFeeder):
         markets = []
         for page_id in page_ids:
             try:
-                async with latency_tracker.measure("limitless_multi", "get_markets") as m:
-                    resp = await page_fetcher.get_markets(page_id, {"limit": 30})
-                    m.result = resp
-
-                page_m = resp.data if hasattr(resp, "data") else (resp.get("data", []) if isinstance(resp, dict) else [])
+                async with latency_tracker.measure("limitless_multi", "get_markets"):
+                    page_m = await fetch_markets_safe(http_client, page_id, limit=30)
                 markets.extend(page_m)
             except asyncio.CancelledError:
                 raise

@@ -120,17 +120,16 @@ class LimitlessSportsFeeder(BaseFeeder):
 
                 markets = []
                 try:
+                    from src.utils.limitless_api_helper import fetch_markets_safe, get_page_id_safe
                     async with HttpClient() as http:
-                        page_fetcher = MarketPageFetcher(http)
                         # Fetch both sports and esports pages
                         for path in ["/sport", "/esports"]:
                             try:
-                                async with latency_tracker.measure("limitless_sports", f"get_{path}_page") as m:
-                                    page = await page_fetcher.get_market_page_by_path(path)
-                                    m.result = page
-                                resp = await page_fetcher.get_markets(page.id, {"limit": 50})
-                                page_markets = resp.data if hasattr(resp, "data") else []
-                                markets.extend(page_markets)
+                                page_id = await get_page_id_safe(http, path)
+                                if page_id:
+                                    async with latency_tracker.measure("limitless_sports", f"get_{path}_page"):
+                                        page_markets = await fetch_markets_safe(http, page_id, limit=50)
+                                    markets.extend(page_markets)
                             except Exception as pe:
                                 print(f"[Sports Feeder] Error fetching {path}: {pe}")
                 except Exception as pe:
