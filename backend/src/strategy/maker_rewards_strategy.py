@@ -5,6 +5,7 @@ En lugar de pagar comisiones Taker, esta estrategia publica órdenes LIMIT tipo 
 Gana $0.00 comisiones + Captura Recompensas Diarias por Aportar Liquidez + Retorno del Spread ($1.00 - Total Cost).
 """
 
+import os
 import time
 from src.strategy.base import BaseStrategy
 from src.events import PriceUpdateEvent, SignalEvent
