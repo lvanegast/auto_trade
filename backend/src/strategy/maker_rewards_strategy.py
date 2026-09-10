@@ -20,7 +20,7 @@ class MakerLiquidityRewardsStrategy(BaseStrategy):
         db=None,
         worker_id: str = "worker_6",
         observation_only: bool = True,
-        min_market_volume_usd: float = 25.0,
+        min_market_volume_usd: float = 5.0,
         leg_size_min_usd: float = 1.0,
         leg_size_max_usd: float = 3.0,
     ):
@@ -37,7 +37,7 @@ class MakerLiquidityRewardsStrategy(BaseStrategy):
         self.db = db
         self.worker_id = worker_id
         self.observation_only = observation_only
-        self.min_market_volume_usd = min_market_volume_usd
+        self.min_market_volume_usd = float(os.getenv("CRYPTO_MAKER_MIN_VOLUME_USD", "5.0")) or min_market_volume_usd
 
         self.last_position = None
         self.entry_price = 0.0

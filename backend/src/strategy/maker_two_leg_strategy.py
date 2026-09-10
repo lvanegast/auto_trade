@@ -36,7 +36,7 @@ class MakerTwoLegStrategy(BaseStrategy):
         db=None,
         worker_id: str = "worker_6",
         observation_only: bool = True,
-        min_market_volume_usd: float = 25.0,  # volumen real transado mínimo para considerar el mercado "vivo"
+        min_market_volume_usd: float = 5.0,  # volumen real transado mínimo para considerar el mercado "vivo"
     ):
         super().__init__(symbol)
         self.min_edge_pct = min_edge_pct
@@ -50,7 +50,7 @@ class MakerTwoLegStrategy(BaseStrategy):
         self.db = db
         self.worker_id = worker_id
         self.observation_only = observation_only
-        self.min_market_volume_usd = float(os.getenv("CRYPTO_MAKER_MIN_VOLUME_USD", "25.0")) or min_market_volume_usd
+        self.min_market_volume_usd = float(os.getenv("CRYPTO_MAKER_MIN_VOLUME_USD", "5.0")) or min_market_volume_usd
 
         # Estado de pares en curso: {slug: {"leg1": str, "leg2": str, "filled": [..]}}
         self._active_pairs: dict = {}

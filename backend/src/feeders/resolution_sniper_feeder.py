@@ -458,6 +458,19 @@ class ResolutionSniperFeeder(BaseFeeder):
                     await asyncio.sleep(0.1)
 
                 print(f"[Resolution Sniper] Scan complete: {len(scan_items)} markets checked, {snipers_found} snipers found | diag={_diag}")
+                now_t = time.time()
+                if not hasattr(self, "_last_db_log_time") or (now_t - self._last_db_log_time > 900):
+                    self._last_db_log_time = now_t
+                    try:
+                        from src.api.app import db
+                        worker_id = "worker_7" if self.scope == "crypto" else "worker_8"
+                        db.log(
+                            "INFO",
+                            f"[Resolution Sniper {self.scope.upper()}] Scan: {len(scan_items)} mercados, {snipers_found} en rango | exp_filtrados={_diag.get('exp_filtered',0)}, precio_fuera={_diag.get('price_out_of_range',0)}, oraculo_bloqueo={_diag.get('adverse_selection_blocked',0)}",
+                            worker_id
+                        )
+                    except Exception:
+                        pass
 
             except Exception as e:
                 print(f"[Resolution Sniper] Error scanning: {e}")

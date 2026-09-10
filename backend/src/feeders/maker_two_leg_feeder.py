@@ -106,13 +106,23 @@ class MakerTwoLegFeeder(BaseFeeder):
                     scanned += 1
 
                     # Volumen real transado (USD) — el indicador de "vivo".
-                    # La profundidad del book (millones de shares) es postura lejana;
-                    # un mercado con volumen ~0 jamás llena 2 patas maker.
-                    volume_raw = m.volume_formatted if hasattr(m, "volume_formatted") else (m.get("volume_formatted", "") if isinstance(m, dict) else "")
+                    # Soporta formato camelCase de API (volumeFormatted) o micro-USDC (volume / 1e6)
+                    volume_raw = (
+                        getattr(m, "volume_formatted", None)
+                        or getattr(m, "volumeFormatted", None)
+                        or (m.get("volumeFormatted") if isinstance(m, dict) else None)
+                        or (m.get("volume_formatted") if isinstance(m, dict) else None)
+                    )
                     try:
-                        market_volume = float(volume_raw) if volume_raw else 0.0
+                        market_volume = float(volume_raw) if volume_raw is not None else 0.0
                     except (TypeError, ValueError):
                         market_volume = 0.0
+
+                    if market_volume == 0.0 and isinstance(m, dict) and m.get("volume"):
+                        try:
+                            market_volume = float(m.get("volume")) / 1e6
+                        except (TypeError, ValueError):
+                            pass
 
                     # Book real (bid/ask ejecutables con spread estrecho para maker)
                     from src.limitless_price_cache import async_get_limitless_executable_price
@@ -146,6 +156,14 @@ class MakerTwoLegFeeder(BaseFeeder):
 
                 print(f"[Maker 2-Leg] Scan completo: {len(markets)} markets, {scanned} crypto, "
                       f"books emitidos OK")
+                now_t = time.time()
+                if not hasattr(self, "_last_db_log_time") or (now_t - self._last_db_log_time > 900):
+                    self._last_db_log_time = now_t
+                    try:
+                        from src.api.app import db
+                        db.log("INFO", f"[Maker 2-Leg Feeder] Scan completo: {len(markets)} mercados consultados, {scanned} crypto procesados", "worker_6")
+                    except Exception:
+                        pass
 
             except Exception as e:
                 print(f"[Maker 2-Leg] Error scanning: {e}")
