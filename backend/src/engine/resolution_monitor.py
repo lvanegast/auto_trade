@@ -271,8 +271,10 @@ class ResolutionMonitor:
                 # y no requieren redeem.
                 if winning_outcome != "SPLIT":
                     is_negrisk = market.market_type == "group"
+                    allowed_env = os.getenv("ALLOWED_REAL_WORKERS", "").strip()
+                    allowed_db = self.db.get_state("ALLOWED_REAL_WORKERS", "") if (self.db and hasattr(self.db, "get_state")) else ""
                     allowed_real_workers = [
-                        w.strip() for w in os.getenv("ALLOWED_REAL_WORKERS", "").split(",") if w.strip()
+                        w.strip() for w in f"{allowed_env},{allowed_db}".split(",") if w.strip()
                     ]
                     for pos in positions:
                         if not isinstance(pos, dict):

@@ -45,6 +45,20 @@ class SecurityGuard:
         if self._backtesting:
             return True, "OK"
 
+        if self.db and hasattr(self.db, "get_state"):
+            try:
+                db_loss = self.db.get_state("MAX_DAILY_LOSS_USD")
+                if db_loss:
+                    self.max_daily_loss_usd = float(db_loss)
+                db_dd = self.db.get_state("MAX_DRAWDOWN_PCT")
+                if db_dd:
+                    self.max_drawdown_pct = float(db_dd)
+                db_pos = self.db.get_state("MAX_CONCURRENT_POSITIONS")
+                if db_pos:
+                    self.max_concurrent_positions = int(db_pos)
+            except Exception:
+                pass
+
         if self._kill_switch:
             return False, f"KILL SWITCH activo: {self._kill_reason}"
 

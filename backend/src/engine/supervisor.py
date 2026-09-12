@@ -1157,9 +1157,11 @@ class TradingWorker:
 
     async def _execute_order(self, signal: SignalEvent):
         # GUARDRAIL ABSOLUTO: Capital Protection Whitelist
-        # Any worker NOT explicitly listed in ALLOWED_REAL_WORKERS env var is blocked from real execution.
+        # Any worker NOT explicitly listed in ALLOWED_REAL_WORKERS (env var or bot_state DB) is blocked from real execution.
+        allowed_env = os.getenv("ALLOWED_REAL_WORKERS", "").strip()
+        allowed_db = self.db.get_state("ALLOWED_REAL_WORKERS", "") if (self.db and hasattr(self.db, "get_state")) else ""
         allowed_real_workers = [
-            w.strip() for w in os.getenv("ALLOWED_REAL_WORKERS", "").split(",") if w.strip()
+            w.strip() for w in f"{allowed_env},{allowed_db}".split(",") if w.strip()
         ]
         if self.worker_id not in allowed_real_workers:
             self.db.log(
@@ -2616,7 +2618,9 @@ class TradingEngine:
                     leg_size_max_usd=float(os.getenv("CRYPTO_LEG_MAX_USD", "3.0")),
                     db=self.db,
                     worker_id="worker_6",
-                    observation_only=True,
+                    observation_only=("worker_6" not in [
+                        w.strip() for w in f"{os.getenv('ALLOWED_REAL_WORKERS', '')},{self.db.get_state('ALLOWED_REAL_WORKERS', '') if (self.db and hasattr(self.db, 'get_state')) else ''}".split(",") if w.strip()
+                    ]),
                 )
                 self.workers["worker_6"] = worker6
 
