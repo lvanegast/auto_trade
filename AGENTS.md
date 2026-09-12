@@ -194,6 +194,7 @@ Event flow: Feeder → `PriceUpdateEvent` → Queue → `TradingWorker._process_
 | Worker 5 | Binance Oracle | `binance` | Reference price feed (lead-lag) |
 | Worker 7 | Resolution Sniper Crypto | `resolution_sniper` | Crypto up/down: comprar YES ~0.975-0.98 pre-settlement (observación) |
 | Worker 8 | Resolution Sniper Sports | `resolution_sniper` | Sports + esports: comprar YES ~0.975-0.98 pre-settlement (observación) |
+| Worker 9 | Resolution Sniper Finance | `resolution_sniper` | Wall Street Equities / Commodities con EquitiesOracleGuard (observación) |
 
 ### Cross-Platform Sports vs Crypto
 
@@ -227,14 +228,17 @@ WORKER4_ENABLED=true
 WORKER5_ENABLED=true
 WORKER6_ENABLED=true
 
-# Resolution Sniper (Worker 7 = crypto, Worker 8 = sports — instrumentos separados)
+# Resolution Sniper (Worker 7 = crypto, Worker 8 = sports, Worker 9 = finance)
 WORKER7_ENABLED=true
 WORKER7_SYMBOL=CRYPTO
 WORKER8_ENABLED=true
 WORKER8_SYMBOL=SPORTS
+WORKER9_ENABLED=true
+WORKER9_SYMBOL=FINANCE
 SNIPER_MIN_ENTRY_PRICE=0.975
 SNIPER_MAX_ENTRY_PRICE=0.98
-SNIPER_SPORTS_MAX_SECONDS_TO_RESOLUTION=14400
+SNIPER_SPORTS_MAX_SECONDS_TO_RESOLUTION=1800
+SNIPER_FINANCE_MAX_SECONDS_TO_RESOLUTION=300
 SNIPER_RESOLUTION_MONITOR_WORKER=worker_8
 ```
 

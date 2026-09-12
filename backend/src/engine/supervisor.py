@@ -207,9 +207,9 @@ class TradingWorker:
         elif self.feeder_type == "resolution_sniper":
             from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
             # El scope del feeder se deriva del symbol del worker:
-            # "CRYPTO" -> escanea solo crypto, "SPORTS" -> escanea solo sports.
+            # "CRYPTO" -> escanea solo crypto, "SPORTS" -> escanea solo sports, "FINANCE" -> escanea solo finance.
             # Cada worker tiene su propio feeder; NO mezclar categorías.
-            scope = self.symbol.lower() if self.symbol.lower() in ("crypto", "sports") else "crypto"
+            scope = self.symbol.lower() if self.symbol.lower() in ("crypto", "sports", "finance") else "crypto"
             return ResolutionSniperFeeder(self.symbol, self.queue, scope=scope)
         elif self.feeder_type == "maker_two_leg":
             from src.feeders.maker_two_leg_feeder import MakerTwoLegFeeder
@@ -2635,6 +2635,14 @@ class TradingEngine:
                 worker8 = TradingWorker("worker_8", "Resolution Sniper Sports", "SPORTS", "resolution_sniper", self.db)
                 worker8.strategy = ResolutionSniperStrategy("SPORTS", db=self.db, worker_id="worker_8")
                 self.workers["worker_8"] = worker8
+
+            # Worker 9: Resolution Sniper FINANCE (Wall Street Equities / Commodities with Equities Oracle Guard)
+            w9_enabled = os.getenv("WORKER9_ENABLED", "true").lower() == "true"
+            if w9_enabled:
+                from src.strategy.resolution_sniper import ResolutionSniperStrategy
+                worker9 = TradingWorker("worker_9", "Resolution Sniper Finance", "FINANCE", "resolution_sniper", self.db)
+                worker9.strategy = ResolutionSniperStrategy("FINANCE", db=self.db, worker_id="worker_9")
+                self.workers["worker_9"] = worker9
 
         elif profile_mode == "crypto_hft_volatile":
             self.workers["worker_1"] = TradingWorker(

@@ -207,7 +207,7 @@ class ResolutionSniperFeeder(BaseFeeder):
                                 print(f"[Resolution Sniper] Error fetching page {page_id}: {pe}")
 
                 if self.scope in ("sports", "both"):
-                    # Páginas deportivas (mismo patrón: YES casi-cerrado pre-resolución).
+                    # Páginas deportivas exclusivas (Fútbol, Tenis, Esports).
                     for path in ["/sport", "/esports"]:
                         try:
                             page_id = await get_page_id_safe(self._http_client, path)
@@ -219,7 +219,8 @@ class ResolutionSniperFeeder(BaseFeeder):
                             if "TimeoutError" not in str(type(pe)) and "Cannot connect" not in str(pe):
                                 print(f"[Resolution Sniper] Error fetching sports page {path}: {pe}")
 
-                    # Finance: Gold, Meta, NVIDIA, ETFs — menos volátil que crypto,
+                if self.scope in ("finance", "both"):
+                    # Finance: Wall Street Equities (TSLA, NVDA, AAPL, SPY, etc.) y Gold
                     for path in ["/finance"]:
                         try:
                             page_id = await get_page_id_safe(self._http_client, path)
@@ -254,18 +255,17 @@ class ResolutionSniperFeeder(BaseFeeder):
                         _min_price = self.min_entry_price
                         _max_price = self.max_entry_price
                     elif category == "finance":
-                        # Finance: mismo patrón up-or-down que crypto, pero rango
-                        # más amplio [0.95, 0.985] por menor volatilidad.
-                        # Ventana más amplia (4h) como sports — los mercados finance
-                        # expiran menos frecuentemente que crypto (daily/weekly).
+                        # Finance: Wall Street Equities / Commodities.
+                        # Ventana ultra-corta (máx 300s = 5 min antes del cierre de las 4:00 PM EDT)
+                        # para evitar volatilidad de Power Hour y subasta de cierre (MOC).
                         if "up-or-down" not in slug.lower():
                             self._reject(f"limitless_sniper_{slug}")
                             _diag["non_crypto"] += 1
                             continue
                         exp = self._parse_expiration(slug)
-                        max_res_secs = self.sports_max_seconds_to_resolution
-                        _min_price = self.finance_min_entry_price
-                        _max_price = self.finance_max_entry_price
+                        max_res_secs = 300.0  # Máximo 5 minutos antes de la campana
+                        _min_price = self.min_entry_price
+                        _max_price = self.max_entry_price
                     else:
                         # Sports markets must NOT be crypto up/down slugs
                         if "crypto" in slug.lower() or "up-or-down" in slug.lower():
@@ -357,6 +357,31 @@ class ResolutionSniperFeeder(BaseFeeder):
                                         is_safe = False
                                         safety_reason = f"Tiempo restante excesivo para certeza deportiva ({remaining:.0f}s > 1800s)"
 
+                                elif category == "finance":
+                                    # Para finanzas / acciones de Wall Street (Opción B: Equities Oracle Guard)
+                                    if depth < 10.0:
+                                        is_safe = False
+                                        safety_reason = f"Liquidez insuficiente en libro ({depth:.1f} < $10 USD)"
+                                    else:
+                                        asset, strike = SpotOracleGuard.extract_market_info(m)
+                                        if strike is None or asset == "UNKNOWN":
+                                            is_safe = False
+                                            safety_reason = f"No se pudo verificar strike ({strike}) o activo ({asset})"
+                                        else:
+                                            spot = SpotOracleGuard.get_spot_price(asset)
+                                            if spot is None or spot <= 0:
+                                                is_safe = False
+                                                safety_reason = f"Sin cotización spot (Yahoo/Binance) para {asset}"
+                                            else:
+                                                is_safe, z, delta_pct, safety_reason = SpotOracleGuard.evaluate_safety(
+                                                    asset=asset,
+                                                    spot_price=spot,
+                                                    strike_price=strike,
+                                                    side=target_side,
+                                                    remaining_seconds=remaining,
+                                                    category="finance",
+                                                )
+
                                 if not is_safe:
                                     self._reject(f"limitless_sniper_{slug}")
                                     _diag["adverse_selection_blocked"] = _diag.get("adverse_selection_blocked", 0) + 1
@@ -436,6 +461,29 @@ class ResolutionSniperFeeder(BaseFeeder):
                                     elif category == "sports" and sub_remaining > 1800:
                                         sub_safe = False
                                         sub_safety_reason = f"Tiempo restante excesivo ({sub_remaining:.0f}s > 1800s)"
+                                    elif category == "finance":
+                                        if sub_depth < 10.0:
+                                            sub_safe = False
+                                            sub_safety_reason = f"Liquidez insuficiente ({sub_depth:.1f} < $10 USD)"
+                                        else:
+                                            sub_asset, sub_strike = SpotOracleGuard.extract_market_info(sub)
+                                            if sub_strike is None or sub_asset == "UNKNOWN":
+                                                sub_safe = False
+                                                sub_safety_reason = f"No se pudo verificar strike ({sub_strike}) o activo ({sub_asset})"
+                                            else:
+                                                sub_spot = SpotOracleGuard.get_spot_price(sub_asset)
+                                                if sub_spot is None or sub_spot <= 0:
+                                                    sub_safe = False
+                                                    sub_safety_reason = f"Sin spot (Yahoo/Binance) para {sub_asset}"
+                                                else:
+                                                    sub_safe, z, delta_pct, sub_safety_reason = SpotOracleGuard.evaluate_safety(
+                                                        asset=sub_asset,
+                                                        spot_price=sub_spot,
+                                                        strike_price=sub_strike,
+                                                        side=sub_target_side,
+                                                        remaining_seconds=sub_remaining,
+                                                        category="finance",
+                                                    )
 
                                     if not sub_safe:
                                         self._reject(f"limitless_sniper_{sub_slug}")
@@ -463,7 +511,7 @@ class ResolutionSniperFeeder(BaseFeeder):
                     self._last_db_log_time = now_t
                     try:
                         from src.api.app import db
-                        worker_id = "worker_7" if self.scope == "crypto" else "worker_8"
+                        worker_id = "worker_7" if self.scope == "crypto" else ("worker_8" if self.scope == "sports" else "worker_9")
                         db.log(
                             "INFO",
                             f"[Resolution Sniper {self.scope.upper()}] Scan: {len(scan_items)} mercados, {snipers_found} en rango | exp_filtrados={_diag.get('exp_filtered',0)}, precio_fuera={_diag.get('price_out_of_range',0)}, oraculo_bloqueo={_diag.get('adverse_selection_blocked',0)}",

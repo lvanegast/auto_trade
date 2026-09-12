@@ -25,22 +25,37 @@ logger = logging.getLogger("SpotOracleGuard")
 class SpotOracleGuard:
     # Volatilidad horaria típica por activo (1 sigma)
     VOLATILITY_1H = {
+        # Crypto
         "BTC": 0.0035,   # 0.35% / hr
         "ETH": 0.0050,   # 0.50% / hr
         "SOL": 0.0080,   # 0.80% / hr
         "BNB": 0.0060,   # 0.60% / hr
         "XRP": 0.0080,   # 0.80% / hr
         "DOGE": 0.0100,  # 1.00% / hr
+        # Equities & Commodities (Finance)
+        "TSLA": 0.0060,  # 0.60% / hr
+        "NVDA": 0.0060,  # 0.60% / hr
+        "META": 0.0040,  # 0.40% / hr
+        "AAPL": 0.0030,  # 0.30% / hr
+        "GOOGL": 0.0030, # 0.30% / hr
+        "GOOG": 0.0030,  # 0.30% / hr
+        "SPY": 0.0015,   # 0.15% / hr
+        "OXY": 0.0040,   # 0.40% / hr
+        "ITA": 0.0025,   # 0.25% / hr
+        "LMT": 0.0025,   # 0.25% / hr
+        "SPCX": 0.0050,  # 0.50% / hr
+        "PAXG": 0.0020,  # 0.20% / hr
+        "GOLD": 0.0020,  # 0.20% / hr
     }
     DEFAULT_VOLATILITY = 0.0075
 
-    # Cache en memoria para consultas REST de Binance (TTL = 4 segundos)
+    # Cache en memoria para consultas REST (TTL = 4 segundos)
     _rest_cache: dict = {}
 
     @classmethod
     def extract_market_info(cls, market: object) -> Tuple[str, Optional[float]]:
         """
-        Extrae el símbolo del activo base (BTC, ETH, etc.) y el strike/openPrice.
+        Extrae el símbolo del activo base (BTC, ETH, TSLA, NVDA, etc.) y el strike/openPrice.
         Soporta objetos de limitless_sdk o diccionarios.
         """
         slug = getattr(market, "slug", "") or (market.get("slug", "") if isinstance(market, dict) else "")
@@ -51,8 +66,15 @@ class SpotOracleGuard:
         # 1. Identificar activo
         asset = "UNKNOWN"
         check_str = f"{slug} {title}".upper()
-        for sym in ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "HYPE"]:
-            if sym in check_str or f"{sym.lower()}-" in slug.lower():
+        
+        KNOWN_SYMBOLS = [
+            # Crypto
+            "BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "HYPE",
+            # Equities / Finance
+            "TSLA", "NVDA", "AAPL", "SPY", "META", "GOOGL", "GOOG", "OXY", "ITA", "LMT", "SPCX", "PAXG", "GOLD"
+        ]
+        for sym in KNOWN_SYMBOLS:
+            if f"({sym})" in check_str or f" {sym} " in f" {check_str} " or f"{sym.lower()}-" in slug.lower():
                 asset = sym
                 break
 
@@ -81,15 +103,25 @@ class SpotOracleGuard:
     @classmethod
     def get_spot_price(cls, asset: str) -> Optional[float]:
         """
-        Obtiene el precio spot en tiempo real para un activo.
-        Prioridad 1: BinanceTracker en memoria (WebSocket de ultra-baja latencia).
-        Prioridad 2: Binance REST API con cache de 4s.
+        Obtiene el precio spot en tiempo real para un activo (Crypto o Acciones de Wall Street).
+        - Para Crypto: BinanceTracker WS / Binance REST.
+        - Para PAXG / Gold: Binance REST (PAXGUSDT).
+        - Para Acciones (TSLA, NVDA, AAPL, SPY, etc.): Yahoo Finance API v8 con cache.
         """
         asset_norm = asset.strip().upper().replace("USDT", "")
         if not asset_norm or asset_norm == "UNKNOWN":
             return None
 
-        # 1. Intentar desde BinanceTracker
+        # Normalizar GOLD -> PAXG
+        if asset_norm == "GOLD":
+            asset_norm = "PAXG"
+
+        now = time.time()
+        cached = cls._rest_cache.get(asset_norm)
+        if cached and (now - cached[0]) < 3.5:
+            return cached[1]
+
+        # 1. Intentar desde BinanceTracker (para crypto)
         try:
             from src.strategy.lead_lag_arbitrage import BinanceTracker
             price = BinanceTracker.get_price(asset_norm)
@@ -98,24 +130,33 @@ class SpotOracleGuard:
         except Exception:
             pass
 
-        # 2. Cache REST
-        now = time.time()
-        cached = cls._rest_cache.get(asset_norm)
-        if cached and (now - cached[0]) < 4.0:
-            return cached[1]
+        # 2. Si es PAXG o Crypto conocida, consultar Binance REST
+        if asset_norm in ("PAXG", "BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"):
+            try:
+                url = f"https://api.binance.com/api/v3/ticker/price?symbol={asset_norm}USDT"
+                req = urllib.request.Request(url, headers={"User-Agent": "AutoTradeBot/1.0"})
+                with urllib.request.urlopen(req, timeout=2.5) as response:
+                    data = json.loads(response.read().decode())
+                    p = float(data.get("price", 0.0))
+                    if p > 0:
+                        cls._rest_cache[asset_norm] = (now, p)
+                        return p
+            except Exception as e:
+                logger.warning(f"Error consultando spot Binance REST para {asset_norm}: {e}")
 
-        # 3. Fallback Binance REST API
+        # 3. Para acciones de Wall Street (TSLA, NVDA, AAPL, SPY, META, GOOGL, etc.)
         try:
-            url = f"https://api.binance.com/api/v3/ticker/price?symbol={asset_norm}USDT"
-            req = urllib.request.Request(url, headers={"User-Agent": "AutoTradeBot/1.0"})
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{asset_norm}?interval=1m"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
             with urllib.request.urlopen(req, timeout=2.5) as response:
                 data = json.loads(response.read().decode())
-                p = float(data.get("price", 0.0))
+                meta = data["chart"]["result"][0]["meta"]
+                p = float(meta.get("regularMarketPrice", 0.0))
                 if p > 0:
                     cls._rest_cache[asset_norm] = (now, p)
                     return p
         except Exception as e:
-            logger.warning(f"Error consultando spot REST para {asset_norm}: {e}")
+            logger.warning(f"Error consultando spot Yahoo Finance para {asset_norm}: {e}")
 
         return None
 
@@ -127,6 +168,7 @@ class SpotOracleGuard:
         strike_price: float,
         side: str,
         remaining_seconds: float,
+        category: str = "crypto",
     ) -> Tuple[bool, float, float, str]:
         """
         Evalúa si la compra pre-settlement tiene margen de seguridad estadístico.
@@ -136,6 +178,17 @@ class SpotOracleGuard:
         """
         if spot_price <= 0 or strike_price <= 0:
             return False, 0.0, 0.0, "Precios spot o strike inválidos"
+
+        # Protección estricta para Finance (Acciones de Wall Street):
+        # 1. Prohibido entrar con más de 300s (5 min) restantes para evitar la volatilidad de Power Hour / MOC.
+        if category == "finance":
+            if remaining_seconds > 300:
+                return (
+                    False,
+                    0.0,
+                    0.0,
+                    f"Tiempo restante excesivo para acciones: {remaining_seconds:.0f}s > 300s (evitar Power Hour/MOC)",
+                )
 
         asset_norm = asset.upper()
         sigma_1h = cls.VOLATILITY_1H.get(asset_norm, cls.DEFAULT_VOLATILITY)
@@ -147,8 +200,12 @@ class SpotOracleGuard:
         delta = spot_price - strike_price
         delta_pct = delta / strike_price
 
-        # Umbrales según tiempo restante
-        if remaining_seconds > 600:
+        # Umbrales según categoría y tiempo restante
+        if category == "finance":
+            # Para acciones exigimos Z >= 3.0 y margen mínimo de 0.50%
+            min_z = 3.0
+            min_margin = 0.0050
+        elif remaining_seconds > 600:
             min_z = 3.0
             min_margin = 0.0050  # 0.50%
         elif remaining_seconds > 300:
