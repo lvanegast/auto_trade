@@ -1915,6 +1915,16 @@ class TradingWorker:
                         f"RECHAZADO: fallo en ejecución on-chain Limitless: {e}. No se crea posición simulada (Modo Estricto Real).",
                         self.worker_id,
                     )
+                    # Si falla una pata y la estrategia tiene señales pendientes (como la pata 2 de un par),
+                    # abortar y limpiar el buffer para evitar que la segunda pata se envíe sin cobertura
+                    if hasattr(self.strategy, "_pending_signals") and self.strategy._pending_signals:
+                        cleared_cnt = len(self.strategy._pending_signals)
+                        self.strategy._pending_signals.clear()
+                        self.db.log(
+                            "WARNING",
+                            f"[FillGuard] Canceladas {cleared_cnt} señal(es) pendiente(s) de segunda pata para evitar posición desbalanceada.",
+                            self.worker_id,
+                        )
                     # Re-lanzar para que el llamador (FillGuard/execute_fn) sepa que
                     # esta pata falló — antes se registraba como si nada, sin
                     # disparar el mecanismo de recuperación de patas ya llenadas.

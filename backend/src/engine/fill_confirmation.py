@@ -92,13 +92,55 @@ async def confirm_limitless_fill(
         except asyncio.TimeoutError:
             pass
         return FillConfirmationResult(outcome["filled"], outcome["reason"])
-    except Exception as e:
-        return FillConfirmationResult(False, f"Error confirmando fill via WS: {e}")
+    except Exception as ws_err:
+        # Fallback a REST si WS falla por timeout de conexión o red
+        return await _poll_limitless_rest_fill(order_id, api_key, api_secret, timeout_seconds=timeout_seconds)
     finally:
         try:
             await client.disconnect()
         except Exception:
             pass
+
+
+async def _poll_limitless_rest_fill(
+    order_id: str,
+    api_key: str,
+    api_secret: str,
+    timeout_seconds: float = 30.0,
+    poll_interval: float = 2.0,
+) -> FillConfirmationResult:
+    """Fallback via REST: consulta get_clob_positions() para confirmar si la orden se llenó."""
+    try:
+        from limitless_sdk import Client, HMACCredentials
+        deadline = time.monotonic() + timeout_seconds
+        async with Client("https://api.limitless.exchange", hmac_credentials=HMACCredentials(token_id=api_key, secret=api_secret)) as client:
+            while time.monotonic() < deadline:
+                try:
+                    clob_data = await client.portfolio.get_clob_positions()
+                    found_live = False
+                    if isinstance(clob_data, list):
+                        for market_pos in clob_data:
+                            orders_info = market_pos.get("orders", {}) if isinstance(market_pos, dict) else {}
+                            live_orders = orders_info.get("liveOrders", []) if isinstance(orders_info, dict) else []
+                            for o in live_orders:
+                                if isinstance(o, dict) and o.get("id") == order_id:
+                                    found_live = True
+                                    orig = float(o.get("originalSize") or 1)
+                                    rem = float(o.get("remainingSize") or 1)
+                                    if rem < orig:
+                                        return FillConfirmationResult(True, f"REST fill parcial/total: rem={rem}/{orig}")
+                                    break
+                            if found_live:
+                                break
+                    # Si ya no está en liveOrders, verificar si se ejecutó
+                    if not found_live:
+                        return FillConfirmationResult(True, "REST orden completada (fuera del libro activo)")
+                except Exception:
+                    pass
+                await asyncio.sleep(poll_interval)
+            return FillConfirmationResult(False, "REST timeout esperando fill")
+    except Exception as e:
+        return FillConfirmationResult(False, f"REST check error: {e}")
 
 
 async def confirm_kalshi_fill(

@@ -107,9 +107,13 @@ class MakerTwoLegStrategy(BaseStrategy):
             self._diag["no_book"] += 1
             return None
 
-        # Book maker: comprar YES al bid; comprar NO al bid de NO (= 1 - yes_ask)
-        cost_yes = round(yes_bid, 4)
-        cost_no = round(1.0 - yes_ask, 4)
+        # Book maker pasivo:
+        # Colocamos la postura al bid, pero asegurándonos de estar estrictamente 1 tick (0.001)
+        # por debajo del ask para evitar que Limitless rechace con "Post-only order would execute immediately"
+        cost_yes = round(min(yes_bid, max(yes_ask - 0.001, 0.001)), 3)
+        # Para NO en mercado binario: el ask de NO es (1.0 - yes_bid)
+        cost_no_max = max((1.0 - yes_bid) - 0.001, 0.001)
+        cost_no = round(min(1.0 - yes_ask, cost_no_max), 3)
         if cost_no <= 0 or cost_yes <= 0:
             self._diag["no_book"] += 1
             return None
