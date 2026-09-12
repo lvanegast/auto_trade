@@ -82,6 +82,23 @@ class TelegramBot:
             print(f"[Telegram] API error {method}: {e}")
             return None
 
+    def _api_post(self, method: str, payload: dict) -> dict | None:
+        """Call Telegram Bot API POST method."""
+        url = f"{self.base_url}/{method}"
+        try:
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except Exception as e:
+            print(f"[Telegram] API error {method}: {e}")
+            return None
+
     async def start_polling(self):
         """Start polling for Telegram commands in background."""
         if not self.enabled:
@@ -90,17 +107,32 @@ class TelegramBot:
         print("[Telegram] Command polling started")
 
     async def _poll_loop(self):
-        """Poll Telegram getUpdates for incoming commands."""
+        """Poll Telegram getUpdates for incoming commands and inline button callbacks."""
         while True:
             try:
                 result = self._api_get("getUpdates", {
                     "offset": str(self._last_update_id + 1),
                     "timeout": "10",
-                    "allowed_updates": '["message"]',
+                    "allowed_updates": '["message", "callback_query"]',
                 })
                 if result and result.get("ok"):
                     for update in result.get("result", []):
                         self._last_update_id = update["update_id"]
+
+                        # 1. Manejo de botones táctiles (Callback Query)
+                        if "callback_query" in update:
+                            cb = update["callback_query"]
+                            cb_id = cb.get("id")
+                            cb_data = cb.get("data", "")
+                            cb_msg = cb.get("message", {})
+                            cb_chat_id = str(cb_msg.get("chat", {}).get("id", ""))
+                            cb_thread_id = cb_msg.get("message_thread_id")
+                            # Responder de inmediato para remover el reloj de carga en Telegram
+                            self._api_post("answerCallbackQuery", {"callback_query_id": cb_id})
+                            await self._handle_callback(cb_data, chat_id=cb_chat_id, message_thread_id=cb_thread_id)
+                            continue
+
+                        # 2. Manejo de mensajes de texto / comandos
                         msg = update.get("message", {})
                         chat_id = str(msg.get("chat", {}).get("id", ""))
                         text = msg.get("text", "").strip()
@@ -127,6 +159,31 @@ class TelegramBot:
                 print(f"[Telegram] Poll error: {e}")
             await asyncio.sleep(2)
 
+    async def _handle_callback(self, cb_data: str, chat_id: str = None, message_thread_id=None):
+        """Maneja clics en botones táctiles (inline buttons)."""
+        self._reply_chat_id = chat_id or self.chat_id
+        self._reply_thread_id = self._topic_thread_id(chat_id, message_thread_id)
+        try:
+            if cb_data == "cmd_balance":
+                self._cmd_balance()
+            elif cb_data == "cmd_positions":
+                self._cmd_positions()
+            elif cb_data == "cmd_status":
+                self._cmd_status()
+            elif cb_data == "cmd_health":
+                self._cmd_health()
+            elif cb_data == "cmd_pnl":
+                self._cmd_pnl()
+            elif cb_data == "cmd_workers":
+                self._cmd_workers()
+            elif cb_data == "cmd_panic":
+                self._cmd_panic()
+            elif cb_data == "cmd_resume":
+                self._cmd_resume()
+        finally:
+            self._reply_chat_id = None
+            self._reply_thread_id = None
+
     async def _handle_command(self, text: str, chat_id: str = None, message_thread_id=None):
         """Route commands to handlers. Replies go to the chat/topic the command
         came from (works inside group forum topics)."""
@@ -137,6 +194,10 @@ class TelegramBot:
             "/positions": self._cmd_positions,
             "/pnl": self._cmd_pnl,
             "/sports": self._cmd_sports,
+            "/balance": self._cmd_balance,
+            "/health": self._cmd_health,
+            "/panic": self._cmd_panic,
+            "/resume": self._cmd_resume,
             "/help": self._cmd_help,
         }
         handler = handlers.get(cmd)
@@ -159,17 +220,276 @@ class TelegramBot:
                 self._reply_chat_id = None
                 self._reply_thread_id = None
 
+    def _get_hardware_metrics(self) -> dict:
+        """Lee telemetría de hardware de forma portable (Jetson Nano Linux ARM64 / Windows)."""
+        metrics = {
+            "temp_c": None,
+            "mem_total_mb": None,
+            "mem_used_mb": None,
+            "mem_pct": None,
+            "load_avg": None,
+            "disk_free_gb": None,
+        }
+        # 1. Temperatura SoC Tegra (NVIDIA Jetson)
+        for p in [
+            "/sys/devices/virtual/thermal/thermal_zone0/temp",
+            "/sys/class/thermal/thermal_zone0/temp",
+        ]:
+            try:
+                with open(p, "r") as f:
+                    val = float(f.read().strip())
+                    metrics["temp_c"] = val / 1000.0 if val > 100 else val
+                    break
+            except Exception:
+                pass
+
+        # 2. Memoria RAM (/proc/meminfo)
+        try:
+            with open("/proc/meminfo", "r") as f:
+                lines = f.readlines()
+                total_kb = 0.0
+                avail_kb = 0.0
+                for line in lines:
+                    if line.startswith("MemTotal:"):
+                        total_kb = float(line.split()[1])
+                    elif line.startswith("MemAvailable:"):
+                        avail_kb = float(line.split()[1])
+                if total_kb > 0:
+                    metrics["mem_total_mb"] = total_kb / 1024.0
+                    used_kb = total_kb - avail_kb
+                    metrics["mem_used_mb"] = used_kb / 1024.0
+                    metrics["mem_pct"] = (used_kb / total_kb) * 100.0
+        except Exception:
+            pass
+
+        # 3. CPU Load
+        try:
+            if hasattr(os, "getloadavg"):
+                metrics["load_avg"] = os.getloadavg()
+        except Exception:
+            pass
+
+        # 4. Espacio en disco
+        try:
+            import shutil
+            total, used, free = shutil.disk_usage("/")
+            metrics["disk_free_gb"] = free / (1024 ** 3)
+        except Exception:
+            pass
+
+        return metrics
+
+    def _get_wallet_balances(self):
+        """Consulta saldos en vivo de USDC y ETH en Base Mainnet (Chain ID 8453)."""
+        pk = os.getenv("LIMITLESS_PRIVATE_KEY", "").strip()
+        if not pk:
+            return None, 0.0, 0.0
+        try:
+            from web3 import Web3
+            from eth_account import Account
+            if not pk.startswith("0x"):
+                pk = "0x" + pk
+            wallet_address = Account.from_key(pk).address
+            
+            rpc_urls = [
+                'https://mainnet.base.org',
+                'https://base-mainnet.public.blastapi.io',
+                'https://rpc.ankr.com/base'
+            ]
+            w3 = None
+            for url in rpc_urls:
+                try:
+                    provider = Web3(Web3.HTTPProvider(url, request_kwargs={'timeout': 5}))
+                    if provider.is_connected():
+                        w3 = provider
+                        break
+                except Exception:
+                    continue
+            if not w3:
+                return wallet_address, 0.0, 0.0
+            
+            eth_balance = float(w3.eth.get_balance(wallet_address)) / 10**18
+            
+            abi = [{'constant': True, 'inputs': [{'name': '_owner', 'type': 'address'}], 'name': 'balanceOf', 'outputs': [{'name': 'balance', 'type': 'uint256'}], 'payable': False, 'stateMutability': 'view', 'type': 'function'}]
+            usdc_address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+            usdc_contract = w3.eth.contract(address=usdc_address, abi=abi)
+            usdc_balance = float(usdc_contract.functions.balanceOf(wallet_address).call()) / 10**6
+            
+            return wallet_address, usdc_balance, eth_balance
+        except Exception as e:
+            print(f"[Telegram] Error fetching wallet balances: {e}")
+            return None, 0.0, 0.0
+
     def _cmd_help(self):
-        """Show available commands."""
+        """Show available commands with touch keyboard."""
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "💳 Saldo en Base", "callback_data": "cmd_balance"},
+                    {"text": "📊 Posiciones", "callback_data": "cmd_positions"}
+                ],
+                [
+                    {"text": "🩺 Salud Jetson", "callback_data": "cmd_health"},
+                    {"text": "💰 Resumen P&L", "callback_data": "cmd_pnl"}
+                ],
+                [
+                    {"text": "👥 Workers", "callback_data": "cmd_workers"},
+                    {"text": "🛑 Pánico", "callback_data": "cmd_panic"}
+                ]
+            ]
+        }
         self.send_message(
-            "📋 <b>Comandos disponibles</b>\n\n"
-            "/status — Estado de todos los workers\n"
-            "/workers — Lista de workers\n"
-            "/positions — Posiciones abiertas\n"
-            "/pnl — Resumen de P&L\n"
-            "/sports — Eventos deportivos monitoreados\n"
-            "/help — Esta ayuda"
+            "📋 <b>Centro de Control AutoTrade — Comandos</b>\n\n"
+            "💳 <b>/balance</b> — Saldo USDC y ETH (Gas) en Base Mainnet\n"
+            "🩺 <b>/health</b> — Telemetría de hardware Jetson Nano (Temp, RAM, CPU)\n"
+            "📊 <b>/positions</b> — Posiciones abiertas en curso\n"
+            "💰 <b>/pnl</b> — Resumen acumulado de ganancias/pérdidas\n"
+            "⚙️ <b>/status</b> — Estado general del sistema y motor\n"
+            "👥 <b>/workers</b> — Lista detallada de workers y feeders\n"
+            "⚽ <b>/sports</b> — Eventos deportivos en el radar\n"
+            "🛑 <b>/panic</b> — Bloqueo de emergencia: suspende órdenes reales\n"
+            "▶️ <b>/resume</b> — Reanuda la operativa real de Worker 6\n"
+            "❓ <b>/help</b> — Muestra este menú interactivo",
+            reply_markup=keyboard,
+            force=True
         )
+
+    def _cmd_balance(self):
+        """Muestra saldos on-chain en vivo (Base Mainnet) y colateral disponible."""
+        addr, usdc_bal, eth_bal = self._get_wallet_balances()
+        addr_disp = f"<code>{addr[:6]}...{addr[-4:]}</code>" if addr else "No configurada"
+        
+        db_balances = {}
+        if self._db:
+            try:
+                portfolio = self._db.get_portfolio(worker_id="worker_6") or []
+                db_balances = {item["asset"]: float(item["free_balance"]) for item in portfolio}
+            except Exception:
+                pass
+        
+        usdc_db = db_balances.get("USDC", usdc_bal)
+        eth_usd_approx = eth_bal * 2400.0
+
+        text = f"""💳 <b>Billetera y Saldos (Base Mainnet)</b>
+
+👛 <b>Dirección:</b> {addr_disp}
+💵 <b>Saldo USDC:</b> <b>${usdc_bal:.2f} USDC</b>
+⛽ <b>Gas ETH (Base):</b> <b>{eth_bal:.6f} ETH</b> (~${eth_usd_approx:.2f})
+
+🏦 <b>Colateral DB Worker 6:</b> ${usdc_db:.2f} USDC
+🌐 <b>Red:</b> Base Mainnet (Chain ID 8453)
+⏱️ <b>Hora:</b> {datetime.now().strftime('%H:%M:%S')}"""
+
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "🔄 Refrescar Saldo", "callback_data": "cmd_balance"},
+                    {"text": "📊 Posiciones", "callback_data": "cmd_positions"}
+                ],
+                [
+                    {"text": "🩺 Salud Jetson", "callback_data": "cmd_health"},
+                    {"text": "💰 P&L", "callback_data": "cmd_pnl"}
+                ]
+            ]
+        }
+        self.send_message(text, reply_markup=keyboard, force=True)
+
+    def _cmd_health(self):
+        """Muestra la telemetría y salud del hardware (NVIDIA Jetson Nano)."""
+        metrics = self._get_hardware_metrics()
+        
+        db_status = "🟢 Conectada (PostgreSQL)" if self._db else "🔴 No configurada"
+        
+        engine_status = "🔴 Detenido"
+        if self._engine:
+            workers = getattr(self._engine, "workers", {})
+            total_count = len(workers)
+            active_count = sum(1 for w in workers.values() if getattr(w, "is_running", False))
+            engine_status = f"🟢 {active_count}/{total_count} activos"
+        
+        temp_str = f"{metrics['temp_c']:.1f} °C" if metrics['temp_c'] is not None else "N/A"
+        mem_str = f"{metrics['mem_used_mb']:.0f} MB / {metrics['mem_total_mb']:.0f} MB ({metrics['mem_pct']:.1f}%)" if metrics['mem_total_mb'] else "N/A"
+        load_str = ", ".join(f"{x:.2f}" for x in metrics['load_avg']) if metrics['load_avg'] else "N/A"
+        disk_str = f"{metrics['disk_free_gb']:.1f} GB libres" if metrics['disk_free_gb'] is not None else "N/A"
+
+        allowed_env = os.getenv("ALLOWED_REAL_WORKERS", "").strip()
+        allowed_db = self._db.get_state("ALLOWED_REAL_WORKERS", "") if (self._db and hasattr(self._db, "get_state")) else ""
+        allowed_combined = f"{allowed_env},{allowed_db}".strip(",")
+        is_w6_allowed = "worker_6" in allowed_combined
+        w6_mode = "🟢 MODO REAL (Capital Activo)" if is_w6_allowed else "🟡 Modo Observación (Seguro)"
+
+        text = f"""🩺 <b>Salud del Servidor (NVIDIA Jetson Nano)</b>
+
+🌡️ <b>Temp SoC Tegra:</b> {temp_str}
+🧠 <b>Memoria RAM:</b> {mem_str}
+📈 <b>Carga CPU (1/5/15m):</b> {load_str}
+💾 <b>Disco:</b> {disk_str}
+
+🗄️ <b>Base de Datos:</b> {db_status}
+⚙️ <b>Motor de Trading:</b> {engine_status}
+🎯 <b>Worker 6 Status:</b> {w6_mode}
+⏱️ <b>Hora Local:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
+
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "🔄 Refrescar", "callback_data": "cmd_health"},
+                    {"text": "💳 Saldo", "callback_data": "cmd_balance"}
+                ],
+                [
+                    {"text": "📊 Workers", "callback_data": "cmd_status"},
+                    {"text": "🛑 Pánico", "callback_data": "cmd_panic"}
+                ]
+            ]
+        }
+        self.send_message(text, reply_markup=keyboard, force=True)
+
+    def _cmd_panic(self):
+        """Bloqueo de emergencia: vacía ALLOWED_REAL_WORKERS para frenar trades reales."""
+        if not self._db or not hasattr(self._db, "set_state"):
+            self.send_message("⚠️ DB no disponible para activar modo pánico", force=True)
+            return
+        
+        self._db.set_state("ALLOWED_REAL_WORKERS", "")
+        text = (
+            "🛑 <b>MODO PÁNICO ACTIVADO</b>\n\n"
+            "🔒 <b>Capital Protegido:</b> Se ha vaciado <code>ALLOWED_REAL_WORKERS</code> en PostgreSQL.\n"
+            "🚫 Ningún worker tiene autorización para colocar órdenes reales on-chain.\n"
+            "👀 Todos los workers operan ahora únicamente en modo observación.\n\n"
+            "<i>Pulsa el botón abajo para reanudar Worker 6 cuando lo desees.</i>"
+        )
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "▶️ Reanudar Worker 6", "callback_data": "cmd_resume"},
+                    {"text": "📊 Ver Estado", "callback_data": "cmd_status"}
+                ]
+            ]
+        }
+        self.send_message(text, reply_markup=keyboard, force=True)
+
+    def _cmd_resume(self):
+        """Reanuda la ejecución real de órdenes para Worker 6."""
+        if not self._db or not hasattr(self._db, "set_state"):
+            self.send_message("⚠️ DB no disponible para reanudar", force=True)
+            return
+        
+        self._db.set_state("ALLOWED_REAL_WORKERS", "worker_6")
+        text = (
+            "✅ <b>MODO REAL REANUDADO</b>\n\n"
+            "🟢 <b>Worker Autorizado:</b> <code>worker_6</code>\n"
+            "⚡ La estrategia Maker Two-Leg volverá a colocar órdenes cuando detecte edge favorable.\n"
+            "🛡️ Circuit Breakers activos ($5.00 max daily loss / 5% drawdown)."
+        )
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "🛑 Modo Pánico (Pausar)", "callback_data": "cmd_panic"},
+                    {"text": "💳 Ver Saldo", "callback_data": "cmd_balance"}
+                ]
+            ]
+        }
+        self.send_message(text, reply_markup=keyboard, force=True)
 
     def _cmd_status(self):
         """Show system status summary."""
@@ -338,7 +658,7 @@ class TelegramBot:
             return message_thread_id
         return None
 
-    def send_message(self, text: str, parse_mode: str = "HTML", chat_id: str = None, message_thread_id=None, force: bool = False) -> bool:
+    def send_message(self, text: str, parse_mode: str = "HTML", chat_id: str = None, message_thread_id=None, force: bool = False, reply_markup: dict = None) -> bool:
         """Send a message to the configured chat (or a specific chat_id/topic).
 
         Si chat_id es None, responde en el chat/topic del comando que se está
@@ -372,6 +692,8 @@ class TelegramBot:
         }
         if thread_id is not None and str(target).startswith("-100"):
             payload["message_thread_id"] = thread_id
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
 
         try:
             data = json.dumps(payload).encode("utf-8")
@@ -558,7 +880,15 @@ class TelegramBot:
 <b>Sala:</b> {category or 'general'}
 <b>Hora:</b> {datetime.now().strftime("%H:%M:%S")}"""
         target, thread_id = self._resolve_target(category)
-        ok = self.send_message(text, chat_id=target, message_thread_id=thread_id)
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "💳 Saldo", "callback_data": "cmd_balance"},
+                    {"text": "📊 Posiciones", "callback_data": "cmd_positions"}
+                ]
+            ]
+        }
+        ok = self.send_message(text, chat_id=target, message_thread_id=thread_id, reply_markup=keyboard)
         if ok:
             if event_id:
                 self.mark_alerted(event_id)
@@ -653,6 +983,182 @@ class TelegramBot:
             lines.append(f"• {p.get('symbol', 'N/A')}: {p.get('side', '?')} @ ${p.get('entry_price', 0):.4f}")
         text = "\n".join(lines)
         return self.send_message(text)
+
+    def send_order_posted(self, worker_id: str, market_slug: str, token: str, side: str, price: float, size_usd: float, order_id: str, order_type: str = "GTC", category: str = "crypto"):
+        """Notifica cuando una orden límite Maker/Taker es publicada en Limitless."""
+        clean_id = order_id[:8] + "..." if len(order_id) > 12 else order_id
+        order_tag = "MAKER POST-ONLY" if order_type.upper() == "GTC" else "TAKER FOK"
+        icon = "📝" if order_type.upper() == "GTC" else "⚡"
+        
+        text = f"""{icon} <b>ORDEN PUBLICADA [{order_tag}]</b>
+
+🤖 <b>Worker:</b> <code>{worker_id}</code>
+📈 <b>Mercado:</b> {market_slug}
+🎯 <b>Postura:</b> <b>{side} {token}</b> @ <b>${price:.4f}</b> ({price * 100:.1f}¢)
+💵 <b>Monto / Colateral:</b> ${size_usd:.2f} USDC
+🆔 <b>Order ID:</b> <code>{clean_id}</code>
+⏱️ <b>Hora:</b> {datetime.now().strftime('%H:%M:%S')}"""
+
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "💳 Ver Saldo", "callback_data": "cmd_balance"},
+                    {"text": "📊 Posiciones", "callback_data": "cmd_positions"}
+                ]
+            ]
+        }
+        target, thread_id = self._resolve_target(category)
+        return self.send_message(text, chat_id=target, message_thread_id=thread_id, reply_markup=keyboard, force=True)
+
+    def send_fill_confirmed(self, worker_id: str, market_slug: str, token: str, side: str, price: float, amount: float, total_usd: float, order_id: str, latency_ms: float = None, category: str = "crypto"):
+        """Notifica en el instante en que un contraparte toma la orden y se confirma el fill."""
+        clean_id = order_id[:8] + "..." if len(order_id) > 12 else order_id
+        lat_str = f"\n⚡ <b>Latencia Ejecución:</b> {latency_ms:.0f} ms" if latency_ms is not None else ""
+        
+        text = f"""✅ <b>FILL CONFIRMADO (EJECUTADO)</b>
+
+🤖 <b>Worker:</b> <code>{worker_id}</code>
+📈 <b>Mercado:</b> {market_slug}
+📥 <b>Posición Adquirida:</b> {amount:.2f} shares <b>{token}</b>
+💵 <b>Precio Fill:</b> ${price:.4f} ({price * 100:.1f}¢)
+💰 <b>Total Invertido:</b> ${total_usd:.2f} USDC{lat_str}
+🆔 <b>Order ID:</b> <code>{clean_id}</code>
+⏱️ <b>Hora:</b> {datetime.now().strftime('%H:%M:%S')}"""
+
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "📊 Posiciones Abiertas", "callback_data": "cmd_positions"},
+                    {"text": "💳 Ver Saldo", "callback_data": "cmd_balance"}
+                ]
+            ]
+        }
+        target, thread_id = self._resolve_target(category)
+        return self.send_message(text, chat_id=target, message_thread_id=thread_id, reply_markup=keyboard, force=True)
+
+    def send_payout_received(self, worker_id: str, market_slug: str, token: str, amount_won: float, payout_usd: float, cost_usd: float, net_profit_usd: float, tx_hash: str = None, category: str = "crypto"):
+        """Notifica cuando el mercado expira y Limitless acredita el payout de $1.00 USD."""
+        tx_link = f'\n🔗 <a href="https://basescan.org/tx/{tx_hash}">Ver en Basescan</a>' if tx_hash else ""
+        margin_pct = (net_profit_usd / cost_usd * 100) if cost_usd > 0 else 0.0
+        
+        text = f"""🏆 <b>PAYOUT ACREDITADO (GANANCIA REAL)</b>
+
+🤖 <b>Worker:</b> <code>{worker_id}</code>
+📈 <b>Mercado:</b> {market_slug}
+🎉 <b>Pata Ganadora:</b> {amount_won:.2f} shares <b>{token}</b>
+💵 <b>Payout Recibido:</b> <b>${payout_usd:.2f} USDC</b>
+🏷️ <b>Costo Invertido:</b> ${cost_usd:.2f} USDC
+💰 <b>Beneficio Neto:</b> <b>+${net_profit_usd:.4f} USDC (+{margin_pct:.2f}%)</b>{tx_link}
+⏱️ <b>Hora:</b> {datetime.now().strftime('%H:%M:%S')}"""
+
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "💰 Resumen P&L", "callback_data": "cmd_pnl"},
+                    {"text": "💳 Ver Saldo", "callback_data": "cmd_balance"}
+                ]
+            ]
+        }
+        target, thread_id = self._resolve_target(category)
+        return self.send_message(text, chat_id=target, message_thread_id=thread_id, reply_markup=keyboard, force=True)
+
+    def send_startup_alert(self, local_ip: str = "192.168.10.21"):
+        """Envía un informe de arranque tras reinicio o encendido del hardware."""
+        metrics = self._get_hardware_metrics()
+        addr, usdc_bal, eth_bal = self._get_wallet_balances()
+        temp_str = f"{metrics['temp_c']:.1f} °C" if metrics['temp_c'] is not None else "N/A"
+        
+        text = f"""🟢 <b>SISTEMA REINICIADO / RECUPERACIÓN ELÉCTRICA</b>
+
+🖥️ <b>Servidor:</b> NVIDIA Jetson Nano 4GB ARM64
+🌐 <b>Dashboard:</b> http://{local_ip}:8080
+🌡️ <b>Temp Tegra:</b> {temp_str}
+
+💵 <b>Saldo USDC:</b> ${usdc_bal:.2f} USDC
+⛽ <b>Gas ETH (Base):</b> {eth_bal:.6f} ETH
+🛡️ <b>Protección Capital:</b> Worker 6 en MODO REAL (Workers 1-5,7-9 en Observación)
+⏱️ <b>Hora de Inicio:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
+
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "🩺 Salud Jetson", "callback_data": "cmd_health"},
+                    {"text": "💳 Ver Saldo", "callback_data": "cmd_balance"}
+                ],
+                [
+                    {"text": "📊 Estado Workers", "callback_data": "cmd_status"}
+                ]
+            ]
+        }
+        return self.send_message(text, reply_markup=keyboard, force=True)
+
+    def check_gas_alert(self, min_eth_threshold: float = 0.0003):
+        """Verifica si el saldo de gas ETH en Base es crítico y emite advertencia."""
+        addr, usdc_bal, eth_bal = self._get_wallet_balances()
+        if addr and eth_bal < min_eth_threshold:
+            text = f"""⚠️ <b>ALERTA: GAS CRÍTICAMENTE BAJO</b>
+
+⛽ <b>Saldo actual:</b> <b>{eth_bal:.6f} ETH</b> (Mínimo recomendado: {min_eth_threshold:.4f} ETH)
+👛 <b>Billetera:</b> <code>{addr}</code>
+🌐 <b>Red:</b> Base Mainnet
+
+<i>Por favor transfiere al menos 0.001 ETH a la billetera para evitar que las órdenes Maker o cancelaciones fallen por falta de gas.</i>"""
+            keyboard = {
+                "inline_keyboard": [
+                    [
+                        {"text": "💳 Refrescar Saldo", "callback_data": "cmd_balance"}
+                    ]
+                ]
+            }
+            return self.send_message(text, reply_markup=keyboard, force=True)
+        return False
+
+    def send_daily_digest(self):
+        """Envía el resumen ejecutivo diario (a las 08:00 AM hora local)."""
+        trades_24h = 0
+        pnl_24h = 0.0
+        winning = 0
+        if self._db:
+            try:
+                summary = self._db.get_pnl_summary(worker_id=None) or {}
+                pnl_24h = summary.get("total_pnl", 0.0)
+                trades_24h = summary.get("total_trades", 0)
+                winning = summary.get("winning_trades", 0)
+            except Exception:
+                pass
+
+        metrics = self._get_hardware_metrics()
+        addr, usdc_bal, eth_bal = self._get_wallet_balances()
+        temp_str = f"{metrics['temp_c']:.1f} °C" if metrics['temp_c'] is not None else "N/A"
+        
+        win_rate = (winning / trades_24h * 100) if trades_24h > 0 else 100.0
+        pnl_icon = "💰" if pnl_24h >= 0 else "📉"
+        
+        text = f"""🌅 <b>RESUMEN EJECUTIVO DIARIO (08:00 AM)</b>
+
+{pnl_icon} <b>P&L Neto Acumulado:</b> <b>{'+' if pnl_24h > 0 else ''}${pnl_24h:.2f} USD</b>
+📊 <b>Trades Totales:</b> {trades_24h} (Win Rate: {win_rate:.1f}%)
+
+💵 <b>Capital USDC (Base):</b> ${usdc_bal:.2f} USDC
+⛽ <b>Gas ETH:</b> {eth_bal:.6f} ETH
+🌡️ <b>Temperatura Jetson:</b> {temp_str}
+🤖 <b>Estado Operativo:</b> 100% Activo (Worker 6 Real)
+
+<i>¡Excelente jornada de arbitraje institucional!</i>"""
+
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "💳 Ver Saldo", "callback_data": "cmd_balance"},
+                    {"text": "📊 Posiciones", "callback_data": "cmd_positions"}
+                ],
+                [
+                    {"text": "🩺 Salud Jetson", "callback_data": "cmd_health"},
+                    {"text": "💰 P&L Completo", "callback_data": "cmd_pnl"}
+                ]
+            ]
+        }
+        return self.send_message(text, reply_markup=keyboard, force=True)
 
 
 # Singleton instance

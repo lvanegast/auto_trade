@@ -22,8 +22,6 @@ security_guard.set_db(db)
 
 # Inicializar Telegram Bot
 from src.telegram_bot import telegram_bot
-if telegram_bot.enabled:
-    telegram_bot.send_alert("system", "Bot de AutoTrade iniciado en Railway")
 
 # Inicializar FastAPI
 app = FastAPI(
@@ -73,6 +71,11 @@ async def startup_event():
     if telegram_bot.enabled:
         telegram_bot.configure(db, engine)
         await telegram_bot.start_polling()
+        try:
+            telegram_bot.send_startup_alert()
+        except Exception as se:
+            print(f"[Telegram Startup Alert Error] {se}")
+        asyncio.create_task(_telegram_background_scheduler())
 
     # Configuración para auto-iniciar el bot al encender el contenedor (por defecto true)
     auto_start = os.getenv("AUTO_START", "true").lower() == "true"
@@ -92,6 +95,44 @@ async def startup_event():
             "INFO",
             "API Backend de FastAPI iniciada y lista para recibir comandos (Auto-start desactivado).",
         )
+
+
+async def _telegram_background_scheduler():
+    """Ejecuta chequeos periódicos de gas y programa el Daily Digest a las 08:00 AM Colombia (13:00 UTC)."""
+    import time
+    last_gas_check = 0.0
+    last_digest_day = None
+    
+    while True:
+        try:
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            now_ts = time.time()
+            
+            # 1. Chequeo de Gas ETH en Base cada 30 minutos (1800s)
+            if now_ts - last_gas_check >= 1800:
+                last_gas_check = now_ts
+                if telegram_bot.enabled:
+                    try:
+                        telegram_bot.check_gas_alert(min_eth_threshold=0.0003)
+                    except Exception as ge:
+                        print(f"[Telegram Gas Check Error] {ge}")
+
+            # 2. Resumen Ejecutivo Diario: 08:00 AM Colombia (UTC-5) = 13:00 UTC
+            today_str = now_utc.strftime("%Y-%m-%d")
+            if now_utc.hour == 13 and 0 <= now_utc.minute <= 5 and last_digest_day != today_str:
+                last_digest_day = today_str
+                if telegram_bot.enabled:
+                    try:
+                        telegram_bot.send_daily_digest()
+                    except Exception as de:
+                        print(f"[Telegram Daily Digest Error] {de}")
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[Telegram Scheduler Error] {e}")
+            
+        await asyncio.sleep(60)
 
 
 @app.on_event("shutdown")

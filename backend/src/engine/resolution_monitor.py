@@ -312,6 +312,28 @@ class ResolutionMonitor:
                                     f"[Redeem] Pata ganadora {pos_symbol} redimida on-chain: tx={redeem_result.tx_hash}",
                                     self.worker_id,
                                 )
+                                try:
+                                    from src.telegram_bot import telegram_bot
+                                    if telegram_bot.enabled:
+                                        _shares = float(pos.get("amount", 0) or 0)
+                                        _entry = float(pos.get("entry_price", 0) or 0)
+                                        _cost = _shares * _entry
+                                        _payout = _shares * 1.0
+                                        _profit = _payout - _cost
+                                        _cat = "crypto" if ("up-or-down" in market_slug or "crypto" in market_slug.lower()) else "sports"
+                                        telegram_bot.send_payout_received(
+                                            worker_id=self.worker_id,
+                                            market_slug=market_slug,
+                                            token=leg_token,
+                                            amount_won=_shares,
+                                            payout_usd=_payout,
+                                            cost_usd=_cost,
+                                            net_profit_usd=_profit,
+                                            tx_hash=redeem_result.tx_hash,
+                                            category=_cat,
+                                        )
+                                except Exception as _e_payout:
+                                    print(f"[ResolutionMonitor TG Payout Error] {_e_payout}")
                             else:
                                 self.db.log(
                                     "CRITICAL",
