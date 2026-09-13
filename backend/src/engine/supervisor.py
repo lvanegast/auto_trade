@@ -601,6 +601,8 @@ class TradingWorker:
                         # así que no hay duplicados de Telegram entre workers.
                         await self._resolve_expired_positions_simulated()
                         await self._check_market_resolutions()
+                        if self.feeder_type == "maker_two_leg":
+                            await self._sync_maker_resting_orders()
                 except Exception as e:
                     print(f"[Sync Error] Error en sincronización periódica: {e}")
 
@@ -761,6 +763,116 @@ class TradingWorker:
 
         if client:
             await client.close()
+
+    async def _sync_maker_resting_orders(self):
+        """Monitorea órdenes Maker resting de Worker 6: adverse selection, expiración y fills."""
+        try:
+            from src.engine.maker_taker_coordinator import maker_taker_coordinator
+            active_orders = maker_taker_coordinator.get_active_orders(self.worker_id)
+            if not active_orders:
+                return
+
+            api_key = self.limitless_api_key or os.getenv("LIMITLESS_API_KEY")
+            api_secret = self.limitless_api_secret or os.getenv("LIMITLESS_API_SECRET")
+            if not api_key or not api_secret:
+                return
+
+            from limitless_sdk import Client, HMACCredentials
+            from limitless_sdk.orders import OrderClient
+
+            async with Client("https://api.limitless.exchange", hmac_credentials=HMACCredentials(token_id=api_key, secret=api_secret)) as client:
+                order_client = OrderClient(client)
+
+                # 1. Chequeo de Adverse Selection (Binance Oráculo)
+                for ord_info in list(active_orders):
+                    is_jump, jump_reason = maker_taker_coordinator.check_adverse_selection(ord_info.order_id)
+                    if is_jump:
+                        self.db.log(
+                            "WARNING",
+                            f"[AdverseSelection] Cancelando orden Maker {ord_info.order_id[:8]} por salto en Binance: {jump_reason}",
+                            self.worker_id,
+                        )
+                        try:
+                            await order_client.cancel(ord_info.order_id)
+                        except Exception:
+                            pass
+                        maker_taker_coordinator.mark_cancelled(ord_info.order_id, jump_reason)
+
+                # 2. Consultar clob positions para detectar fills
+                active_orders = maker_taker_coordinator.get_active_orders(self.worker_id)
+                if not active_orders:
+                    return
+
+                try:
+                    clob_data = await client.portfolio.get_clob_positions()
+                    live_order_ids = set()
+                    if isinstance(clob_data, list):
+                        for mpos in clob_data:
+                            orders_info = mpos.get("orders", {}) if isinstance(mpos, dict) else {}
+                            for lo in orders_info.get("liveOrders", []) if isinstance(orders_info, dict) else []:
+                                if isinstance(lo, dict) and lo.get("id"):
+                                    live_order_ids.add(lo.get("id"))
+
+                    for ord_info in active_orders:
+                        if ord_info.order_id not in live_order_ids:
+                            # La orden ya no está viva en el libro: ¡SE LLENÓ!
+                            maker_taker_coordinator.mark_filled(ord_info.order_id)
+                            try:
+                                if hasattr(self.db, "execute"):
+                                    self.db.execute(
+                                        "UPDATE trades SET status = 'COMPLETED' WHERE external_order_id = %s;",
+                                        (ord_info.order_id,),
+                                    )
+                            except Exception:
+                                pass
+
+                            self.db.log(
+                                "INFO",
+                                f"🎯 [Fill Confirmado] Pata Maker {ord_info.leg_name} llenada on-chain en {ord_info.market_slug}",
+                                self.worker_id,
+                            )
+
+                            try:
+                                from src.telegram_bot import telegram_bot
+                                if telegram_bot.enabled:
+                                    telegram_bot.send_fill_confirmed(
+                                        worker_id=self.worker_id,
+                                        market_slug=ord_info.market_slug,
+                                        token=ord_info.leg_name,
+                                        side=ord_info.side,
+                                        price=float(ord_info.price),
+                                        amount=ord_info.shares,
+                                        total_usd=float(ord_info.spend_amount),
+                                        order_id=ord_info.order_id,
+                                        latency_ms=None,
+                                        category="crypto",
+                                    )
+                            except Exception:
+                                pass
+
+                    # 3. Evaluar pares para Guardrail FOK
+                    slugs = set(o.market_slug for o in active_orders)
+                    for slug in slugs:
+                        from src.limitless_price_cache import get_limitless_executable_price
+                        book = get_limitless_executable_price(slug)
+                        if book:
+                            yes_ask = book.get("yes_ask", 0.0)
+                            no_ask = book.get("no_ask", 0.0)
+                            status, fok_sig = maker_taker_coordinator.evaluate_pair(slug, yes_ask, no_ask, max_unhedged_wait_s=15.0)
+                            if fok_sig is not None:
+                                self.db.log(
+                                    "WARNING",
+                                    f"[Guardrail FOK Activado] Disparando orden Taker FOK a mercado para {fok_sig.symbol} tras asimetría de llenado",
+                                    self.worker_id,
+                                )
+                                try:
+                                    await self._execute_order(fok_sig)
+                                except Exception as e_fok:
+                                    self.db.log("ERROR", f"[Guardrail FOK Error] Falló ejecución de cobertura FOK: {e_fok}", self.worker_id)
+                except Exception as e_clob:
+                    pass
+        except Exception as e_sync:
+            pass
 
     async def _check_market_resolutions(self):
         """
@@ -1809,27 +1921,67 @@ class TradingWorker:
                         
                         order_id = response.order.id if hasattr(response, "order") and response.order else "N/A"
 
-                        # CONFIRMACIÓN DE FILL: post_only=True garantiza que la orden GTC
-                        # NUNCA se llena en el instante de creación (se rechaza si cruzaría) —
-                        # "se creó sin error" no es "se llenó". Sin esto, una pata que queda
-                        # descansando sin llenarse en el libro se registraba como COMPLETED
-                        # igual, dejando la canasta 1xN sin cobertura real y sin que el
-                        # FillGuard se enterara.
+                        # GTC = limit maker post-only (0% fees). FOK = taker (fill or kill).
                         if is_gtc:
-                            timeout_s = float(os.getenv("LIMITLESS_FILL_CONFIRM_TIMEOUT_SECONDS", "30"))
-                            from src.engine.fill_confirmation import confirm_limitless_fill
-                            confirm = await confirm_limitless_fill(
-                                order_id, api_key, api_secret, timeout_seconds=timeout_s
-                            )
-                            if not confirm.filled:
-                                try:
-                                    await order_client.cancel(order_id)
-                                except Exception:
-                                    pass
-                                raise RuntimeError(
-                                    f"rejected: orden Limitless {order_id} no confirmó fill "
-                                    f"({confirm.reason}), orden cancelada"
+                            if self.feeder_type == "maker_two_leg":
+                                # Enfoque Maker Two-Leg Asíncrono (Simultáneo):
+                                # La orden Maker ya fue aceptada en el CLOB (order_id).
+                                # NO bloqueamos el hilo esperando 30 segundos; la registramos como RESTING
+                                # para que la Pata 2 se envíe de inmediato y ambas queden vivas en el libro.
+                                from src.engine.maker_taker_coordinator import maker_taker_coordinator, RestingMakerOrder
+                                
+                                target_asset = None
+                                for sym in ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]:
+                                    if sym.lower() in market_slug.lower():
+                                        target_asset = sym
+                                        break
+
+                                resting_ord = RestingMakerOrder(
+                                    order_id=str(order_id),
+                                    worker_id=self.worker_id,
+                                    market_slug=market_slug,
+                                    token_id=str(token_id),
+                                    side=signal.side,
+                                    price=float(price),
+                                    spend_amount=float(spend_amount),
+                                    shares=float(spend_amount / price) if price > 0 else 0.0,
+                                    leg_name="YES" if "_YES" in signal.symbol else "NO",
+                                    hedge_token_id="",
+                                    hedge_leg_name="NO" if "_YES" in signal.symbol else "YES",
+                                    hedge_max_price=float(1.0 - price),
+                                    target_asset=target_asset,
                                 )
+                                maker_taker_coordinator.register_order(resting_ord)
+
+                                # Registrar en par si ya existe la otra pata
+                                existing_active = [o for o in maker_taker_coordinator.get_active_orders(self.worker_id) if o.market_slug == market_slug and o.order_id != str(order_id)]
+                                if existing_active:
+                                    other = existing_active[0]
+                                    yes_id = str(order_id) if "_YES" in signal.symbol else other.order_id
+                                    no_id = other.order_id if "_YES" in signal.symbol else str(order_id)
+                                    maker_taker_coordinator.register_pair(
+                                        market_slug=market_slug,
+                                        yes_order_id=yes_id,
+                                        no_order_id=no_id,
+                                        target_total_cost=round(float(price) + other.price, 4),
+                                        worker_id=self.worker_id,
+                                    )
+                                    self.db.log("INFO", f"💎 [Maker Two-Leg] Par registrado en el libro: YES={yes_id[:8]} + NO={no_id[:8]}", self.worker_id)
+                            else:
+                                timeout_s = float(os.getenv("LIMITLESS_FILL_CONFIRM_TIMEOUT_SECONDS", "30"))
+                                from src.engine.fill_confirmation import confirm_limitless_fill
+                                confirm = await confirm_limitless_fill(
+                                    order_id, api_key, api_secret, timeout_seconds=timeout_s
+                                )
+                                if not confirm.filled:
+                                    try:
+                                        await order_client.cancel(order_id)
+                                    except Exception:
+                                        pass
+                                    raise RuntimeError(
+                                        f"rejected: orden Limitless {order_id} no confirmó fill "
+                                        f"({confirm.reason}), orden cancelada"
+                                    )
                         else:
                             # FOK: fill-or-kill. Sin maker_matches, se mató sin llenar nada.
                             if not getattr(response, "maker_matches", None):
@@ -1842,6 +1994,7 @@ class TradingWorker:
                         _s_ms = getattr(signal, '_strategy_latency_ms', None)
                         _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
                         
+                        trade_status = "RESTING" if (is_gtc and self.feeder_type == "maker_two_leg") else "COMPLETED"
                         self.db.save_trade(
                             symbol=pos_symbol,
                             side=signal.side,
@@ -1849,7 +2002,7 @@ class TradingWorker:
                             amount=spend_amount / price if signal.side == "BUY" else spend_amount,
                             total=spend_amount,
                             external_order_id=str(order_id),
-                            status="COMPLETED",
+                            status=trade_status,
                             worker_id=self.worker_id,
                             position_id=getattr(signal, "position_id", None),
                             latency_ms=_total_ms,
@@ -1858,23 +2011,25 @@ class TradingWorker:
                             execution_latency_ms=_exec_ms,
                         )
 
-                        try:
-                            from src.telegram_bot import telegram_bot
-                            if telegram_bot.enabled:
-                                telegram_bot.send_fill_confirmed(
-                                    worker_id=self.worker_id,
-                                    market_slug=market_slug,
-                                    token=token,
-                                    side=signal.side,
-                                    price=float(price),
-                                    amount=spend_amount / price if signal.side == "BUY" else spend_amount,
-                                    total_usd=float(spend_amount),
-                                    order_id=str(order_id),
-                                    latency_ms=_exec_ms,
-                                    category="crypto" if ("crypto" in self.symbol.lower() or "up-or-down" in market_slug) else "sports"
-                                )
-                        except Exception as _tg_err:
-                            print(f"[Supervisor TG Fill Error] {_tg_err}")
+                        # Solo enviar notificación a Telegram si se llenó de inmediato (no si queda resting)
+                        if trade_status == "COMPLETED":
+                            try:
+                                from src.telegram_bot import telegram_bot
+                                if telegram_bot.enabled:
+                                    telegram_bot.send_fill_confirmed(
+                                        worker_id=self.worker_id,
+                                        market_slug=market_slug,
+                                        token=token,
+                                        side=signal.side,
+                                        price=float(price),
+                                        amount=spend_amount / price if signal.side == "BUY" else spend_amount,
+                                        total_usd=float(spend_amount),
+                                        order_id=str(order_id),
+                                        latency_ms=_exec_ms,
+                                        category="crypto" if ("crypto" in self.symbol.lower() or "up-or-down" in market_slug) else "sports"
+                                    )
+                            except Exception as _tg_err:
+                                print(f"[Supervisor TG Fill Error] {_tg_err}")
                         
                         # Sync portfolio values (USDC lives on Base MAINNET, not Sepolia)
                         wallet_address = order_client.wallet_address
