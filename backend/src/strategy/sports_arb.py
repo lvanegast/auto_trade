@@ -407,7 +407,7 @@ class SportsArbitrageStrategy(BaseStrategy):
                 f"Sets: {num_sets:.2f} | "
                 f"Total cost: ${total_cost:.4f} | "
                 f"Guaranteed profit: ${expected_profit * num_sets:.4f} | "
-                f"LIMIT ORDER (maker=0% fee)"
+                f"TAKER FOK (instant fill on ask)"
             )
 
             # Suffix platform to track in DB
@@ -422,7 +422,7 @@ class SportsArbitrageStrategy(BaseStrategy):
                     amount=None,
                     position_id=None,
                     position_size_usd=outcome_amount,
-                    order_type="GTC",
+                    order_type="FOK",
                 )
             )
 
