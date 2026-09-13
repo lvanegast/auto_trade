@@ -61,6 +61,7 @@ class SignalEvent(TradingEvent):
         position_id: int = None,
         position_size_usd: float = None,
         order_type: str = None,
+        is_hedge: bool = False,
     ):
         super().__init__("SIGNAL")
         self.symbol = symbol
@@ -71,6 +72,7 @@ class SignalEvent(TradingEvent):
         self.position_id = position_id
         self.position_size_usd = position_size_usd
         self.order_type = order_type  # 'GTC' for limit orders (maker=0% fee), None for market orders
+        self.is_hedge = is_hedge
 
     def __str__(self):
         amount_str = f" x {self.amount}" if self.amount is not None else ""

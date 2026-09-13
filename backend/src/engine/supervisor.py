@@ -1407,7 +1407,26 @@ class TradingWorker:
 
         # SecurityGuard: pre-trade check (skip for SELL — closing positions should never be blocked)
         if signal.side != "SELL":
-            can_trade, reason = security_guard.can_trade(self.worker_id)
+            is_hedge = (
+                getattr(signal, "is_hedge", False)
+                or (
+                    signal.order_type == "FOK"
+                    and (
+                        "Hedge" in getattr(signal, "reason", "")
+                        or "Taker Hedge" in getattr(signal, "reason", "")
+                    )
+                )
+            )
+            sig_sym = getattr(signal, "symbol", "") or ""
+            parsed_slug = sig_sym.replace("limitless_crypto_", "").replace("oracle_", "")
+            for sfx in ("_YES", "_NO", "-YES", "-NO"):
+                if parsed_slug.endswith(sfx):
+                    parsed_slug = parsed_slug[:-len(sfx)]
+                    break
+
+            can_trade, reason = security_guard.can_trade(
+                self.worker_id, is_hedge=is_hedge, market_slug=parsed_slug
+            )
             if not can_trade:
                 self.db.log(
                     "WARNING",

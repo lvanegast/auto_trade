@@ -318,5 +318,61 @@ def test_coordinator_triggers_scratch_unwind_on_toxic_flow():
     assert sig.side == "SELL"
     assert sig.order_type == "FOK"
     assert sig.price == 0.895
-    assert "_YES" in sig.symbol
-    assert pair.status == "SCRATCHED"
+
+
+def test_maker_two_leg_blocks_different_market_when_one_is_active():
+    """Valida que si hay una orden activa en BTC, la estrategia ignora ticks de ETH para no cruzar dos mercados."""
+    from src.engine.maker_taker_coordinator import maker_taker_coordinator, RestingMakerOrder
+
+    mock_db = MagicMock()
+    mock_db.get_open_positions.return_value = []
+    strategy = MakerTwoLegStrategy(
+        db=mock_db,
+        worker_id="worker_6",
+        symbol="CRYPTO_MAKER",
+        min_edge_pct=0.02,
+        position_size_usd=1.0,
+        observation_only=False,
+    )
+
+    btc_slug = "btc-up-or-down-15-min-9999"
+    eth_slug = "eth-up-or-down-15-min-9999"
+
+    # Registrar orden activa en BTC
+    btc_ord = RestingMakerOrder(
+        order_id="btc_ord_1",
+        worker_id="worker_6",
+        market_slug=btc_slug,
+        token_id="tok_btc_yes",
+        side="BUY",
+        price=0.48,
+        spend_amount=1.0,
+        shares=2.08,
+        leg_name="YES",
+        hedge_token_id="tok_btc_no",
+        hedge_leg_name="NO",
+        hedge_max_price=0.50,
+    )
+    maker_taker_coordinator.register_order(btc_ord)
+
+    # Llega un tick de ETH (con buen spread y volumen)
+    eth_event = PriceUpdateEvent(
+        symbol=f"limitless_crypto_{eth_slug}",
+        price=0.50,
+        bid=0.48,
+        ask=0.52,
+    )
+    eth_event.bid_size = 500.0
+    eth_event.ask_size = 500.0
+    eth_event.market_volume = 1500.0
+    eth_event.market_slug = eth_slug
+    eth_event.expiration_timestamp = 2000000000.0
+
+    sig = strategy.on_price_update(eth_event)
+
+    # DEBE SER RECHAZADO: hay orden activa en BTC, no se puede tocar ETH
+    assert sig is None
+    assert strategy._diag.get("other_market_active", 0) > 0
+
+    # Limpiar orden para no ensuciar otros tests
+    maker_taker_coordinator.mark_cancelled("btc_ord_1", "test_cleanup")

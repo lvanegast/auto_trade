@@ -418,6 +418,7 @@ class MakerTakerCoordinator:
             position_size_usd=spend_usd,
             position_id=None,
             order_type="FOK",
+            is_hedge=True,
         )
 
     def build_scratch_signal(self, order: RestingMakerOrder, current_bid: float) -> SignalEvent:

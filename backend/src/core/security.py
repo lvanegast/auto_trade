@@ -6,6 +6,7 @@ import os
 import time
 import datetime
 import logging
+from typing import Optional
 
 logger = logging.getLogger("security")
 
@@ -45,9 +46,20 @@ class SecurityGuard:
         """Set database manager instance."""
         self.db = db
 
-    def can_trade(self, worker_id: str) -> tuple[bool, str]:
+    def can_trade(
+        self,
+        worker_id: str,
+        is_hedge: bool = False,
+        market_slug: Optional[str] = None,
+    ) -> tuple[bool, str]:
         if self._backtesting:
             return True, "OK"
+
+        # REGLA CRÍTICA DE ARBITRAJE PURO:
+        # Una orden de cobertura (hedge) o de cierre (scratch) REDUCE el riesgo y completa la neutralidad delta.
+        # NUNCA debe ser bloqueada por límites de posición, cooldowns o trades/minuto.
+        if is_hedge:
+            return True, "OK_HEDGE"
 
         if self.db and hasattr(self.db, "get_state"):
             try:
@@ -88,11 +100,22 @@ class SecurityGuard:
             )
 
         if self.db:
-            open_positions = self.db.get_open_positions(worker_id=worker_id)
-            if len(open_positions) >= self.max_concurrent_positions:
+            open_positions = self.db.get_open_positions(worker_id=worker_id) or []
+            # Agrupar por mercado único para no penalizar que un arbitraje 1xN tenga múltiples patas
+            open_market_slugs = set()
+            for pos in open_positions:
+                sym = pos.get("symbol", "")
+                base_sym = sym.rsplit("_", 1)[0] if ("_YES" in sym or "_NO" in sym) else sym
+                open_market_slugs.add(base_sym)
+
+            # Si la orden entrante es una pata del mismo mercado ya abierto, permitir completar la canasta
+            if market_slug and any(market_slug in s for s in open_market_slugs):
+                return True, "OK_SAME_MARKET"
+
+            if len(open_market_slugs) >= self.max_concurrent_positions:
                 return (
                     False,
-                    f"Máximo de posiciones simultáneas alcanzado para {worker_id}: {len(open_positions)}/{self.max_concurrent_positions}",
+                    f"Máximo de mercados simultáneos alcanzado para {worker_id}: {len(open_market_slugs)}/{self.max_concurrent_positions}",
                 )
 
         return True, "OK"

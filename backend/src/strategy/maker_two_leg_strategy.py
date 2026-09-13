@@ -116,6 +116,29 @@ class MakerTwoLegStrategy(BaseStrategy):
             self._diag["asset_filtered"] = self._diag.get("asset_filtered", 0) + 1
             return None
 
+        # BLOQUEO DE EXCLUSIÓN MUTUA DE MERCADO (Single-Market Exclusivity):
+        # Si ya hay una orden descansando o pendiente de cobertura en el coordinador,
+        # NUNCA abrir otro mercado. La siguiente orden solo puede ser del mismo mercado.
+        from src.engine.maker_taker_coordinator import maker_taker_coordinator
+        active_orders = maker_taker_coordinator.get_active_orders(self.worker_id)
+        if active_orders:
+            active_slugs = {o.market_slug for o in active_orders}
+            if slug not in active_slugs:
+                self._diag["other_market_active"] = self._diag.get("other_market_active", 0) + 1
+                return None
+
+        # Si hay posiciones abiertas en base de datos sin resolver en otro mercado, tampoco entrar a un mercado nuevo
+        if self.db and hasattr(self.db, "get_open_positions"):
+            open_pos = self.db.get_open_positions(worker_id=self.worker_id) or []
+            if open_pos:
+                open_slugs = {
+                    p.get("symbol", "").rsplit("_", 1)[0].replace("limitless_crypto_", "").replace("oracle_", "")
+                    for p in open_pos if p.get("symbol")
+                }
+                if open_slugs and not any(slug in s or s in slug for s in open_slugs):
+                    self._diag["db_market_active"] = self._diag.get("db_market_active", 0) + 1
+                    return None
+
         self._diag["markets_seen"] += 1
 
         # Extraer book real (el feeder ya trae bid/ask del orderbook ejecutable)
