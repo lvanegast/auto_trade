@@ -124,9 +124,9 @@ class MakerTwoLegFeeder(BaseFeeder):
                         except (TypeError, ValueError):
                             pass
 
-                    # Book real (bid/ask ejecutables con spread estrecho para maker)
+                    # Book real ejecutable (el spread ES nuestro edge de arbitraje, nunca bloquear spreads > 3.5%)
                     from src.limitless_price_cache import async_get_limitless_executable_price
-                    book = await async_get_limitless_executable_price(slug, validate_maker_spread=True)
+                    book = await async_get_limitless_executable_price(slug, validate_maker_spread=False)
                     if not book:
                         continue
 

@@ -50,7 +50,7 @@ class MakerTwoLegStrategy(BaseStrategy):
         self.db = db
         self.worker_id = worker_id
         self.observation_only = observation_only
-        self.min_market_volume_usd = float(os.getenv("CRYPTO_MAKER_MIN_VOLUME_USD", "5.0")) or min_market_volume_usd
+        self.min_market_volume_usd = float(os.getenv("CRYPTO_MAKER_MIN_VOLUME_USD", "0.0"))
 
         # Estado de pares en curso: {slug: {"leg1": str, "leg2": str, "filled": [..]}}
         self._active_pairs: dict = {}
@@ -143,8 +143,8 @@ class MakerTwoLegStrategy(BaseStrategy):
             self._diag["cooldown"] += 1
             return None
 
-        # TTL GUARD: Solo entrar si al mercado le queda suficiente tiempo de vida
-        min_ttl_s = float(os.getenv("MAKER_MIN_SECONDS_TO_EXPIRATION", "240.0"))
+        # TTL GUARD: Solo entrar si al mercado le queda suficiente tiempo de vida (al menos 90s)
+        min_ttl_s = float(os.getenv("MAKER_MIN_SECONDS_TO_EXPIRATION", "90.0"))
         exclude_5m = os.getenv("MAKER_EXCLUDE_5M", "false").lower() in ("true", "1", "yes")
         if exclude_5m and ("-5-min-" in slug.lower() or "-5min-" in slug.lower()):
             self._diag["time_filtered"] = self._diag.get("time_filtered", 0) + 1
