@@ -595,7 +595,7 @@ class TradingWorker:
                         and self.kalshi_private_key_path
                     ):
                         await self._sync_kalshi_portfolio()
-                    elif self.feeder_type in ("resolution_sniper", "limitless_sports", "multi_platform", "maker_making", "binary_arb"):
+                    elif self.feeder_type in ("resolution_sniper", "limitless_sports", "multi_platform", "maker_making", "binary_arb", "maker_two_leg"):
                         # Cada worker resuelve SUS PROPIAS posiciones y oportunidades.
                         # _check_market_resolutions ahora está scoped por worker_id
                         # así que no hay duplicados de Telegram entre workers.
