@@ -289,6 +289,7 @@ class DatabaseManager:
         try:
             conn = self._get_connection()
             with conn.cursor() as cursor:
+                cursor.execute("SET lock_timeout = '2s';")
                 for q in queries:
                     cursor.execute(q)
                 for m in migrations:
@@ -314,8 +315,20 @@ class DatabaseManager:
                                 if numbers:
                                     ts_val = int(numbers[0])
                                     match_start_s = ts_val / 1000.0 if ts_val > 1000000000000 else float(ts_val)
-                                    # If the match already started/ended in the real world
-                                    if time.time() > match_start_s:
+                                    sym_lower = sym.lower()
+                                    if "5-min" in sym_lower or "5min" in sym_lower:
+                                        duration = 300
+                                    elif "15-min" in sym_lower or "15min" in sym_lower:
+                                        duration = 900
+                                    elif "hourly" in sym_lower:
+                                        duration = 3600
+                                    elif "daily" in sym_lower:
+                                        duration = 86400
+                                    else:
+                                        duration = 7200  # Deportes: duración típica partido ~2 horas
+                                    expiration_s = match_start_s + duration
+                                    # Solo cerrar si el mercado/evento REALMENTE ya concluyó
+                                    if time.time() > expiration_s:
                                         cursor.execute("""
                                         UPDATE positions 
                                         SET status = 'CLOSED', 
