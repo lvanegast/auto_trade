@@ -803,7 +803,24 @@ class TradingWorker:
                             pass
                         maker_taker_coordinator.mark_cancelled(ord_info.order_id, jump_reason)
 
-                # 2. Consultar clob positions para detectar fills
+                # 2. Chequeo de expiración (cancelar órdenes si faltan < 45s para el settlement)
+                from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
+                now_ts = time.time()
+                for ord_info in list(active_orders):
+                    exp_ts = ResolutionSniperFeeder._parse_expiration(ord_info.market_slug)
+                    if exp_ts and (exp_ts - now_ts) < 45.0:
+                        self.db.log(
+                            "WARNING",
+                            f"[ExpirationGuard] Cancelando orden Maker {ord_info.order_id[:8]} en {ord_info.market_slug} por proximidad de cierre ({exp_ts - now_ts:.0f}s restantes)",
+                            self.worker_id,
+                        )
+                        try:
+                            await order_client.cancel(ord_info.order_id)
+                        except Exception:
+                            pass
+                        maker_taker_coordinator.mark_cancelled(ord_info.order_id, "market_near_expiration")
+
+                # 3. Consultar clob positions para detectar fills
                 active_orders = maker_taker_coordinator.get_active_orders(self.worker_id)
                 if not active_orders:
                     return

@@ -143,6 +143,17 @@ class MakerTwoLegStrategy(BaseStrategy):
             self._diag["cooldown"] += 1
             return None
 
+        # TTL GUARD: Solo entrar si al mercado le quedan al menos 150 segundos para expirar
+        from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
+        exp_ts = getattr(event, "expiration_timestamp", None)
+        if not exp_ts:
+            exp_ts = ResolutionSniperFeeder._parse_expiration(slug)
+        if exp_ts:
+            seconds_left = exp_ts - now
+            if seconds_left < 150.0:
+                self._diag["time_filtered"] = self._diag.get("time_filtered", 0) + 1
+                return None
+
         # Validar edge maker (spread) contra umbral + fricción (0% fees maker, gas 0.005)
         if maker_edge < self.min_edge_pct:
             self._diag["edge_filtered"] += 1
