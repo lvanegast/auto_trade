@@ -887,12 +887,14 @@ class TelegramBot:
         text = "\n".join(lines)
         return self.send_message(text)
 
-    def send_fill_confirmed(self, worker_id: str, market_slug: str, token: str, side: str, price: float, amount: float, total_usd: float, order_id: str, latency_ms: float = None, category: str = "crypto"):
+    def send_fill_confirmed(self, worker_id: str, market_slug: str, token: str, side: str, price: float, amount: float, total_usd: float, order_id: str, latency_ms: float = None, category: str = "crypto", is_real: bool = True):
         """Notifica cuando una orden se llena en Limitless (fill verificado)."""
         clean_id = order_id[:8] + "..." if len(order_id) > 12 else order_id
         lat_str = f"\n⚡ <b>Latencia:</b> {latency_ms:.0f} ms" if latency_ms is not None else ""
+        header = "✅ <b>FILL CONFIRMADO [DINERO REAL ON-CHAIN]</b>" if is_real else "🧪 <b>ADQUISICIÓN VIRTUAL [MODO OBSERVACIÓN / PRUEBA]</b>"
+        mode_notice = "💵 <i>Trade real con fondos on-chain (Base L2).</i>" if is_real else "⚠️ <i>Simulación / Observación teórica (cero dinero real).</i>"
         
-        text = f"""✅ <b>FILL CONFIRMADO (EJECUTADO)</b>
+        text = f"""{header}
 
 🤖 <b>Worker:</b> <code>{worker_id}</code>
 📈 <b>Mercado:</b> {market_slug}
@@ -900,6 +902,7 @@ class TelegramBot:
 💵 <b>Precio Fill:</b> ${price:.4f} ({price * 100:.1f}¢)
 💰 <b>Total:</b> ${total_usd:.2f} USDC{lat_str}
 🆔 <b>Order ID:</b> <code>{clean_id}</code>
+🎯 <b>Modo:</b> {mode_notice}
 ⏱️ <b>Hora:</b> {datetime.now().strftime('%H:%M:%S')}"""
         target, thread_id = self._resolve_target(category)
         return self.send_message(text, chat_id=target, message_thread_id=thread_id, force=True)
