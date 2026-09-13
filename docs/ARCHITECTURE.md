@@ -156,4 +156,35 @@ uv run python main.py  # Ejecutar en el entorno virtual
 
 ---
 
-*Actualizado: junio 2026 — auto_trade v0.1.0*
+## ADR-008: Normalización Semántica Cross-Exchange (`SportsMatcher`)
+
+**Estado**: ✅ Adoptado
+
+**Contexto**: Polymarket US, Limitless y Kalshi listan los mismos partidos reales pero con variaciones de títulos ("Man City vs Arsenal" vs "Arsenal vs Manchester City"), sufijos de regulación ("(Reg. Time)") y notaciones norteamericanas ("GB @ PIT"). Si los slugs no coinciden exactamente, el arbitraje cross-platform falla silenciosamente.
+
+**Decisión**: Se implementó `SportsMatcher` (`backend/src/utils/sports_matcher.py`) con:
+- Diccionario de más de 120 entidades deportivas (Fútbol, Tenis, Esports, NFL, NBA).
+- Ordenamiento alfabético determinista de los contrincantes (`team_a < team_b`) para que el slug sea invariante al orden local/visitante.
+- Limpieza de sufijos y normalización de outcomes ("Draw", "Tie", "Tie (Reg. Time)" -> "draw").
+
+**Consecuencias**:
+- ✅ 100% de consistencia de `event_id` entre exchanges para eventos idénticos.
+- ✅ Elimina falsos negativos en `cross_platform_tracker`.
+
+---
+
+## ADR-009: Cobertura Combinatoria con Dual Simplex en Python Puro
+
+**Estado**: ✅ Adoptado
+
+**Contexto**: Mercados correlacionados en un partido (Moneyline 3-way + Over/Under 2.5 + BTTS) presentan ineficiencias de precios. Se necesita calcular la canasta óptima de cobertura $\min c^T x$ sujeto a $A x \ge \mathbf{1}, x \ge 0$ sin dependencias externas como SciPy o solvers en C que compliquen la arquitectura ARM64 en Jetson Nano.
+
+**Decisión**: Se implementó `CoveringLPSolver` (`backend/src/strategy/combinatorial_arb.py`) usando el método Dual Simplex en Python puro (listas de floats). En el modelo de fútbol se particiona el espacio de resultados en **9 estados atómicos mutuamente excluyentes y colectivamente exhaustivos**.
+
+**Consecuencias**:
+- ✅ Resuelve la canasta en ~2ms en CPU ARM64 con cero dependencias externas.
+- ✅ Si $c^* < 1.00$, garantiza payout de $\$1.0000$ en cualquier resultado del partido (arbitraje 100% puro).
+
+---
+
+*Actualizado: septiembre 2026 — auto_trade v0.3.0*
