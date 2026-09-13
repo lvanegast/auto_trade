@@ -107,45 +107,25 @@ class TelegramBot:
         print("[Telegram] Command polling started")
 
     async def _poll_loop(self):
-        """Poll Telegram getUpdates for incoming commands and inline button callbacks."""
+        """Poll Telegram getUpdates for incoming commands."""
         while True:
             try:
                 result = self._api_get("getUpdates", {
                     "offset": str(self._last_update_id + 1),
                     "timeout": "10",
-                    "allowed_updates": '["message", "callback_query"]',
                 })
                 if result and result.get("ok"):
                     for update in result.get("result", []):
                         self._last_update_id = update["update_id"]
-
-                        # 1. Manejo de botones táctiles (Callback Query)
-                        if "callback_query" in update:
-                            cb = update["callback_query"]
-                            cb_id = cb.get("id")
-                            cb_data = cb.get("data", "")
-                            cb_msg = cb.get("message", {})
-                            cb_chat_id = str(cb_msg.get("chat", {}).get("id", ""))
-                            cb_thread_id = cb_msg.get("message_thread_id")
-                            # Responder de inmediato para remover el reloj de carga en Telegram
-                            self._api_post("answerCallbackQuery", {"callback_query_id": cb_id})
-                            await self._handle_callback(cb_data, chat_id=cb_chat_id, message_thread_id=cb_thread_id)
-                            continue
-
-                        # 2. Manejo de mensajes de texto / comandos
                         msg = update.get("message", {})
                         chat_id = str(msg.get("chat", {}).get("id", ""))
                         text = msg.get("text", "").strip()
                         thread_id = msg.get("message_thread_id")
-                        # Log ALL incoming messages so we can capture chat_id /
-                        # message_thread_id from group topics (setup helper).
                         if chat_id and text:
                             print(
                                 f"[Telegram] Msg chat={chat_id} thread={thread_id} "
                                 f"text={text[:60]!r}"
                             )
-                        # Only respond to authorized chats: DM principal o el
-                        # supergrupo forum (topics).
                         authorized = (chat_id == self.chat_id) or (
                             self.group_id and chat_id == self.group_id
                         )
@@ -158,31 +138,6 @@ class TelegramBot:
             except Exception as e:
                 print(f"[Telegram] Poll error: {e}")
             await asyncio.sleep(2)
-
-    async def _handle_callback(self, cb_data: str, chat_id: str = None, message_thread_id=None):
-        """Maneja clics en botones táctiles (inline buttons)."""
-        self._reply_chat_id = chat_id or self.chat_id
-        self._reply_thread_id = self._topic_thread_id(chat_id, message_thread_id)
-        try:
-            if cb_data == "cmd_balance":
-                self._cmd_balance()
-            elif cb_data == "cmd_positions":
-                self._cmd_positions()
-            elif cb_data == "cmd_status":
-                self._cmd_status()
-            elif cb_data == "cmd_health":
-                self._cmd_health()
-            elif cb_data == "cmd_pnl":
-                self._cmd_pnl()
-            elif cb_data == "cmd_workers":
-                self._cmd_workers()
-            elif cb_data == "cmd_panic":
-                self._cmd_panic()
-            elif cb_data == "cmd_resume":
-                self._cmd_resume()
-        finally:
-            self._reply_chat_id = None
-            self._reply_thread_id = None
 
     async def _handle_command(self, text: str, chat_id: str = None, message_thread_id=None):
         """Route commands to handlers. Replies go to the chat/topic the command
@@ -321,36 +276,19 @@ class TelegramBot:
             return None, 0.0, 0.0
 
     def _cmd_help(self):
-        """Show available commands with touch keyboard."""
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "💳 Saldo en Base", "callback_data": "cmd_balance"},
-                    {"text": "📊 Posiciones", "callback_data": "cmd_positions"}
-                ],
-                [
-                    {"text": "🩺 Salud Jetson", "callback_data": "cmd_health"},
-                    {"text": "💰 Resumen P&L", "callback_data": "cmd_pnl"}
-                ],
-                [
-                    {"text": "👥 Workers", "callback_data": "cmd_workers"},
-                    {"text": "🛑 Pánico", "callback_data": "cmd_panic"}
-                ]
-            ]
-        }
+        """Show available commands in clean text."""
         self.send_message(
-            "📋 <b>Centro de Control AutoTrade — Comandos</b>\n\n"
-            "💳 <b>/balance</b> — Saldo USDC y ETH (Gas) en Base Mainnet\n"
+            "📋 <b>Comandos disponibles (Bajo demanda)</b>\n\n"
+            "💳 <b>/balance</b> — Saldo USDC y ETH en Base Mainnet\n"
             "🩺 <b>/health</b> — Telemetría de hardware Jetson Nano (Temp, RAM, CPU)\n"
             "📊 <b>/positions</b> — Posiciones abiertas en curso\n"
             "💰 <b>/pnl</b> — Resumen acumulado de ganancias/pérdidas\n"
-            "⚙️ <b>/status</b> — Estado general del sistema y motor\n"
+            "⚙️ <b>/status</b> — Estado general de workers\n"
             "👥 <b>/workers</b> — Lista detallada de workers y feeders\n"
-            "⚽ <b>/sports</b> — Eventos deportivos en el radar\n"
-            "🛑 <b>/panic</b> — Bloqueo de emergencia: suspende órdenes reales\n"
+            "⚽ <b>/sports</b> — Eventos deportivos en radar\n"
+            "🛑 <b>/panic</b> — Modo pánico: suspende órdenes reales\n"
             "▶️ <b>/resume</b> — Reanuda la operativa real de Worker 6\n"
-            "❓ <b>/help</b> — Muestra este menú interactivo",
-            reply_markup=keyboard,
+            "❓ <b>/help</b> — Esta ayuda",
             force=True
         )
 
@@ -379,20 +317,7 @@ class TelegramBot:
 🏦 <b>Colateral DB Worker 6:</b> ${usdc_db:.2f} USDC
 🌐 <b>Red:</b> Base Mainnet (Chain ID 8453)
 ⏱️ <b>Hora:</b> {datetime.now().strftime('%H:%M:%S')}"""
-
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "🔄 Refrescar Saldo", "callback_data": "cmd_balance"},
-                    {"text": "📊 Posiciones", "callback_data": "cmd_positions"}
-                ],
-                [
-                    {"text": "🩺 Salud Jetson", "callback_data": "cmd_health"},
-                    {"text": "💰 P&L", "callback_data": "cmd_pnl"}
-                ]
-            ]
-        }
-        self.send_message(text, reply_markup=keyboard, force=True)
+        self.send_message(text, force=True)
 
     def _cmd_health(self):
         """Muestra la telemetría y salud del hardware (NVIDIA Jetson Nano)."""
@@ -429,20 +354,7 @@ class TelegramBot:
 ⚙️ <b>Motor de Trading:</b> {engine_status}
 🎯 <b>Worker 6 Status:</b> {w6_mode}
 ⏱️ <b>Hora Local:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
-
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "🔄 Refrescar", "callback_data": "cmd_health"},
-                    {"text": "💳 Saldo", "callback_data": "cmd_balance"}
-                ],
-                [
-                    {"text": "📊 Workers", "callback_data": "cmd_status"},
-                    {"text": "🛑 Pánico", "callback_data": "cmd_panic"}
-                ]
-            ]
-        }
-        self.send_message(text, reply_markup=keyboard, force=True)
+        self.send_message(text, force=True)
 
     def _cmd_panic(self):
         """Bloqueo de emergencia: vacía ALLOWED_REAL_WORKERS para frenar trades reales."""
@@ -456,17 +368,9 @@ class TelegramBot:
             "🔒 <b>Capital Protegido:</b> Se ha vaciado <code>ALLOWED_REAL_WORKERS</code> en PostgreSQL.\n"
             "🚫 Ningún worker tiene autorización para colocar órdenes reales on-chain.\n"
             "👀 Todos los workers operan ahora únicamente en modo observación.\n\n"
-            "<i>Pulsa el botón abajo para reanudar Worker 6 cuando lo desees.</i>"
+            "<i>Usa <code>/resume</code> cuando desees reactivar Worker 6.</i>"
         )
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "▶️ Reanudar Worker 6", "callback_data": "cmd_resume"},
-                    {"text": "📊 Ver Estado", "callback_data": "cmd_status"}
-                ]
-            ]
-        }
-        self.send_message(text, reply_markup=keyboard, force=True)
+        self.send_message(text, force=True)
 
     def _cmd_resume(self):
         """Reanuda la ejecución real de órdenes para Worker 6."""
@@ -481,15 +385,7 @@ class TelegramBot:
             "⚡ La estrategia Maker Two-Leg volverá a colocar órdenes cuando detecte edge favorable.\n"
             "🛡️ Circuit Breakers activos ($5.00 max daily loss / 5% drawdown)."
         )
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "🛑 Modo Pánico (Pausar)", "callback_data": "cmd_panic"},
-                    {"text": "💳 Ver Saldo", "callback_data": "cmd_balance"}
-                ]
-            ]
-        }
-        self.send_message(text, reply_markup=keyboard, force=True)
+        self.send_message(text, force=True)
 
     def _cmd_status(self):
         """Show system status summary."""
@@ -880,15 +776,7 @@ class TelegramBot:
 <b>Sala:</b> {category or 'general'}
 <b>Hora:</b> {datetime.now().strftime("%H:%M:%S")}"""
         target, thread_id = self._resolve_target(category)
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "💳 Saldo", "callback_data": "cmd_balance"},
-                    {"text": "📊 Posiciones", "callback_data": "cmd_positions"}
-                ]
-            ]
-        }
-        ok = self.send_message(text, chat_id=target, message_thread_id=thread_id, reply_markup=keyboard)
+        ok = self.send_message(text, chat_id=target, message_thread_id=thread_id)
         if ok:
             if event_id:
                 self.mark_alerted(event_id)
@@ -984,57 +872,22 @@ class TelegramBot:
         text = "\n".join(lines)
         return self.send_message(text)
 
-    def send_order_posted(self, worker_id: str, market_slug: str, token: str, side: str, price: float, size_usd: float, order_id: str, order_type: str = "GTC", category: str = "crypto"):
-        """Notifica cuando una orden límite Maker/Taker es publicada en Limitless."""
-        clean_id = order_id[:8] + "..." if len(order_id) > 12 else order_id
-        order_tag = "MAKER POST-ONLY" if order_type.upper() == "GTC" else "TAKER FOK"
-        icon = "📝" if order_type.upper() == "GTC" else "⚡"
-        
-        text = f"""{icon} <b>ORDEN PUBLICADA [{order_tag}]</b>
-
-🤖 <b>Worker:</b> <code>{worker_id}</code>
-📈 <b>Mercado:</b> {market_slug}
-🎯 <b>Postura:</b> <b>{side} {token}</b> @ <b>${price:.4f}</b> ({price * 100:.1f}¢)
-💵 <b>Monto / Colateral:</b> ${size_usd:.2f} USDC
-🆔 <b>Order ID:</b> <code>{clean_id}</code>
-⏱️ <b>Hora:</b> {datetime.now().strftime('%H:%M:%S')}"""
-
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "💳 Ver Saldo", "callback_data": "cmd_balance"},
-                    {"text": "📊 Posiciones", "callback_data": "cmd_positions"}
-                ]
-            ]
-        }
-        target, thread_id = self._resolve_target(category)
-        return self.send_message(text, chat_id=target, message_thread_id=thread_id, reply_markup=keyboard, force=True)
-
     def send_fill_confirmed(self, worker_id: str, market_slug: str, token: str, side: str, price: float, amount: float, total_usd: float, order_id: str, latency_ms: float = None, category: str = "crypto"):
-        """Notifica en el instante en que un contraparte toma la orden y se confirma el fill."""
+        """Notifica cuando una orden se llena en Limitless (fill verificado)."""
         clean_id = order_id[:8] + "..." if len(order_id) > 12 else order_id
-        lat_str = f"\n⚡ <b>Latencia Ejecución:</b> {latency_ms:.0f} ms" if latency_ms is not None else ""
+        lat_str = f"\n⚡ <b>Latencia:</b> {latency_ms:.0f} ms" if latency_ms is not None else ""
         
         text = f"""✅ <b>FILL CONFIRMADO (EJECUTADO)</b>
 
 🤖 <b>Worker:</b> <code>{worker_id}</code>
 📈 <b>Mercado:</b> {market_slug}
-📥 <b>Posición Adquirida:</b> {amount:.2f} shares <b>{token}</b>
+📥 <b>Posición:</b> {amount:.2f} shares <b>{token}</b>
 💵 <b>Precio Fill:</b> ${price:.4f} ({price * 100:.1f}¢)
-💰 <b>Total Invertido:</b> ${total_usd:.2f} USDC{lat_str}
+💰 <b>Total:</b> ${total_usd:.2f} USDC{lat_str}
 🆔 <b>Order ID:</b> <code>{clean_id}</code>
 ⏱️ <b>Hora:</b> {datetime.now().strftime('%H:%M:%S')}"""
-
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "📊 Posiciones Abiertas", "callback_data": "cmd_positions"},
-                    {"text": "💳 Ver Saldo", "callback_data": "cmd_balance"}
-                ]
-            ]
-        }
         target, thread_id = self._resolve_target(category)
-        return self.send_message(text, chat_id=target, message_thread_id=thread_id, reply_markup=keyboard, force=True)
+        return self.send_message(text, chat_id=target, message_thread_id=thread_id, force=True)
 
     def send_payout_received(self, worker_id: str, market_slug: str, token: str, amount_won: float, payout_usd: float, cost_usd: float, net_profit_usd: float, tx_hash: str = None, category: str = "crypto"):
         """Notifica cuando el mercado expira y Limitless acredita el payout de $1.00 USD."""
@@ -1050,115 +903,8 @@ class TelegramBot:
 🏷️ <b>Costo Invertido:</b> ${cost_usd:.2f} USDC
 💰 <b>Beneficio Neto:</b> <b>+${net_profit_usd:.4f} USDC (+{margin_pct:.2f}%)</b>{tx_link}
 ⏱️ <b>Hora:</b> {datetime.now().strftime('%H:%M:%S')}"""
-
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "💰 Resumen P&L", "callback_data": "cmd_pnl"},
-                    {"text": "💳 Ver Saldo", "callback_data": "cmd_balance"}
-                ]
-            ]
-        }
         target, thread_id = self._resolve_target(category)
-        return self.send_message(text, chat_id=target, message_thread_id=thread_id, reply_markup=keyboard, force=True)
-
-    def send_startup_alert(self, local_ip: str = "192.168.10.21"):
-        """Envía un informe de arranque tras reinicio o encendido del hardware."""
-        metrics = self._get_hardware_metrics()
-        addr, usdc_bal, eth_bal = self._get_wallet_balances()
-        temp_str = f"{metrics['temp_c']:.1f} °C" if metrics['temp_c'] is not None else "N/A"
-        
-        text = f"""🟢 <b>SISTEMA REINICIADO / RECUPERACIÓN ELÉCTRICA</b>
-
-🖥️ <b>Servidor:</b> NVIDIA Jetson Nano 4GB ARM64
-🌐 <b>Dashboard:</b> http://{local_ip}:8080
-🌡️ <b>Temp Tegra:</b> {temp_str}
-
-💵 <b>Saldo USDC:</b> ${usdc_bal:.2f} USDC
-⛽ <b>Gas ETH (Base):</b> {eth_bal:.6f} ETH
-🛡️ <b>Protección Capital:</b> Worker 6 en MODO REAL (Workers 1-5,7-9 en Observación)
-⏱️ <b>Hora de Inicio:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
-
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "🩺 Salud Jetson", "callback_data": "cmd_health"},
-                    {"text": "💳 Ver Saldo", "callback_data": "cmd_balance"}
-                ],
-                [
-                    {"text": "📊 Estado Workers", "callback_data": "cmd_status"}
-                ]
-            ]
-        }
-        return self.send_message(text, reply_markup=keyboard, force=True)
-
-    def check_gas_alert(self, min_eth_threshold: float = 0.0003):
-        """Verifica si el saldo de gas ETH en Base es crítico y emite advertencia."""
-        addr, usdc_bal, eth_bal = self._get_wallet_balances()
-        if addr and eth_bal < min_eth_threshold:
-            text = f"""⚠️ <b>ALERTA: GAS CRÍTICAMENTE BAJO</b>
-
-⛽ <b>Saldo actual:</b> <b>{eth_bal:.6f} ETH</b> (Mínimo recomendado: {min_eth_threshold:.4f} ETH)
-👛 <b>Billetera:</b> <code>{addr}</code>
-🌐 <b>Red:</b> Base Mainnet
-
-<i>Por favor transfiere al menos 0.001 ETH a la billetera para evitar que las órdenes Maker o cancelaciones fallen por falta de gas.</i>"""
-            keyboard = {
-                "inline_keyboard": [
-                    [
-                        {"text": "💳 Refrescar Saldo", "callback_data": "cmd_balance"}
-                    ]
-                ]
-            }
-            return self.send_message(text, reply_markup=keyboard, force=True)
-        return False
-
-    def send_daily_digest(self):
-        """Envía el resumen ejecutivo diario (a las 08:00 AM hora local)."""
-        trades_24h = 0
-        pnl_24h = 0.0
-        winning = 0
-        if self._db:
-            try:
-                summary = self._db.get_pnl_summary(worker_id=None) or {}
-                pnl_24h = summary.get("total_pnl", 0.0)
-                trades_24h = summary.get("total_trades", 0)
-                winning = summary.get("winning_trades", 0)
-            except Exception:
-                pass
-
-        metrics = self._get_hardware_metrics()
-        addr, usdc_bal, eth_bal = self._get_wallet_balances()
-        temp_str = f"{metrics['temp_c']:.1f} °C" if metrics['temp_c'] is not None else "N/A"
-        
-        win_rate = (winning / trades_24h * 100) if trades_24h > 0 else 100.0
-        pnl_icon = "💰" if pnl_24h >= 0 else "📉"
-        
-        text = f"""🌅 <b>RESUMEN EJECUTIVO DIARIO (08:00 AM)</b>
-
-{pnl_icon} <b>P&L Neto Acumulado:</b> <b>{'+' if pnl_24h > 0 else ''}${pnl_24h:.2f} USD</b>
-📊 <b>Trades Totales:</b> {trades_24h} (Win Rate: {win_rate:.1f}%)
-
-💵 <b>Capital USDC (Base):</b> ${usdc_bal:.2f} USDC
-⛽ <b>Gas ETH:</b> {eth_bal:.6f} ETH
-🌡️ <b>Temperatura Jetson:</b> {temp_str}
-🤖 <b>Estado Operativo:</b> 100% Activo (Worker 6 Real)
-
-<i>¡Excelente jornada de arbitraje institucional!</i>"""
-
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "💳 Ver Saldo", "callback_data": "cmd_balance"},
-                    {"text": "📊 Posiciones", "callback_data": "cmd_positions"}
-                ],
-                [
-                    {"text": "🩺 Salud Jetson", "callback_data": "cmd_health"},
-                    {"text": "💰 P&L Completo", "callback_data": "cmd_pnl"}
-                ]
-            ]
-        }
-        return self.send_message(text, reply_markup=keyboard, force=True)
+        return self.send_message(text, chat_id=target, message_thread_id=thread_id, force=True)
 
 
 # Singleton instance

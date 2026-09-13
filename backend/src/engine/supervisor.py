@@ -1809,23 +1809,6 @@ class TradingWorker:
                         
                         order_id = response.order.id if hasattr(response, "order") and response.order else "N/A"
 
-                        try:
-                            from src.telegram_bot import telegram_bot
-                            if telegram_bot.enabled:
-                                telegram_bot.send_order_posted(
-                                    worker_id=self.worker_id,
-                                    market_slug=market_slug,
-                                    token=token,
-                                    side=signal.side,
-                                    price=float(price),
-                                    size_usd=float(spend_amount),
-                                    order_id=str(order_id),
-                                    order_type="GTC" if is_gtc else "FOK",
-                                    category="crypto" if ("crypto" in self.symbol.lower() or "up-or-down" in market_slug) else "sports"
-                                )
-                        except Exception as _tg_err:
-                            print(f"[Supervisor TG Order Error] {_tg_err}")
-
                         # CONFIRMACIÓN DE FILL: post_only=True garantiza que la orden GTC
                         # NUNCA se llena en el instante de creación (se rechaza si cruzaría) —
                         # "se creó sin error" no es "se llenó". Sin esto, una pata que queda
