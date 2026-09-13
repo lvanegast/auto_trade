@@ -39,7 +39,8 @@ class MakerTwoLegStrategy(BaseStrategy):
         min_market_volume_usd: float = 5.0,  # volumen real transado mínimo para considerar el mercado "vivo"
     ):
         super().__init__(symbol)
-        self.min_edge_pct = min_edge_pct
+        self.min_edge_pct = float(os.getenv("MAKER_MIN_EDGE_PCT", str(min_edge_pct if min_edge_pct is not None else 0.025)))
+        self.max_edge_pct = float(os.getenv("MAKER_MAX_EDGE_PCT", "0.065"))
         # Presupuesto por leg fijo, limitado a [min, max]
         self.position_size_usd = max(
             leg_size_min_usd,
@@ -97,6 +98,18 @@ class MakerTwoLegStrategy(BaseStrategy):
             slug = symbol[len("oracle_"):]
         else:
             slug = symbol
+
+        # FILTRO DE ACTIVOS LÍQUIDOS: Solo cotizar en activos de alta liquidez y volumen real (BTC y ETH por defecto)
+        allowed_assets = [
+            a.strip().lower() for a in os.getenv("MAKER_ALLOWED_ASSETS", "BTC,ETH").split(",") if a.strip()
+        ]
+        is_allowed = any(
+            slug.lower().startswith(f"{asset}-") or f"-{asset}-" in slug.lower()
+            for asset in allowed_assets
+        )
+        if not is_allowed:
+            self._diag["asset_filtered"] = self._diag.get("asset_filtered", 0) + 1
+            return None
 
         self._diag["markets_seen"] += 1
 
@@ -160,8 +173,9 @@ class MakerTwoLegStrategy(BaseStrategy):
                 self._diag["time_filtered"] = self._diag.get("time_filtered", 0) + 1
                 return None
 
-        # Validar edge maker (spread) contra umbral + fricción (0% fees maker, gas 0.005)
-        if maker_edge < self.min_edge_pct:
+        # Validar edge maker (spread) contra umbral mínimo Y MÁXIMO viable (ej. 2.5% a 6.5%)
+        # Spreads > 6.5% corresponden a libros desiertos/fantasmas donde nadie toma la contraparte.
+        if maker_edge < self.min_edge_pct or maker_edge > self.max_edge_pct:
             self._diag["edge_filtered"] += 1
             return None
 
