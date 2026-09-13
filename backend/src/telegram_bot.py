@@ -706,8 +706,11 @@ class TelegramBot:
         """Send a formatted alert. If event_id is provided, deduplicates.
         category routes the alert to the sub-room/topic (sports/crypto)."""
         # Dedup: skip if already alerted for this event (except resolution results)
-        if event_id and alert_type == "opportunity":
-            if self.has_been_alerted(event_id):
+        if alert_type == "opportunity":
+            notify_opp = os.getenv("TELEGRAM_NOTIFY_OPPORTUNITY", "false").lower() in ("true", "1", "yes")
+            if not notify_opp:
+                return False
+            if event_id and self.has_been_alerted(event_id):
                 return False
         
         icons = {
@@ -749,6 +752,12 @@ class TelegramBot:
     
     def send_opportunity(self, event: str, edge: float, platform_a: str, platform_b: str, event_id: str = None, category: str = None, worker_id: str = None, legs_detail: str = None):
         """Send an opportunity alert with dedup, routed to the category sub-room."""
+        # Alertas de detección silenciadas por defecto: se guardan en PostgreSQL para análisis
+        # y Telegram solo recibe Adquisición (fills) y Resultado (resolución/payout).
+        notify_opp = os.getenv("TELEGRAM_NOTIFY_OPPORTUNITY", "false").lower() in ("true", "1", "yes")
+        if not notify_opp:
+            return False
+
         # Dedup por event_id (mismo slug/market)
         if event_id and self.has_been_alerted(event_id):
             return False
