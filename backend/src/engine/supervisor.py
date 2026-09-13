@@ -454,6 +454,8 @@ class TradingWorker:
         except Exception as e:
             self.db.log("ERROR", f"Failed to create feeder task: {e}", self.worker_id)
         self.sync_task = asyncio.create_task(self._periodic_sync())
+        if self.feeder_type == "maker_two_leg":
+            self.maker_fast_sync_task = asyncio.create_task(self._maker_fast_sync())
 
         # Notificar a clientes WebSocket del cambio de estado
         await ws_server.broadcast(
@@ -500,6 +502,9 @@ class TradingWorker:
             self.engine_task.cancel()
         if self.sync_task:
             self.sync_task.cancel()
+        if hasattr(self, "maker_fast_sync_task") and self.maker_fast_sync_task:
+            self.maker_fast_sync_task.cancel()
+            self.maker_fast_sync_task = None
 
         self.feeder_task = None
         self.engine_task = None
@@ -564,6 +569,25 @@ class TradingWorker:
             "open_positions_details": open_positions,
         }
 
+    async def _maker_fast_sync(self):
+        """Loop dedicado de alta velocidad (500ms) para monitoreo activo, hedge inmediato y scratch unwind de órdenes Maker."""
+        from src.engine.maker_taker_coordinator import maker_taker_coordinator
+        while self.is_running:
+            try:
+                active_orders = maker_taker_coordinator.get_active_orders(self.worker_id)
+                if not active_orders:
+                    await asyncio.sleep(1.0)
+                    continue
+
+                # Hay órdenes activas descansando en el libro: sincronización de alta frecuencia
+                await self._sync_maker_resting_orders()
+                await asyncio.sleep(0.5)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug(f"[MakerFastSync] {e}")
+                await asyncio.sleep(1.0)
+
     async def _periodic_sync(self):
         print(f"[Worker {self.worker_id}] Tarea de sincronización periódica iniciada.")
         try:
@@ -606,8 +630,6 @@ class TradingWorker:
                         # así que no hay duplicados de Telegram entre workers.
                         await self._resolve_expired_positions_simulated()
                         await self._check_market_resolutions()
-                        if self.feeder_type == "maker_two_leg":
-                            await self._sync_maker_resting_orders()
                 except Exception as e:
                     print(f"[Sync Error] Error en sincronización periódica: {e}")
 
@@ -837,7 +859,13 @@ class TradingWorker:
 
                     for ord_info in active_orders:
                         if ord_info.order_id not in live_order_ids:
-                            # La orden ya no está viva en el libro: ¡SE LLENÓ!
+                            exp_ts = ResolutionSniperFeeder._parse_expiration(ord_info.market_slug)
+                            if exp_ts and now_ts >= exp_ts:
+                                # El mercado ya cerró: la orden fue purgada por expiración, no llenada
+                                maker_taker_coordinator.mark_cancelled(ord_info.order_id, "market_expired_purged")
+                                continue
+
+                            # La orden ya no está viva y el mercado sigue abierto: ¡SE LLENÓ!
                             maker_taker_coordinator.mark_filled(ord_info.order_id)
                             try:
                                 if hasattr(self.db, "execute"):
@@ -872,7 +900,7 @@ class TradingWorker:
                             except Exception:
                                 pass
 
-                    # 3. Evaluar pares para Guardrail FOK
+                    # 4. Evaluar pares para Hedge Taker Inmediato o Scratch Unwind
                     slugs = set(o.market_slug for o in active_orders)
                     for slug in slugs:
                         from src.limitless_price_cache import get_limitless_executable_price
@@ -880,17 +908,33 @@ class TradingWorker:
                         if book:
                             yes_ask = book.get("yes_ask", 0.0)
                             no_ask = book.get("no_ask", 0.0)
-                            status, fok_sig = maker_taker_coordinator.evaluate_pair(slug, yes_ask, no_ask, max_unhedged_wait_s=15.0)
-                            if fok_sig is not None:
+                            yes_bid = book.get("yes_bid", 0.0)
+                            no_bid = book.get("no_bid", 0.0)
+                            status, action_sig, cancel_order_id = maker_taker_coordinator.evaluate_pair(
+                                slug,
+                                current_yes_ask=yes_ask,
+                                current_no_ask=no_ask,
+                                current_yes_bid=yes_bid,
+                                current_no_bid=no_bid,
+                                max_unhedged_wait_s=0.0,
+                            )
+                            if cancel_order_id:
+                                try:
+                                    await order_client.cancel(cancel_order_id)
+                                    maker_taker_coordinator.mark_cancelled(cancel_order_id, "cancelled_for_hedge_or_scratch")
+                                except Exception:
+                                    pass
+
+                            if action_sig is not None:
                                 self.db.log(
                                     "WARNING",
-                                    f"[Guardrail FOK Activado] Disparando orden Taker FOK a mercado para {fok_sig.symbol} tras asimetría de llenado",
+                                    f"[{status}] Disparando orden FOK {action_sig.side} para {action_sig.symbol}: {action_sig.reason}",
                                     self.worker_id,
                                 )
                                 try:
-                                    await self._execute_order(fok_sig)
+                                    await self._execute_order(action_sig)
                                 except Exception as e_fok:
-                                    self.db.log("ERROR", f"[Guardrail FOK Error] Falló ejecución de cobertura FOK: {e_fok}", self.worker_id)
+                                    self.db.log("ERROR", f"[{status} Error] Falló orden FOK: {e_fok}", self.worker_id)
                 except Exception as e_clob:
                     pass
         except Exception as e_sync:
@@ -1942,12 +1986,18 @@ class TradingWorker:
                             )
                         else:
                             # We use FOK (Fill Or Kill) style execution for taker orders
+                            # Limitless SDK espera USDC para BUY, pero cantidad de shares para SELL
+                            fok_amount = (
+                                round(spend_amount / price, 6)
+                                if signal.side == "SELL" and price > 0
+                                else spend_amount
+                            )
                             response = await order_client.create_order(
                                 token_id=str(token_id),
                                 side=LimitlessSide.BUY if signal.side == "BUY" else LimitlessSide.SELL,
                                 order_type=LimitlessOrderType.FOK,
                                 market_slug=market_slug,
-                                maker_amount=spend_amount,
+                                maker_amount=fok_amount,
                             )
                         
                         order_id = response.order.id if hasattr(response, "order") and response.order else "N/A"

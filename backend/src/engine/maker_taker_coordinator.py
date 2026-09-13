@@ -98,33 +98,40 @@ class MakerTakerCoordinator:
         market_slug: str,
         current_yes_ask: float,
         current_no_ask: float,
-        max_unhedged_wait_s: float = 15.0,
+        current_yes_bid: float = 0.0,
+        current_no_bid: float = 0.0,
+        max_unhedged_wait_s: float = 0.0,
+        max_total_cost: float = 0.985,
         now: Optional[float] = None,
-    ) -> Tuple[str, Optional[SignalEvent]]:
+    ) -> Tuple[str, Optional[SignalEvent], Optional[str]]:
         """
         Evalúa el estado del par de 2 patas Maker.
-        Si una pata se llenó y la otra no lo ha hecho tras `max_unhedged_wait_s`,
-        activa el Guardrail FOK para cerrar inmediatamente la cobertura a mercado.
+        Si una pata se llenó:
+        1. Cancela inmediatamente la orden descansando de la contra-pata.
+        2. Si (pata_llenada + ask_contra_pata) <= max_total_cost: Dispara Hedge Taker FOK a mercado.
+        3. Si (pata_llenada + ask_contra_pata) > max_total_cost: Dispara Scratch Unwind (vende la pata llenada
+           al bid de mercado) para cortar la pérdida a centavos en vez de perder el 100% al settlement.
+        Retorna: (accion, señal_fok, order_id_a_cancelar)
         """
         pair = self.get_pair(market_slug)
-        if not pair or pair.status in ("BOTH_FILLED", "HEDGED_FOK", "CANCELLED"):
-            return pair.status if pair else "NOT_FOUND", None
+        if not pair or pair.status in ("BOTH_FILLED", "HEDGED_FOK", "SCRATCHED", "CANCELLED"):
+            return pair.status if pair else "NOT_FOUND", None, None
 
         yes_order = self.get_resting_order(pair.yes_order_id)
         no_order = self.get_resting_order(pair.no_order_id)
 
         if not yes_order or not no_order:
-            return "MISSING_ORDERS", None
+            return "MISSING_ORDERS", None, None
 
         yes_filled = yes_order.status == "FILLED"
         no_filled = no_order.status == "FILLED"
 
         if yes_filled and no_filled:
             pair.status = "BOTH_FILLED"
-            return "BOTH_FILLED", None
+            return "BOTH_FILLED", None, None
 
         if not yes_filled and not no_filled:
-            return "BOTH_RESTING", None
+            return "BOTH_RESTING", None, None
 
         # Asimetría detectada: una pata se llenó y la otra sigue resting
         now_t = now if now is not None else time.time()
@@ -133,20 +140,36 @@ class MakerTakerCoordinator:
 
         elapsed = now_t - pair.first_fill_time
 
-        # Si expiró el tiempo de espera seguro (ej 15s), activar Guardrail FOK
         if elapsed >= max_unhedged_wait_s:
             if yes_filled and not no_filled:
-                # YES se llenó -> cerrar NO con FOK a mercado
-                fok_sig = self.build_hedge_signal(yes_order, current_no_ask)
-                pair.status = "HEDGED_FOK"
-                return "TRIGGER_FOK_NO", fok_sig
-            elif no_filled and not yes_filled:
-                # NO se llenó -> cerrar YES con FOK a mercado
-                fok_sig = self.build_hedge_signal(no_order, current_yes_ask)
-                pair.status = "HEDGED_FOK"
-                return "TRIGGER_FOK_YES", fok_sig
+                order_to_cancel = pair.no_order_id
+                total_cost = (yes_order.filled_price or yes_order.price) + current_no_ask
+                if current_no_ask > 0 and total_cost <= max_total_cost:
+                    # Cobertura rentable -> FOK BUY NO
+                    fok_sig = self.build_hedge_signal(yes_order, current_no_ask)
+                    pair.status = "HEDGED_FOK"
+                    return "TRIGGER_FOK_NO", fok_sig, order_to_cancel
+                else:
+                    # Flujo tóxico / spread desfavorable -> Scratch Unwind: VENDER YES al bid
+                    scratch_sig = self.build_scratch_signal(yes_order, current_yes_bid)
+                    pair.status = "SCRATCHED"
+                    return "TRIGGER_SCRATCH_YES", scratch_sig, order_to_cancel
 
-        return "ONE_FILLED_AWAITING", None
+            elif no_filled and not yes_filled:
+                order_to_cancel = pair.yes_order_id
+                total_cost = (no_order.filled_price or no_order.price) + current_yes_ask
+                if current_yes_ask > 0 and total_cost <= max_total_cost:
+                    # Cobertura rentable -> FOK BUY YES
+                    fok_sig = self.build_hedge_signal(no_order, current_yes_ask)
+                    pair.status = "HEDGED_FOK"
+                    return "TRIGGER_FOK_YES", fok_sig, order_to_cancel
+                else:
+                    # Flujo tóxico / spread desfavorable -> Scratch Unwind: VENDER NO al bid
+                    scratch_sig = self.build_scratch_signal(no_order, current_no_bid)
+                    pair.status = "SCRATCHED"
+                    return "TRIGGER_SCRATCH_NO", scratch_sig, order_to_cancel
+
+        return "ONE_FILLED_AWAITING", None, None
 
     def register_order(self, order: RestingMakerOrder) -> None:
         """Registra una orden Maker que ha entrado al libro (post_only) en estado RESTING."""
@@ -348,6 +371,26 @@ class MakerTakerCoordinator:
             side="BUY",
             price=current_hedge_ask,
             reason=f"Taker Hedge L2: BUY {order.hedge_leg_name} FOK @{current_hedge_ask:.4f} to cover L1 {order.order_id[:8]}",
+            position_size_usd=spend_usd,
+            position_id=None,
+            order_type="FOK",
+        )
+
+    def build_scratch_signal(self, order: RestingMakerOrder, current_bid: float) -> SignalEvent:
+        """
+        Construye la señal de salida de emergencia (Scratch Trade) para vender la Pata 1
+        al bid de mercado de inmediato (FOK) y evitar pérdidas direccionales catastróficas.
+        """
+        contracts = order.filled_qty or order.shares
+        scratch_symbol = f"limitless_crypto_{order.market_slug}_{order.leg_name}"
+        price = max(current_bid, 0.001)
+        spend_usd = round(contracts * price, 4)
+
+        return SignalEvent(
+            symbol=scratch_symbol,
+            side="SELL",
+            price=price,
+            reason=f"Scratch Unwind L1: SELL {order.leg_name} FOK @{price:.4f} due to adverse selection on L2",
             position_size_usd=spend_usd,
             position_id=None,
             order_type="FOK",

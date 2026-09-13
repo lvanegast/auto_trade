@@ -34,6 +34,7 @@ def test_maker_two_leg_emits_both_signals_simultaneously():
     event.ask_size = 500.0
     event.market_volume = 1500.0
     event.market_slug = "btc-up-or-down-5-min-9999"
+    event.expiration_timestamp = 2000000000.0  # Future expiration (far from TTL limit)
 
     sig1 = strategy.on_price_update(event)
 
@@ -157,7 +158,132 @@ def test_coordinator_handles_successful_dual_fill():
     coord.mark_filled("ord_yes_ok")
     coord.mark_filled("ord_no_ok")
 
-    status, sig = coord.evaluate_pair(slug, current_yes_ask=0.45, current_no_ask=0.60)
+    status, sig, cancel_id = coord.evaluate_pair(slug, current_yes_ask=0.45, current_no_ask=0.60)
     assert status == "BOTH_FILLED"
     assert sig is None
+    assert cancel_id is None
     assert pair.status == "BOTH_FILLED"
+
+
+def test_coordinator_triggers_fok_hedge_when_profitable():
+    """Valida que si YES se llena y NO sigue rentable, dispara FOK BUY NO y cancela orden NO resting."""
+    mock_db = MagicMock()
+    coord = MakerTakerCoordinator(db=mock_db)
+
+    slug = "btc-up-or-down-5-min-hedge-test"
+    ord_yes = RestingMakerOrder(
+        order_id="ord_yes_h",
+        worker_id="worker_6",
+        market_slug=slug,
+        token_id="tok_yes",
+        side="BUY",
+        price=0.42,
+        spend_amount=1.0,
+        shares=2.38,
+        leg_name="YES",
+        hedge_token_id="tok_no",
+        hedge_leg_name="NO",
+        hedge_max_price=0.56,
+    )
+    ord_no = RestingMakerOrder(
+        order_id="ord_no_h",
+        worker_id="worker_6",
+        market_slug=slug,
+        token_id="tok_no",
+        side="BUY",
+        price=0.52,
+        spend_amount=1.0,
+        shares=1.92,
+        leg_name="NO",
+        hedge_token_id="tok_yes",
+        hedge_leg_name="YES",
+        hedge_max_price=0.46,
+    )
+    coord.register_order(ord_yes)
+    coord.register_order(ord_no)
+    pair = coord.register_pair(slug, "ord_yes_h", "ord_no_h", 0.940, "worker_6")
+
+    # Solo YES se llena on-chain
+    coord.mark_filled("ord_yes_h")
+
+    # Ask de NO en el mercado es 0.54 (total cost = 0.42 + 0.54 = 0.96 <= 0.985)
+    status, sig, cancel_id = coord.evaluate_pair(
+        slug,
+        current_yes_ask=0.45,
+        current_no_ask=0.54,
+        current_yes_bid=0.41,
+        current_no_bid=0.51,
+        max_unhedged_wait_s=0.0,
+        max_total_cost=0.985,
+    )
+
+    assert status == "TRIGGER_FOK_NO"
+    assert cancel_id == "ord_no_h"
+    assert sig is not None
+    assert sig.side == "BUY"
+    assert sig.order_type == "FOK"
+    assert sig.price == 0.54
+    assert "_NO" in sig.symbol
+    assert pair.status == "HEDGED_FOK"
+
+
+def test_coordinator_triggers_scratch_unwind_on_toxic_flow():
+    """Valida que si YES se llena pero NO se disparó > 1.00 (toxic flow), vende YES al bid inmediatamente."""
+    mock_db = MagicMock()
+    coord = MakerTakerCoordinator(db=mock_db)
+
+    slug = "btc-up-or-down-5-min-scratch-test"
+    ord_yes = RestingMakerOrder(
+        order_id="ord_yes_s",
+        worker_id="worker_6",
+        market_slug=slug,
+        token_id="tok_yes",
+        side="BUY",
+        price=0.906,
+        spend_amount=1.0,
+        shares=1.103,
+        leg_name="YES",
+        hedge_token_id="tok_no",
+        hedge_leg_name="NO",
+        hedge_max_price=0.08,
+    )
+    ord_no = RestingMakerOrder(
+        order_id="ord_no_s",
+        worker_id="worker_6",
+        market_slug=slug,
+        token_id="tok_no",
+        side="BUY",
+        price=0.036,
+        spend_amount=1.0,
+        shares=27.7,
+        leg_name="NO",
+        hedge_token_id="tok_yes",
+        hedge_leg_name="YES",
+        hedge_max_price=0.95,
+    )
+    coord.register_order(ord_yes)
+    coord.register_order(ord_no)
+    pair = coord.register_pair(slug, "ord_yes_s", "ord_no_s", 0.942, "worker_6")
+
+    # YES se llena on-chain
+    coord.mark_filled("ord_yes_s")
+
+    # Ask de NO subió a 0.99 (mercado colapsando, total = 0.906 + 0.99 = 1.896 > 0.985)
+    status, sig, cancel_id = coord.evaluate_pair(
+        slug,
+        current_yes_ask=0.91,
+        current_no_ask=0.99,
+        current_yes_bid=0.895,
+        current_no_bid=0.01,
+        max_unhedged_wait_s=0.0,
+        max_total_cost=0.985,
+    )
+
+    assert status == "TRIGGER_SCRATCH_YES"
+    assert cancel_id == "ord_no_s"
+    assert sig is not None
+    assert sig.side == "SELL"
+    assert sig.order_type == "FOK"
+    assert sig.price == 0.895
+    assert "_YES" in sig.symbol
+    assert pair.status == "SCRATCHED"

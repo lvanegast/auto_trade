@@ -143,14 +143,20 @@ class MakerTwoLegStrategy(BaseStrategy):
             self._diag["cooldown"] += 1
             return None
 
-        # TTL GUARD: Solo entrar si al mercado le quedan al menos 150 segundos para expirar
+        # TTL GUARD: Solo entrar si al mercado le queda suficiente tiempo de vida
+        min_ttl_s = float(os.getenv("MAKER_MIN_SECONDS_TO_EXPIRATION", "240.0"))
+        exclude_5m = os.getenv("MAKER_EXCLUDE_5M", "false").lower() in ("true", "1", "yes")
+        if exclude_5m and ("-5-min-" in slug.lower() or "-5min-" in slug.lower()):
+            self._diag["time_filtered"] = self._diag.get("time_filtered", 0) + 1
+            return None
+
         from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
         exp_ts = getattr(event, "expiration_timestamp", None)
         if not exp_ts:
             exp_ts = ResolutionSniperFeeder._parse_expiration(slug)
         if exp_ts:
             seconds_left = exp_ts - now
-            if seconds_left < 150.0:
+            if seconds_left < min_ttl_s:
                 self._diag["time_filtered"] = self._diag.get("time_filtered", 0) + 1
                 return None
 
@@ -160,7 +166,7 @@ class MakerTwoLegStrategy(BaseStrategy):
             return None
 
         # ADVERSE SELECTION PROTECTION: Si el spot líder (BTC/ETH/SOL/BNB/XRP/DOGE en Binance)
-        # se movió > 12 bps en los últimos 500ms, NO cotizar pasivamente para
+        # se movió > 10 bps en los últimos 500ms, NO cotizar pasivamente para
         # evitar toxic fills (ser tomado por arbitrajistas más rápidos).
         if now < getattr(self, "_pause_until", 0.0):
             return None
@@ -173,10 +179,10 @@ class MakerTwoLegStrategy(BaseStrategy):
 
         if target_asset:
             from src.strategy.lead_lag_arbitrage import BinanceTracker
-            is_jump, jump_bps = BinanceTracker.detect_jump(target_asset, window_seconds=0.5, threshold_bps=12.0)
+            is_jump, jump_bps = BinanceTracker.detect_jump(target_asset, window_seconds=0.5, threshold_bps=10.0)
             if is_jump:
                 self._diag["adverse_selection"] = self._diag.get("adverse_selection", 0) + 1
-                self._pause_until = now + 10.0  # Pausar cotizaciones maker 10s tras salto tóxico
+                self._pause_until = now + 15.0  # Pausar cotizaciones maker 15s tras salto tóxico
                 return None
 
         # Liquidez real en ambas patas (shares -> USD)
