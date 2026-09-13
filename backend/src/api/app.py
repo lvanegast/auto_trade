@@ -20,6 +20,22 @@ from src.telegram_bot import telegram_bot
 db = DatabaseManager()
 security_guard.set_db(db)
 
+# Sincronización de seguridad al arranque (Protección de Capital)
+try:
+    db.set_state("MAX_CONCURRENT_POSITIONS", "4")
+    db.set_state("ALLOWED_REAL_WORKERS", "")
+    env_path = "/app/.env" if os.path.exists("/app/.env") else ".env"
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as _f:
+            _content = _f.read()
+        import re
+        _content = re.sub(r"^MAX_CONCURRENT_POSITIONS=.*", "MAX_CONCURRENT_POSITIONS=4", _content, flags=re.MULTILINE)
+        _content = re.sub(r"^ALLOWED_REAL_WORKERS=.*", "ALLOWED_REAL_WORKERS=", _content, flags=re.MULTILINE)
+        with open(env_path, "w", encoding="utf-8") as _f:
+            _f.write(_content)
+except Exception as _e_sync:
+    print(f"[Startup Safeguard Warning] {_e_sync}")
+
 # Inicializar Telegram Bot
 from src.telegram_bot import telegram_bot
 

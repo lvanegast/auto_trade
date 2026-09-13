@@ -17,8 +17,12 @@ class SecurityGuard:
         # --- Config from env ---
         self.max_daily_loss_usd = float(os.getenv("MAX_DAILY_LOSS_USD", "50.0"))
         self.max_drawdown_pct = float(os.getenv("MAX_DRAWDOWN_PCT", "0.05"))
-        self.max_concurrent_positions = int(os.getenv("MAX_CONCURRENT_POSITIONS", "3"))
+        self.max_concurrent_positions = int(os.getenv("MAX_CONCURRENT_POSITIONS", "4"))
         self.max_trades_per_minute = int(os.getenv("MAX_TRADES_PER_MINUTE", "20"))
+
+    def set_db(self, db):
+        """Set database manager instance."""
+        self.db = db
         self.cooldown_after_loss_seconds = float(
             os.getenv("COOLDOWN_AFTER_LOSS_SECONDS", "30")
         )
