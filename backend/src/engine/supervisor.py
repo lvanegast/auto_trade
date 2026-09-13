@@ -50,6 +50,8 @@ class TradingWorker:
         self.symbol = symbol.upper()
         self.feeder_type = feeder_type.lower()
         self.db = db
+        if db and not getattr(security_guard, "db", None):
+            security_guard.db = db
         self.queue = asyncio.Queue()
 
         self.base_asset, self.quote_asset = self._parse_symbol()
@@ -306,6 +308,9 @@ class TradingWorker:
             "limitless_sports",
             "binary_arb",
             "maker_making",
+            "maker_two_leg",
+            "resolution_sniper",
+            "multi_platform",
         ):
             return symbol, "USD"
 
@@ -1081,7 +1086,34 @@ class TradingWorker:
                             signal._queue_latency_ms = (_t_dequeue - _event_ts) * 1000
                             signal._strategy_latency_ms = _strategy_latency_ms
 
-                            # Execute this signal immediately
+                            # Pre-validación de canasta: Si la estrategia tiene patas pendientes (1xN o 2-leg),
+                            # validar el balance para la canasta COMPLETA ANTES de disparar la Pata 1.
+                            pending = getattr(self.strategy, "_pending_signals", [])
+                            if pending:
+                                from src.engine.fill_guard import FillGuard
+                                all_signals = [signal] + list(pending)
+                                total_spend = sum(
+                                    getattr(s, 'position_size_usd', 0) or 0 
+                                    for s in all_signals
+                                )
+                                balances = self._get_balances()
+                                quote_balance = balances.get(self.quote_asset, 0.0)
+                                fill_guard = FillGuard(self.db, self.worker_id)
+                                can_proceed, reason = fill_guard.validate_balance_for_arb(
+                                    quote_balance, total_spend, 
+                                    gas_per_leg=0.005, num_legs=len(all_signals)
+                                )
+                                if not can_proceed:
+                                    self.db.log(
+                                        "WARNING",
+                                        f"[FillGuard] Canasta de arbitraje RECHAZADA antes de ejecutar Leg 1: {reason}",
+                                        self.worker_id,
+                                    )
+                                    while pending:
+                                        pending.pop(0)
+                                    continue
+
+                            # Execute this signal (Leg 1)
                             await self._execute_order(signal)
                             if ws_server.has_clients(self.worker_id):
                                 await ws_server.broadcast(
@@ -1096,170 +1128,143 @@ class TradingWorker:
                                         },
                                     ),
                                 )
+
                             # Batch: execute all pending 1×N signals with fill protection
-                            pending = getattr(self.strategy, "_pending_signals", [])
                             if pending:
                                 from src.engine.fill_guard import FillGuard
-                                
-                                # Collect all signals (first already executed + pending)
-                                all_signals = [signal] + list(pending)
-                                total_spend = sum(
-                                    getattr(s, 'position_size_usd', 0) or 0 
-                                    for s in all_signals
-                                )
-                                
-                                # PREVENTION: Verify balance covers all legs + gas
-                                balances = self._get_balances()
-                                quote_balance = balances.get(self.quote_asset, 0.0)
-                                
                                 fill_guard = FillGuard(self.db, self.worker_id)
-                                can_proceed, reason = fill_guard.validate_balance_for_arb(
-                                    quote_balance, total_spend, 
-                                    gas_per_leg=0.005, num_legs=len(all_signals)
-                                )
-                                
-                                if not can_proceed:
+                                # Execute remaining legs with recovery
+                                async def execute_fn(sig):
+                                    try:
+                                        await self._execute_order(sig)
+                                        return True, None, None
+                                    except Exception as e:
+                                        return False, e, None
+
+                                # Patas ya llenadas (leg 1 se ejecutó arriba, antes del batch).
+                                # Si una pata posterior falla, TODAS estas deben cerrarse — no
+                                # solo la primera — o quedan expuestas sin cobertura direccional.
+                                filled_legs = [signal]
+
+                                async def emergency_sell_filled(reason: str):
                                     self.db.log(
-                                        "WARNING",
-                                        f"[FillGuard] Arb cancelado: {reason}",
+                                        "CRITICAL",
+                                        f"[FillGuard] EMERGENCY SELL: vendiendo {len(filled_legs)} "
+                                        f"pata(s) llenada(s). Razón: {reason}",
                                         self.worker_id,
                                     )
-                                    # Drain pending signals without executing
-                                    while pending:
-                                        pending.pop(0)
-                                else:
-                                    # Execute remaining legs with recovery
-                                    async def execute_fn(sig):
+                                    for leg in filled_legs:
                                         try:
-                                            await self._execute_order(sig)
-                                            return True, None, None
-                                        except Exception as e:
-                                            return False, e, None
+                                            sell_signal = SignalEvent(
+                                                symbol=leg.symbol,
+                                                side="SELL",
+                                                price=leg.price,
+                                                reason=f"Emergency sell: {reason}",
+                                                position_size_usd=getattr(leg, 'position_size_usd', None),
+                                            )
+                                            await self._execute_order(sell_signal)
+                                        except Exception as e_sell:
+                                            self.db.log(
+                                                "CRITICAL",
+                                                f"[FillGuard] Emergency sell FALLÓ para {leg.symbol}: {e_sell}. "
+                                                f"Posición expuesta sin cobertura.",
+                                                self.worker_id,
+                                            )
 
-                                    # Patas ya llenadas (leg 1 se ejecutó arriba, antes del batch).
-                                    # Si una pata posterior falla, TODAS estas deben cerrarse — no
-                                    # solo la primera — o quedan expuestas sin cobertura direccional.
-                                    filled_legs = [signal]
+                                # Execute pending signals (first already done)
+                                remaining = list(pending)
+                                while pending:
+                                    pending.pop(0)
 
-                                    async def emergency_sell_filled(reason: str):
-                                        self.db.log(
-                                            "CRITICAL",
-                                            f"[FillGuard] EMERGENCY SELL: vendiendo {len(filled_legs)} "
-                                            f"pata(s) llenada(s). Razón: {reason}",
-                                            self.worker_id,
-                                        )
-                                        for leg in filled_legs:
-                                            try:
-                                                sell_signal = SignalEvent(
-                                                    symbol=leg.symbol,
-                                                    side="SELL",
-                                                    price=leg.price,
-                                                    reason=f"Emergency sell: {reason}",
-                                                    position_size_usd=getattr(leg, 'position_size_usd', None),
-                                                )
-                                                await self._execute_order(sell_signal)
-                                            except Exception as e_sell:
+                                for next_signal in remaining:
+                                    next_signal._queue_latency_ms = signal._queue_latency_ms
+                                    next_signal._strategy_latency_ms = 0.0
+
+                                    success, error, _ = await execute_fn(next_signal)
+
+                                    if success:
+                                        filled_legs.append(next_signal)
+                                        if ws_server.has_clients(self.worker_id):
+                                            await ws_server.broadcast(
+                                                self.worker_id,
+                                                make_event(
+                                                    "trade_update",
+                                                    {
+                                                        "symbol": next_signal.symbol,
+                                                        "side": next_signal.side,
+                                                        "price": next_signal.price,
+                                                        "reason": next_signal.reason,
+                                                    },
+                                                ),
+                                            )
+                                    else:
+                                        # Classify error and handle recovery
+                                        category = fill_guard.classify_error(error)
+
+                                        if category.value in ("balance", "market"):
+                                            # No retry - sell immediately
+                                            self.db.log(
+                                                "ERROR",
+                                                f"[FillGuard] Pata falló ({category.value}): {error}. "
+                                                f"Vendiendo {len(filled_legs)} pata(s) llenada(s).",
+                                                self.worker_id,
+                                            )
+                                            await emergency_sell_filled(f"fill_partial_{category.value}")
+                                            break
+
+                                        elif category.value == "network":
+                                            # Retry with backoff
+                                            retry_success = False
+                                            for attempt, delay in enumerate([1.0, 2.0, 4.0]):
                                                 self.db.log(
-                                                    "CRITICAL",
-                                                    f"[FillGuard] Emergency sell FALLÓ para {leg.symbol}: {e_sell}. "
-                                                    f"Posición expuesta sin cobertura.",
+                                                    "WARNING",
+                                                    f"[FillGuard] Reintento {attempt+1}/3 para pata (esperando {delay}s)...",
                                                     self.worker_id,
                                                 )
+                                                await asyncio.sleep(delay)
 
-                                    # Execute pending signals (first already done)
-                                    remaining = list(pending)
-                                    while pending:
-                                        pending.pop(0)
-
-                                    for next_signal in remaining:
-                                        next_signal._queue_latency_ms = signal._queue_latency_ms
-                                        next_signal._strategy_latency_ms = 0.0
-
-                                        success, error, _ = await execute_fn(next_signal)
-
-                                        if success:
-                                            filled_legs.append(next_signal)
-                                            if ws_server.has_clients(self.worker_id):
-                                                await ws_server.broadcast(
-                                                    self.worker_id,
-                                                    make_event(
-                                                        "trade_update",
-                                                        {
-                                                            "symbol": next_signal.symbol,
-                                                            "side": next_signal.side,
-                                                            "price": next_signal.price,
-                                                            "reason": next_signal.reason,
-                                                        },
-                                                    ),
-                                                )
-                                        else:
-                                            # Classify error and handle recovery
-                                            category = fill_guard.classify_error(error)
-
-                                            if category.value in ("balance", "market"):
-                                                # No retry - sell immediately
-                                                self.db.log(
-                                                    "ERROR",
-                                                    f"[FillGuard] Pata falló ({category.value}): {error}. "
-                                                    f"Vendiendo {len(filled_legs)} pata(s) llenada(s).",
-                                                    self.worker_id,
-                                                )
-                                                await emergency_sell_filled(f"fill_partial_{category.value}")
-                                                break
-
-                                            elif category.value == "network":
-                                                # Retry with backoff
-                                                retry_success = False
-                                                for attempt, delay in enumerate([1.0, 2.0, 4.0]):
-                                                    self.db.log(
-                                                        "WARNING",
-                                                        f"[FillGuard] Reintento {attempt+1}/3 para pata (esperando {delay}s)...",
-                                                        self.worker_id,
-                                                    )
-                                                    await asyncio.sleep(delay)
-
-                                                    success2, error2, _ = await execute_fn(next_signal)
-                                                    if success2:
-                                                        retry_success = True
-                                                        filled_legs.append(next_signal)
-                                                        if ws_server.has_clients(self.worker_id):
-                                                            await ws_server.broadcast(
-                                                                self.worker_id,
-                                                                make_event(
-                                                                    "trade_update",
-                                                                    {
-                                                                        "symbol": next_signal.symbol,
-                                                                        "side": next_signal.side,
-                                                                        "price": next_signal.price,
-                                                                        "reason": next_signal.reason,
-                                                                    },
-                                                                ),
-                                                            )
-                                                        break
-
-                                                    # If error changed to balance/market, stop retrying
-                                                    cat2 = fill_guard.classify_error(error2)
-                                                    if cat2.value in ("balance", "market"):
-                                                        break
-
-                                                if not retry_success:
-                                                    self.db.log(
-                                                        "ERROR",
-                                                        f"[FillGuard] Reintentos agotados. Vendiendo {len(filled_legs)} pata(s) llenada(s).",
-                                                        self.worker_id,
-                                                    )
-                                                    await emergency_sell_filled("retries_exhausted")
+                                                success2, error2, _ = await execute_fn(next_signal)
+                                                if success2:
+                                                    retry_success = True
+                                                    filled_legs.append(next_signal)
+                                                    if ws_server.has_clients(self.worker_id):
+                                                        await ws_server.broadcast(
+                                                            self.worker_id,
+                                                            make_event(
+                                                                "trade_update",
+                                                                {
+                                                                    "symbol": next_signal.symbol,
+                                                                    "side": next_signal.side,
+                                                                    "price": next_signal.price,
+                                                                    "reason": next_signal.reason,
+                                                                },
+                                                            ),
+                                                        )
                                                     break
 
-                                            else:
-                                                # Unknown error - sell for safety
+                                                # If error changed to balance/market, stop retrying
+                                                cat2 = fill_guard.classify_error(error2)
+                                                if cat2.value in ("balance", "market"):
+                                                    break
+
+                                            if not retry_success:
                                                 self.db.log(
                                                     "ERROR",
-                                                    f"[FillGuard] Error desconocido: {error}. Vendiendo {len(filled_legs)} pata(s) llenada(s).",
+                                                    f"[FillGuard] Reintentos agotados. Vendiendo {len(filled_legs)} pata(s) llenada(s).",
                                                     self.worker_id,
                                                 )
-                                                await emergency_sell_filled("unknown_error")
+                                                await emergency_sell_filled("retries_exhausted")
                                                 break
+
+                                        else:
+                                            # Unknown error - sell for safety
+                                            self.db.log(
+                                                "ERROR",
+                                                f"[FillGuard] Error desconocido: {error}. Vendiendo {len(filled_legs)} pata(s) llenada(s).",
+                                                self.worker_id,
+                                            )
+                                            await emergency_sell_filled("unknown_error")
+                                            break
                 except Exception as e:
                     self.db.log("ERROR", f"Error en event_loop: {e}", self.worker_id)
                 finally:

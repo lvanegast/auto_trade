@@ -383,7 +383,7 @@ class ResolutionMonitor:
                             # la dirección (sniper YES vs 1xN garantizado).
                             direction = opp_data.get("direction", "") if isinstance(opp_data, dict) else ""
                             outcome_count = int(opp_data.get("outcomes_count", 0) or 0) if isinstance(opp_data, dict) else 0
-                            if direction in ("BUY_ALL_YES", "BUY_ALL_YES_1XN"):
+                            if direction in ("BUY_ALL_YES", "BUY_ALL_YES_1XN", "MAKER_2LEG_1XN", "MAKER_REWARDS_SPREAD_GAP"):
                                 payout = 1.0
                             elif direction in ("BUY_ALL_NO", "BUY_ALL_NO_1XN") and outcome_count > 0:
                                 payout = outcome_count - 1
@@ -412,6 +412,7 @@ class ResolutionMonitor:
                             position_won=position_won,
                             position_pnl=position_pnl,
                             category=category,
+                            is_real=(real_position is not None),
                         )
                 except Exception as e_tg:
                     print(f"[ResolutionMonitor TG Error] {e_tg}")
