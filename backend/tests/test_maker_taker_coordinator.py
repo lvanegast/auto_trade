@@ -263,21 +263,23 @@ class TestMakerTakerCoordinator:
         assert pair is not None
 
         # 1. Al inicio, ambas están RESTING
-        status, sig = self.coordinator.evaluate_pair(slug, current_yes_ask=0.05, current_no_ask=0.96)
+        status, sig, cancel_id = self.coordinator.evaluate_pair(slug, current_yes_ask=0.05, current_no_ask=0.96)
         assert status == "BOTH_RESTING"
         assert sig is None
+        assert cancel_id is None
 
         # 2. YES se llena a t=100. NO sigue resting.
         self.coordinator.mark_filled("ord_pair_yes")
-        status, sig = self.coordinator.evaluate_pair(
+        status, sig, cancel_id = self.coordinator.evaluate_pair(
             slug, current_yes_ask=0.05, current_no_ask=0.96, max_unhedged_wait_s=15.0, now=105.0
         )
         # Han pasado 5s (< 15s) -> espera tranquila
         assert status == "ONE_FILLED_AWAITING"
         assert sig is None
+        assert cancel_id is None
 
         # 3. Pasan 20s (t=125) sin que NO se llene -> SE DISPARA EL GUARDRAIL FOK
-        status, sig = self.coordinator.evaluate_pair(
+        status, sig, cancel_id = self.coordinator.evaluate_pair(
             slug, current_yes_ask=0.05, current_no_ask=0.965, max_unhedged_wait_s=15.0, now=125.0
         )
         assert status == "TRIGGER_FOK_NO"
@@ -285,4 +287,58 @@ class TestMakerTakerCoordinator:
         assert sig.side == "BUY"
         assert sig.order_type == "FOK"
         assert sig.price == 0.965
+        assert cancel_id == "ord_pair_no"
         assert pair.status == "HEDGED_FOK"
+
+    def test_evaluate_order_sequential_hedge_and_scratch(self):
+        ord_seq = RestingMakerOrder(
+            order_id="ord_seq_1",
+            worker_id="worker_6",
+            market_slug="btc-up-or-down-15-min-100",
+            token_id="tok_yes",
+            side="BUY",
+            price=0.48,
+            spend_amount=1.0,
+            shares=2.0833,
+            leg_name="YES",
+            hedge_token_id="tok_no",
+            hedge_leg_name="NO",
+            hedge_max_price=0.50,
+            max_total_cost=0.985,
+        )
+        self.coordinator.register_order(ord_seq)
+        self.coordinator.mark_filled("ord_seq_1")
+
+        # Escenario A: Cobertura viable (0.48 + 0.49 = 0.97 <= 0.985)
+        status, sig = self.coordinator.evaluate_order("ord_seq_1", current_hedge_ask=0.49, current_own_bid=0.47)
+        assert status == "TRIGGER_FOK_HEDGE"
+        assert sig is not None
+        assert sig.side == "BUY"
+        assert sig.order_type == "FOK"
+        assert sig.price == 0.49
+
+        # Escenario B: Spread inviable (0.48 + 0.55 = 1.03 > 0.985) -> Scratch Unwind
+        ord_seq2 = RestingMakerOrder(
+            order_id="ord_seq_2",
+            worker_id="worker_6",
+            market_slug="eth-up-or-down-15-min-100",
+            token_id="tok_eth_no",
+            side="BUY",
+            price=0.48,
+            spend_amount=1.0,
+            shares=2.0833,
+            leg_name="NO",
+            hedge_token_id="tok_eth_yes",
+            hedge_leg_name="YES",
+            hedge_max_price=0.50,
+            max_total_cost=0.985,
+        )
+        self.coordinator.register_order(ord_seq2)
+        self.coordinator.mark_filled("ord_seq_2")
+
+        status, sig = self.coordinator.evaluate_order("ord_seq_2", current_hedge_ask=0.55, current_own_bid=0.475)
+        assert status == "TRIGGER_SCRATCH"
+        assert sig is not None
+        assert sig.side == "SELL"
+        assert sig.order_type == "FOK"
+        assert sig.price == 0.475

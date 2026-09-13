@@ -37,6 +37,7 @@ class MakerTwoLegStrategy(BaseStrategy):
         worker_id: str = "worker_6",
         observation_only: bool = True,
         min_market_volume_usd: float = 5.0,  # volumen real transado mínimo para considerar el mercado "vivo"
+        sequential_mode: bool = None,
     ):
         super().__init__(symbol)
         self.min_edge_pct = float(os.getenv("MAKER_MIN_EDGE_PCT", str(min_edge_pct if min_edge_pct is not None else 0.025)))
@@ -52,6 +53,10 @@ class MakerTwoLegStrategy(BaseStrategy):
         self.worker_id = worker_id
         self.observation_only = observation_only
         self.min_market_volume_usd = float(os.getenv("CRYPTO_MAKER_MIN_VOLUME_USD", "0.0"))
+        if sequential_mode is not None:
+            self.sequential_mode = sequential_mode
+        else:
+            self.sequential_mode = os.getenv("MAKER_SEQUENTIAL_MODE", "true").lower() in ("true", "1", "yes")
 
         # Estado de pares en curso: {slug: {"leg1": str, "leg2": str, "filled": [..]}}
         self._active_pairs: dict = {}
@@ -280,14 +285,45 @@ class MakerTwoLegStrategy(BaseStrategy):
         self._last_signal_time[slug] = now
 
         # Presupuesto FIJO por leg (min 1, max 3 USD), estilo Binance .fun:
-        # cada pata (YES y NO) invierte exactamente leg_size_usd, sin balancear
-        # el payout (a mayor edge, mayor ganancia por pata).
         leg_size_usd = self.position_size_usd
         usd_leg_yes = round(leg_size_usd, 4)
         usd_leg_no = round(leg_size_usd, 4)
-        # Contratos que se compran con ese monto en cada pata (solo informativo)
-        num_contracts = leg_size_usd / max(total_maker_cost, 0.01)
 
+        if self.sequential_mode:
+            # MODO SECUENCIAL MAKER-TAKER (Cero riesgo de 2 patas pasivas descalzadas):
+            # Colocamos SOLO UNA pata como Maker GTC al libro.
+            # Preferimos la pata más cercana a 0.50 o con mayor profundidad.
+            pick_yes = abs(cost_yes - 0.50) <= abs(cost_no - 0.50)
+            chosen_leg = "YES" if pick_yes else "NO"
+            chosen_cost = cost_yes if pick_yes else cost_no
+            chosen_usd = usd_leg_yes if pick_yes else usd_leg_no
+            hedge_leg = "NO" if pick_yes else "YES"
+
+            reason = (
+                f"Sequential Maker-Taker [1/2]: BUY {chosen_leg} GTC @{chosen_cost:.4f} | "
+                f"Hedging con {hedge_leg} FOK al confirmar fill | Par total cost: {total_maker_cost:.4f}"
+            )
+
+            self.successful_pairs += 1
+            if self.db:
+                self.db.log(
+                    "INFO",
+                    f"🎯 [Sequential Maker-Taker] Colocando Pata 1: {chosen_leg} @ {chosen_cost:.4f} (prof=${yes_depth if pick_yes else no_depth:.2f}). "
+                    f"Pata 2 ({hedge_leg}) se ejecutará FOK Taker al confirmar fill.",
+                    self.worker_id,
+                )
+
+            return SignalEvent(
+                symbol=f"{event_id}_{chosen_leg}",
+                side="BUY",
+                price=chosen_cost,
+                reason=reason,
+                position_size_usd=chosen_usd,
+                position_id=None,
+                order_type="GTC",
+            )
+
+        # MODO SIMULTÁNEO (Clásico):
         reason_yes = (
             f"Maker 2-Leg [1/2]: BUY YES GTC @{cost_yes:.4f} | "
             f"Cost total par: {total_maker_cost:.4f} | Edge(spread): {maker_edge:.2%}"

@@ -21,6 +21,7 @@ def test_maker_two_leg_emits_both_signals_simultaneously():
         min_edge_pct=0.02,
         position_size_usd=1.0,
         observation_only=False,
+        sequential_mode=False,
     )
 
     event = PriceUpdateEvent(
@@ -54,6 +55,38 @@ def test_maker_two_leg_emits_both_signals_simultaneously():
 
     # Costo total combinado: 0.015 + 0.935 = 0.950 (5.0% de spread)
     assert round(sig1.price + sig2.price, 3) == 0.950
+
+
+def test_maker_two_leg_sequential_mode():
+    """Valida que en modo secuencial solo emite 1 pata maker y no encola pata 2."""
+    mock_db = MagicMock()
+    strategy = MakerTwoLegStrategy(
+        db=mock_db,
+        worker_id="worker_6",
+        symbol="CRYPTO_MAKER",
+        min_edge_pct=0.02,
+        position_size_usd=1.0,
+        observation_only=False,
+        sequential_mode=True,
+    )
+
+    event = PriceUpdateEvent(
+        symbol="limitless_crypto_btc-up-or-down-5-min-9999",
+        price=0.50,
+        bid=0.48,
+        ask=0.52,
+        chart_price="BTC 5m test",
+    )
+    event.bid_size = 500.0
+    event.ask_size = 500.0
+    event.market_volume = 1500.0
+    event.market_slug = "btc-up-or-down-5-min-9999"
+    event.expiration_timestamp = 2000000000.0
+
+    sig = strategy.on_price_update(event)
+    assert sig is not None
+    assert sig.order_type == "GTC"
+    assert len(strategy._pending_signals) == 0  # Cero órdenes pasivas descalzadas
 
 
 def test_coordinator_handles_dual_resting_and_adverse_cancellation():

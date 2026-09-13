@@ -810,8 +810,10 @@ class TradingWorker:
             async with Client("https://api.limitless.exchange", hmac_credentials=HMACCredentials(token_id=api_key, secret=api_secret)) as client:
                 order_client = OrderClient(client)
 
+                resting_orders = maker_taker_coordinator.get_resting_only_orders(self.worker_id)
+
                 # 1. Chequeo de Adverse Selection (Binance Oráculo)
-                for ord_info in list(active_orders):
+                for ord_info in list(resting_orders):
                     is_jump, jump_reason = maker_taker_coordinator.check_adverse_selection(ord_info.order_id)
                     if is_jump:
                         self.db.log(
@@ -825,10 +827,30 @@ class TradingWorker:
                             pass
                         maker_taker_coordinator.mark_cancelled(ord_info.order_id, jump_reason)
 
+                # 1.5 Chequeo de Viabilidad del Spread (Spread Viability Guard)
+                from src.limitless_price_cache import get_limitless_executable_price
+                for ord_info in list(maker_taker_coordinator.get_resting_only_orders(self.worker_id)):
+                    book = get_limitless_executable_price(ord_info.market_slug)
+                    if book:
+                        hedge_ask = book.get("no_ask" if ord_info.leg_name == "YES" else "yes_ask", 0.0)
+                        if hedge_ask > 0:
+                            is_viable, v_reason = maker_taker_coordinator.check_spread_viability(ord_info.order_id, hedge_ask)
+                            if not is_viable:
+                                self.db.log(
+                                    "WARNING",
+                                    f"[SpreadViability] Cancelando orden Maker {ord_info.order_id[:8]} en {ord_info.market_slug}: {v_reason}",
+                                    self.worker_id,
+                                )
+                                try:
+                                    await order_client.cancel(ord_info.order_id)
+                                except Exception:
+                                    pass
+                                maker_taker_coordinator.mark_cancelled(ord_info.order_id, v_reason)
+
                 # 2. Chequeo de expiración (cancelar órdenes si faltan < 45s para el settlement)
                 from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
                 now_ts = time.time()
-                for ord_info in list(active_orders):
+                for ord_info in list(maker_taker_coordinator.get_resting_only_orders(self.worker_id)):
                     exp_ts = ResolutionSniperFeeder._parse_expiration(ord_info.market_slug)
                     if exp_ts and (exp_ts - now_ts) < 45.0:
                         self.db.log(
@@ -843,9 +865,7 @@ class TradingWorker:
                         maker_taker_coordinator.mark_cancelled(ord_info.order_id, "market_near_expiration")
 
                 # 3. Consultar clob positions para detectar fills
-                active_orders = maker_taker_coordinator.get_active_orders(self.worker_id)
-                if not active_orders:
-                    return
+                resting_now = maker_taker_coordinator.get_resting_only_orders(self.worker_id)
 
                 try:
                     clob_data = await client.portfolio.get_clob_positions()
@@ -857,7 +877,7 @@ class TradingWorker:
                                 if isinstance(lo, dict) and lo.get("id"):
                                     live_order_ids.add(lo.get("id"))
 
-                    for ord_info in active_orders:
+                    for ord_info in resting_now:
                         if ord_info.order_id not in live_order_ids:
                             exp_ts = ResolutionSniperFeeder._parse_expiration(ord_info.market_slug)
                             if exp_ts and now_ts >= exp_ts:
@@ -900,45 +920,70 @@ class TradingWorker:
                             except Exception:
                                 pass
 
-                    # 4. Evaluar pares para Hedge Taker Inmediato o Scratch Unwind
-                    slugs = set(o.market_slug for o in active_orders)
+                    # 4. Evaluar pares y órdenes individuales para Hedge Taker Inmediato o Scratch Unwind
+                    all_active = maker_taker_coordinator.get_active_orders(self.worker_id)
+                    slugs = set(o.market_slug for o in all_active)
                     for slug in slugs:
-                        from src.limitless_price_cache import get_limitless_executable_price
                         book = get_limitless_executable_price(slug)
                         if book:
                             yes_ask = book.get("yes_ask", 0.0)
                             no_ask = book.get("no_ask", 0.0)
                             yes_bid = book.get("yes_bid", 0.0)
                             no_bid = book.get("no_bid", 0.0)
-                            status, action_sig, cancel_order_id = maker_taker_coordinator.evaluate_pair(
-                                slug,
-                                current_yes_ask=yes_ask,
-                                current_no_ask=no_ask,
-                                current_yes_bid=yes_bid,
-                                current_no_bid=no_bid,
-                                max_unhedged_wait_s=0.0,
-                            )
-                            if cancel_order_id:
-                                try:
-                                    await order_client.cancel(cancel_order_id)
-                                    maker_taker_coordinator.mark_cancelled(cancel_order_id, "cancelled_for_hedge_or_scratch")
-                                except Exception:
-                                    pass
 
-                            if action_sig is not None:
-                                self.db.log(
-                                    "WARNING",
-                                    f"[{status}] Disparando orden FOK {action_sig.side} para {action_sig.symbol}: {action_sig.reason}",
-                                    self.worker_id,
+                            pair = maker_taker_coordinator.get_pair(slug)
+                            if pair and pair.status not in ("BOTH_FILLED", "HEDGED_FOK", "SCRATCHED", "CANCELLED"):
+                                status, action_sig, cancel_order_id = maker_taker_coordinator.evaluate_pair(
+                                    slug,
+                                    current_yes_ask=yes_ask,
+                                    current_no_ask=no_ask,
+                                    current_yes_bid=yes_bid,
+                                    current_no_bid=no_bid,
+                                    max_unhedged_wait_s=0.0,
                                 )
-                                try:
-                                    await self._execute_order(action_sig)
-                                except Exception as e_fok:
-                                    self.db.log("ERROR", f"[{status} Error] Falló orden FOK: {e_fok}", self.worker_id)
+                                if cancel_order_id:
+                                    try:
+                                        await order_client.cancel(cancel_order_id)
+                                        maker_taker_coordinator.mark_cancelled(cancel_order_id, "cancelled_for_hedge_or_scratch")
+                                    except Exception:
+                                        pass
+
+                                if action_sig is not None:
+                                    self.db.log(
+                                        "WARNING",
+                                        f"[{status}] Disparando orden FOK {action_sig.side} para {action_sig.symbol}: {action_sig.reason}",
+                                        self.worker_id,
+                                    )
+                                    try:
+                                        await self._execute_order(action_sig)
+                                    except Exception as e_fok:
+                                        self.db.log("ERROR", f"[{status} Error] Falló orden FOK: {e_fok}", self.worker_id)
+                            else:
+                                # Órdenes individuales sin par (Sequential Maker-Taker)
+                                unhedged = [o for o in all_active if o.market_slug == slug and o.status == "FILLED"]
+                                for f_ord in unhedged:
+                                    hedge_ask = no_ask if f_ord.leg_name == "YES" else yes_ask
+                                    own_bid = yes_bid if f_ord.leg_name == "YES" else no_bid
+                                    status, action_sig = maker_taker_coordinator.evaluate_order(
+                                        f_ord.order_id,
+                                        current_hedge_ask=hedge_ask,
+                                        current_own_bid=own_bid,
+                                        max_total_cost=0.985,
+                                    )
+                                    if action_sig is not None:
+                                        self.db.log(
+                                            "WARNING",
+                                            f"[{status}] Disparando orden FOK {action_sig.side} para {action_sig.symbol}: {action_sig.reason}",
+                                            self.worker_id,
+                                        )
+                                        try:
+                                            await self._execute_order(action_sig)
+                                        except Exception as e_fok:
+                                            self.db.log("ERROR", f"[{status} Error] Falló orden FOK: {e_fok}", self.worker_id)
                 except Exception as e_clob:
-                    pass
+                    self.db.log("WARNING", f"[MakerFastSync] Error consultando CLOB positions: {e_clob}", self.worker_id)
         except Exception as e_sync:
-            pass
+            self.db.log("WARNING", f"[MakerFastSync] Error en _sync_maker_resting_orders: {e_sync}", self.worker_id)
 
     async def _check_market_resolutions(self):
         """
@@ -1911,11 +1956,18 @@ class TradingWorker:
                                 orderbook = await limitless_c.markets.get_orderbook(market_slug)
                                 
                                 if orderbook and hasattr(orderbook, 'bids') and hasattr(orderbook, 'asks'):
-                                    # Convert to dict format expected by OrderBookWalker
-                                    ob_dict = {
-                                        'bids': [{'price': str(b.price), 'size': str(b.size)} for b in (orderbook.bids or [])],
-                                        'asks': [{'price': str(a.price), 'size': str(a.size)} for a in (orderbook.asks or [])],
-                                    }
+                                    if token == "NO":
+                                        # Invert orderbook for NO outcome (binary complement: bid_NO = 1 - ask_YES, ask_NO = 1 - bid_YES)
+                                        ob_dict = {
+                                            'bids': [{'price': str(round(1.0 - float(a.price), 4)), 'size': str(a.size)} for a in (orderbook.asks or []) if float(a.price) < 1.0],
+                                            'asks': [{'price': str(round(1.0 - float(b.price), 4)), 'size': str(b.size)} for b in (orderbook.bids or []) if float(b.price) > 0.0],
+                                        }
+                                    else:
+                                        # Convert to dict format expected by OrderBookWalker
+                                        ob_dict = {
+                                            'bids': [{'price': str(b.price), 'size': str(b.size)} for b in (orderbook.bids or [])],
+                                            'asks': [{'price': str(a.price), 'size': str(a.size)} for a in (orderbook.asks or [])],
+                                        }
                                     
                                     # Simulate fill to check liquidity and slippage
                                     fill_result = orderbook_walker.simulate_fill(
@@ -1927,7 +1979,7 @@ class TradingWorker:
                                     # Log the liquidity analysis
                                     self.db.log(
                                         "INFO",
-                                        f"[OrderBookWalker] Liquidity check: "
+                                        f"[OrderBookWalker] Liquidity check ({token} {signal.side}): "
                                         f"best_price={fill_result.best_price:.4f}, "
                                         f"avg_price={fill_result.avg_price:.4f}, "
                                         f"slippage={fill_result.slippage_pct:.2f}%, "
@@ -1936,11 +1988,12 @@ class TradingWorker:
                                         self.worker_id,
                                     )
                                     
-                                    # Reject if slippage is too high (>2%)
-                                    if fill_result.slippage_pct > 2.0:
+                                    # Para ventas de emergencia (Scratch Unwind / Exit), permitir hasta 15% slippage para no atrapar capital
+                                    max_allowed_slippage = 15.0 if signal.side == "SELL" else 2.0
+                                    if fill_result.slippage_pct > max_allowed_slippage:
                                         self.db.log(
                                             "WARNING",
-                                            f"[OrderBookWalker] REJECTED: Slippage too high ({fill_result.slippage_pct:.2f}% > 2.0%). "
+                                            f"[OrderBookWalker] REJECTED: Slippage too high ({fill_result.slippage_pct:.2f}% > {max_allowed_slippage}%). "
                                             f"Insufficient liquidity for ${spend_amount:.2f} order.",
                                             self.worker_id,
                                         )

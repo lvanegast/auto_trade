@@ -171,6 +171,35 @@ class MakerTakerCoordinator:
 
         return "ONE_FILLED_AWAITING", None, None
 
+    def evaluate_order(
+        self,
+        order_id: str,
+        current_hedge_ask: float,
+        current_own_bid: float = 0.0,
+        max_total_cost: float = 0.985,
+    ) -> Tuple[str, Optional[SignalEvent]]:
+        """
+        Evalúa una orden Maker individual (Sequential Maker-Taker).
+        Si la orden está FILLED:
+        1. Si (filled_price + current_hedge_ask) <= max_total_cost:
+           Dispara FOK BUY en la pata contraria (Taker Hedge).
+        2. Si (filled_price + current_hedge_ask) > max_total_cost:
+           Dispara FOK SELL en la pata actual (Scratch Unwind de emergencia).
+        """
+        order = self.get_resting_order(order_id)
+        if not order or order.status != "FILLED":
+            return order.status if order else "NOT_FOUND", None
+
+        total_cost = (order.filled_price or order.price) + current_hedge_ask
+        if current_hedge_ask > 0 and total_cost <= max_total_cost:
+            fok_sig = self.build_hedge_signal(order, current_hedge_ask)
+            order.status = "HEDGED"
+            return "TRIGGER_FOK_HEDGE", fok_sig
+        else:
+            scratch_sig = self.build_scratch_signal(order, current_own_bid)
+            order.status = "SCRATCHED"
+            return "TRIGGER_SCRATCH", scratch_sig
+
     def register_order(self, order: RestingMakerOrder) -> None:
         """Registra una orden Maker que ha entrado al libro (post_only) en estado RESTING."""
         self._resting_orders[order.order_id] = order
@@ -189,7 +218,22 @@ class MakerTakerCoordinator:
         return self._resting_orders.get(order_id)
 
     def get_active_orders(self, worker_id: Optional[str] = None) -> List[RestingMakerOrder]:
+        """Retorna órdenes activas que requieren monitoreo o acción (RESTING o FILLED sin cubrir)."""
+        orders = [o for o in self._resting_orders.values() if o.status in ("RESTING", "FILLED")]
+        if worker_id:
+            orders = [o for o in orders if o.worker_id == worker_id]
+        return orders
+
+    def get_resting_only_orders(self, worker_id: Optional[str] = None) -> List[RestingMakerOrder]:
+        """Retorna solo las órdenes que están descansando en el libro (RESTING)."""
         orders = [o for o in self._resting_orders.values() if o.status == "RESTING"]
+        if worker_id:
+            orders = [o for o in orders if o.worker_id == worker_id]
+        return orders
+
+    def get_unhedged_filled_orders(self, worker_id: Optional[str] = None) -> List[RestingMakerOrder]:
+        """Retorna órdenes que ya se llenaron y requieren Taker Hedge o Scratch Unwind."""
+        orders = [o for o in self._resting_orders.values() if o.status == "FILLED"]
         if worker_id:
             orders = [o for o in orders if o.worker_id == worker_id]
         return orders
