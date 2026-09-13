@@ -1273,7 +1273,16 @@ class TradingWorker:
             print(f"[Worker {self.worker_id}] Loop de eventos cancelado.")
 
     async def _execute_order(self, signal: SignalEvent):
-        # GUARDRAIL ABSOLUTO: Capital Protection Whitelist
+        # GUARDRAIL ABSOLUTO: Capital Protection Whitelist & Emergency Freeze
+        # Bloqueo total preventivo por código para proteger los fondos de la billetera
+        if os.getenv("EMERGENCY_REAL_FREEZE", "true").lower() in ("true", "1", "yes"):
+            self.db.log(
+                "WARNING",
+                f"[CapitalProtection] EMERGENCY REAL FREEZE ACTIVO (Modo Congelación Total). Ejecución on-chain BLOQUEADA para worker '{self.worker_id}'.",
+                self.worker_id,
+            )
+            return
+
         # Any worker NOT explicitly listed in ALLOWED_REAL_WORKERS (env var or bot_state DB) is blocked from real execution.
         allowed_env = os.getenv("ALLOWED_REAL_WORKERS", "").strip()
         allowed_db = self.db.get_state("ALLOWED_REAL_WORKERS", "") if (self.db and hasattr(self.db, "get_state")) else ""
