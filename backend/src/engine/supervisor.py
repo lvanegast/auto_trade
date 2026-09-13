@@ -799,16 +799,16 @@ class TradingWorker:
             if not active_orders:
                 return
 
-            api_key = self.limitless_api_key or os.getenv("LIMITLESS_API_KEY")
-            api_secret = self.limitless_api_secret or os.getenv("LIMITLESS_API_SECRET")
-            if not api_key or not api_secret:
+            api_key = os.getenv("LIMITLESS_API_KEY")
+            api_secret = os.getenv("LIMITLESS_API_SECRET")
+            private_key = os.getenv("LIMITLESS_PRIVATE_KEY")
+            if not api_key or not api_secret or not private_key:
                 return
 
-            from limitless_sdk import Client, HMACCredentials
-            from limitless_sdk.orders import OrderClient
+            from limitless_sdk import Client as LimitlessClient, HMACCredentials
 
-            async with Client("https://api.limitless.exchange", hmac_credentials=HMACCredentials(token_id=api_key, secret=api_secret)) as client:
-                order_client = OrderClient(client)
+            async with LimitlessClient("https://api.limitless.exchange", hmac_credentials=HMACCredentials(token_id=api_key, secret=api_secret)) as client:
+                order_client = client.new_order_client(private_key)
 
                 resting_orders = maker_taker_coordinator.get_resting_only_orders(self.worker_id)
 
@@ -1372,7 +1372,7 @@ class TradingWorker:
                                             await emergency_sell_filled("unknown_error")
                                             break
                 except Exception as e:
-                    self.db.log("ERROR", f"Error en event_loop: {e}", self.worker_id)
+                    self.db.log("ERROR", f"Error en event_loop: {e or repr(e)}", self.worker_id)
                 finally:
                     self.queue.task_done()
         except asyncio.CancelledError:
@@ -2238,7 +2238,7 @@ class TradingWorker:
                 except Exception as e:
                     self.db.log(
                         "ERROR",
-                        f"RECHAZADO: fallo en ejecución on-chain Limitless: {e}. No se crea posición simulada (Modo Estricto Real).",
+                        f"RECHAZADO: fallo en ejecución on-chain Limitless: {e or repr(e)}. No se crea posición simulada (Modo Estricto Real).",
                         self.worker_id,
                     )
                     # Si falla una pata y la estrategia tiene señales pendientes (como la pata 2 de un par),
