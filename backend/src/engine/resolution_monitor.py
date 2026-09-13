@@ -412,7 +412,7 @@ class ResolutionMonitor:
                             position_won=position_won,
                             position_pnl=position_pnl,
                             category=category,
-                            is_real=(real_position is not None),
+                            is_real=bool(positions),
                         )
                 except Exception as e_tg:
                     print(f"[ResolutionMonitor TG Error] {e_tg}")

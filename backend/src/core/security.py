@@ -19,10 +19,6 @@ class SecurityGuard:
         self.max_drawdown_pct = float(os.getenv("MAX_DRAWDOWN_PCT", "0.05"))
         self.max_concurrent_positions = int(os.getenv("MAX_CONCURRENT_POSITIONS", "2"))
         self.max_trades_per_minute = int(os.getenv("MAX_TRADES_PER_MINUTE", "20"))
-
-    def set_db(self, db):
-        """Set database manager instance."""
-        self.db = db
         self.cooldown_after_loss_seconds = float(
             os.getenv("COOLDOWN_AFTER_LOSS_SECONDS", "30")
         )
@@ -44,6 +40,10 @@ class SecurityGuard:
         self._halted = False
         self._halt_reason = ""
         self._worker_peak_equity: dict[str, float] = {}
+
+    def set_db(self, db):
+        """Set database manager instance."""
+        self.db = db
 
     def can_trade(self, worker_id: str) -> tuple[bool, str]:
         if self._backtesting:
@@ -268,9 +268,6 @@ class SecurityGuard:
             self._consecutive_losses = {}
             self._paused_workers = set()
             self._daily_reset_date = today
-
-    def set_db(self, db):
-        self.db = db
 
 
 security_guard = SecurityGuard()
