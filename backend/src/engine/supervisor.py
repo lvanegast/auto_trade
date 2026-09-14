@@ -878,8 +878,10 @@ class TradingWorker:
                             pass
                         maker_taker_coordinator.mark_cancelled(ord_info.order_id, "resting_order_ttl_expired")
 
-                # 3. Consultar clob positions para detectar fills
+                # 3. Consultar clob positions para detectar fills solo si hay órdenes resting
                 resting_now = maker_taker_coordinator.get_resting_only_orders(self.worker_id)
+                if not resting_now:
+                    return
 
                 try:
                     clob_data = await client.portfolio.get_clob_positions()

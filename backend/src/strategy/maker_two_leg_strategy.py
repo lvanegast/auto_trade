@@ -104,26 +104,41 @@ class MakerTwoLegStrategy(BaseStrategy):
         else:
             slug = symbol
 
-        # FILTRO DE ACTIVOS LÍQUIDOS: Solo cotizar en activos de alta liquidez y volumen real (BTC y ETH por defecto)
-        allowed_assets = [
-            a.strip().lower() for a in os.getenv("MAKER_ALLOWED_ASSETS", "BTC,ETH").split(",") if a.strip()
-        ]
-        is_allowed = any(
-            slug.lower().startswith(f"{asset}-") or f"-{asset}-" in slug.lower()
-            for asset in allowed_assets
-        )
-        if not is_allowed:
-            self._diag["asset_filtered"] = self._diag.get("asset_filtered", 0) + 1
-            return None
+        # FILTRO DE ACTIVOS: Por defecto permite TODOS los criptoactivos ("ALL").
+        # Si el usuario configura MAKER_ALLOWED_ASSETS en .env, restringe a esa lista.
+        allowed_assets_raw = os.getenv("MAKER_ALLOWED_ASSETS", "ALL").strip()
+        if allowed_assets_raw.upper() != "ALL":
+            allowed_assets = [
+                a.strip().lower() for a in allowed_assets_raw.split(",") if a.strip()
+            ]
+            is_allowed = any(
+                slug.lower().startswith(f"{asset}-") or f"-{asset}-" in slug.lower()
+                for asset in allowed_assets
+            )
+            if not is_allowed:
+                self._diag["asset_filtered"] = self._diag.get("asset_filtered", 0) + 1
+                return None
 
-        # FILTRO DE EXPIRACIÓN MÍNIMA: NO entrar si faltan menos de 180s (3 minutos) para el cierre
-        # Evita entrar cuando el mercado está por expirar y no hay tiempo para ejecutar la cobertura
+        # FILTRO DE EXPIRACIÓN MÍNIMA POR TEMPORALIDAD:
+        # En 5m: mínimo 75s (margen suficiente para orden resting de 45s + cobertura FOK)
+        # En 15m: mínimo 120s
+        # En otros: mínimo 180s
         from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
-        exp_ts = ResolutionSniperFeeder._parse_expiration(slug)
+        exp_ts = getattr(event, "expiration_timestamp", None)
+        if not exp_ts:
+            exp_ts = ResolutionSniperFeeder._parse_expiration(slug)
         now_ts = time.time()
-        if exp_ts and (exp_ts - now_ts) < 180.0:
-            self._diag["near_expiration_filtered"] = self._diag.get("near_expiration_filtered", 0) + 1
-            return None
+        if exp_ts:
+            seconds_left = exp_ts - now_ts
+            if "-5-min-" in slug.lower() or "-5min-" in slug.lower():
+                min_sec = float(os.getenv("MAKER_MIN_SECONDS_TO_EXPIRATION_5M", "75.0"))
+            elif "-15-min-" in slug.lower() or "-15min-" in slug.lower():
+                min_sec = float(os.getenv("MAKER_MIN_SECONDS_TO_EXPIRATION_15M", "120.0"))
+            else:
+                min_sec = float(os.getenv("MAKER_MIN_SECONDS_TO_EXPIRATION", "180.0"))
+            if seconds_left < min_sec:
+                self._diag["near_expiration_filtered"] = self._diag.get("near_expiration_filtered", 0) + 1
+                return None
 
         # BLOQUEO DE EXCLUSIÓN MUTUA DE MERCADO (Single-Market Exclusivity):
         # Si ya hay una orden descansando o pendiente de cobertura en el coordinador,
@@ -192,23 +207,6 @@ class MakerTwoLegStrategy(BaseStrategy):
         if now - last < self.cooldown_seconds:
             self._diag["cooldown"] += 1
             return None
-
-        # TTL GUARD: Solo entrar si al mercado le queda suficiente tiempo de vida (al menos 90s)
-        min_ttl_s = float(os.getenv("MAKER_MIN_SECONDS_TO_EXPIRATION", "90.0"))
-        exclude_5m = os.getenv("MAKER_EXCLUDE_5M", "false").lower() in ("true", "1", "yes")
-        if exclude_5m and ("-5-min-" in slug.lower() or "-5min-" in slug.lower()):
-            self._diag["time_filtered"] = self._diag.get("time_filtered", 0) + 1
-            return None
-
-        from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
-        exp_ts = getattr(event, "expiration_timestamp", None)
-        if not exp_ts:
-            exp_ts = ResolutionSniperFeeder._parse_expiration(slug)
-        if exp_ts:
-            seconds_left = exp_ts - now
-            if seconds_left < min_ttl_s:
-                self._diag["time_filtered"] = self._diag.get("time_filtered", 0) + 1
-                return None
 
         # Validar edge maker (spread) contra umbral mínimo Y MÁXIMO viable (ej. 2.5% a 6.5%)
         # Spreads > 6.5% corresponden a libros desiertos/fantasmas donde nadie toma la contraparte.
