@@ -116,6 +116,15 @@ class MakerTwoLegStrategy(BaseStrategy):
             self._diag["asset_filtered"] = self._diag.get("asset_filtered", 0) + 1
             return None
 
+        # FILTRO DE EXPIRACIÓN MÍNIMA: NO entrar si faltan menos de 180s (3 minutos) para el cierre
+        # Evita entrar cuando el mercado está por expirar y no hay tiempo para ejecutar la cobertura
+        from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
+        exp_ts = ResolutionSniperFeeder._parse_expiration(slug)
+        now_ts = time.time()
+        if exp_ts and (exp_ts - now_ts) < 180.0:
+            self._diag["near_expiration_filtered"] = self._diag.get("near_expiration_filtered", 0) + 1
+            return None
+
         # BLOQUEO DE EXCLUSIÓN MUTUA DE MERCADO (Single-Market Exclusivity):
         # Si ya hay una orden descansando o pendiente de cobertura en el coordinador,
         # NUNCA abrir otro mercado. La siguiente orden solo puede ser del mismo mercado.

@@ -847,12 +847,12 @@ class TradingWorker:
                                     pass
                                 maker_taker_coordinator.mark_cancelled(ord_info.order_id, v_reason)
 
-                # 2. Chequeo de expiración (cancelar órdenes si faltan < 45s para el settlement)
+                # 2. Chequeo de expiración (cancelar órdenes si faltan < 120s para el settlement)
                 from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
                 now_ts = time.time()
                 for ord_info in list(maker_taker_coordinator.get_resting_only_orders(self.worker_id)):
                     exp_ts = ResolutionSniperFeeder._parse_expiration(ord_info.market_slug)
-                    if exp_ts and (exp_ts - now_ts) < 45.0:
+                    if exp_ts and (exp_ts - now_ts) < 120.0:
                         self.db.log(
                             "WARNING",
                             f"[ExpirationGuard] Cancelando orden Maker {ord_info.order_id[:8]} en {ord_info.market_slug} por proximidad de cierre ({exp_ts - now_ts:.0f}s restantes)",
@@ -863,6 +863,20 @@ class TradingWorker:
                         except Exception:
                             pass
                         maker_taker_coordinator.mark_cancelled(ord_info.order_id, "market_near_expiration")
+
+                # 2.5 Chequeo de TTL de orden resting (máximo 45 segundos descansando sin llenarse)
+                for ord_info in list(maker_taker_coordinator.get_resting_only_orders(self.worker_id)):
+                    if (now_ts - ord_info.created_at) > 45.0:
+                        self.db.log(
+                            "INFO",
+                            f"[OrderTTL] Cancelando orden Maker {ord_info.order_id[:8]} en {ord_info.market_slug} por timeout de resting ({now_ts - ord_info.created_at:.0f}s sin fill)",
+                            self.worker_id,
+                        )
+                        try:
+                            await order_client.cancel(ord_info.order_id)
+                        except Exception:
+                            pass
+                        maker_taker_coordinator.mark_cancelled(ord_info.order_id, "resting_order_ttl_expired")
 
                 # 3. Consultar clob positions para detectar fills
                 resting_now = maker_taker_coordinator.get_resting_only_orders(self.worker_id)
@@ -980,6 +994,14 @@ class TradingWorker:
                                             await self._execute_order(action_sig)
                                         except Exception as e_fok:
                                             self.db.log("ERROR", f"[{status} Error] Falló orden FOK: {e_fok}", self.worker_id)
+                                            if status == "TRIGGER_FOK_HEDGE":
+                                                self.db.log("CRITICAL", f"[EmergencyScratch] Cobertura falló. Vendiendo Pata 1 al bid ({own_bid}) para evitar exposición descalzada.", self.worker_id)
+                                                scratch_sig = maker_taker_coordinator.build_scratch_signal(f_ord, own_bid)
+                                                f_ord.status = "SCRATCHED"
+                                                try:
+                                                    await self._execute_order(scratch_sig)
+                                                except Exception as e_sc:
+                                                    self.db.log("CRITICAL", f"[EmergencyScratch Error] Falló venta de emergencia: {e_sc}", self.worker_id)
                 except Exception as e_clob:
                     self.db.log("WARNING", f"[MakerFastSync] Error consultando CLOB positions: {e_clob or repr(e_clob)}", self.worker_id)
         except Exception as e_sync:
