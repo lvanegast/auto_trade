@@ -791,6 +791,24 @@ class TradingWorker:
         if client:
             await client.close()
 
+    def _close_cancelled_resting_position(self, market_slug: str, reason: str):
+        """Cierra de inmediato en la base de datos cualquier posición abierta de una orden maker cancelada antes de llenarse."""
+        try:
+            open_pos = self.db.get_open_positions(worker_id=self.worker_id) or []
+            for p in open_pos:
+                sym = p.get("symbol", "")
+                if market_slug in sym:
+                    self.db.close_position(
+                        p["id"],
+                        float(p.get("entry_price", 0.0)),
+                        reason,
+                        worker_id=self.worker_id,
+                        pnl_override=0.0,
+                        pnl_pct_override=0.0,
+                    )
+        except Exception as e:
+            self.db.log("WARNING", f"Error cerrando posición de orden maker cancelada: {e}", self.worker_id)
+
     async def _sync_maker_resting_orders(self):
         """Monitorea órdenes Maker resting de Worker 6: adverse selection, expiración y fills."""
         try:
@@ -826,6 +844,7 @@ class TradingWorker:
                         except Exception:
                             pass
                         maker_taker_coordinator.mark_cancelled(ord_info.order_id, jump_reason)
+                        self._close_cancelled_resting_position(ord_info.market_slug, f"cancelled_{jump_reason}")
 
                 # 1.5 Chequeo de Viabilidad del Spread (Spread Viability Guard)
                 from src.limitless_price_cache import get_limitless_executable_price
@@ -846,6 +865,7 @@ class TradingWorker:
                                 except Exception:
                                     pass
                                 maker_taker_coordinator.mark_cancelled(ord_info.order_id, v_reason)
+                                self._close_cancelled_resting_position(ord_info.market_slug, f"cancelled_{v_reason}")
 
                 # 2. Chequeo de expiración (cancelar órdenes si faltan < 120s para el settlement)
                 from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
@@ -863,6 +883,7 @@ class TradingWorker:
                         except Exception:
                             pass
                         maker_taker_coordinator.mark_cancelled(ord_info.order_id, "market_near_expiration")
+                        self._close_cancelled_resting_position(ord_info.market_slug, "cancelled_market_near_expiration")
 
                 # 2.5 Chequeo de TTL de orden resting (máximo 45 segundos descansando sin llenarse)
                 for ord_info in list(maker_taker_coordinator.get_resting_only_orders(self.worker_id)):
@@ -877,6 +898,7 @@ class TradingWorker:
                         except Exception:
                             pass
                         maker_taker_coordinator.mark_cancelled(ord_info.order_id, "resting_order_ttl_expired")
+                        self._close_cancelled_resting_position(ord_info.market_slug, "cancelled_resting_order_ttl_expired")
 
                 # 3. Consultar clob positions para detectar fills solo si hay órdenes resting
                 resting_now = maker_taker_coordinator.get_resting_only_orders(self.worker_id)
@@ -899,6 +921,7 @@ class TradingWorker:
                             if exp_ts and now_ts >= exp_ts:
                                 # El mercado ya cerró: la orden fue purgada por expiración, no llenada
                                 maker_taker_coordinator.mark_cancelled(ord_info.order_id, "market_expired_purged")
+                                self._close_cancelled_resting_position(ord_info.market_slug, "cancelled_market_expired_purged")
                                 continue
 
                             # La orden ya no está viva y el mercado sigue abierto: ¡SE LLENÓ!
