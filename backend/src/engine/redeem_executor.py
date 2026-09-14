@@ -41,10 +41,12 @@ NEGRISK_REDEEM_ABI = [
     },
 ]
 
-# ABI para Standard CTF: redeemPositions(bytes32, uint256[])
+# ABI para Standard CTF: redeemPositions(address, bytes32, bytes32, uint256[])
 CTF_REDEEM_ABI = [
     {
         "inputs": [
+            {"name": "collateralToken", "type": "address"},
+            {"name": "parentCollectionId", "type": "bytes32"},
             {"name": "conditionId", "type": "bytes32"},
             {"name": "indexSets", "type": "uint256[]"},
         ],
@@ -202,14 +204,20 @@ class RedeemExecutor:
                 
                 call_data = (condition_id, amounts)
             else:
-                # Standard CTF: redeemPositions(bytes32 conditionId, uint256[] indexSets)
-                # indexSets: YES = 1 (binary 01), NO = 2 (binary 10)
-                # Source: Basescan PayoutRedemption events — indexSets = [1, 2]
+                # Standard CTF: redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)
+                # indexSets: [1, 2] redeems both YES/NO outcomes (winning pays out, losing pays 0)
                 contract_address = self.CTF_ADDRESS
                 abi = CTF_REDEEM_ABI
-                
-                index_sets = [1] if winning_outcome == "YES" else [2]
-                call_data = (condition_id, index_sets)
+                collateral_token = os.getenv("USDC_ADDRESS", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
+                parent_collection_id = b"\x00" * 32
+                cond_bytes = bytes.fromhex(condition_id[2:] if condition_id.startswith("0x") else condition_id)
+                index_sets = [1, 2]
+                call_data = (
+                    Web3.to_checksum_address(collateral_token),
+                    parent_collection_id,
+                    cond_bytes,
+                    index_sets,
+                )
             
             # Crear instancia del contrato
             contract = w3.eth.contract(

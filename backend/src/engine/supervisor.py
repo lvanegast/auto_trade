@@ -981,9 +981,9 @@ class TradingWorker:
                                         except Exception as e_fok:
                                             self.db.log("ERROR", f"[{status} Error] Falló orden FOK: {e_fok}", self.worker_id)
                 except Exception as e_clob:
-                    self.db.log("WARNING", f"[MakerFastSync] Error consultando CLOB positions: {e_clob}", self.worker_id)
+                    self.db.log("WARNING", f"[MakerFastSync] Error consultando CLOB positions: {e_clob or repr(e_clob)}", self.worker_id)
         except Exception as e_sync:
-            self.db.log("WARNING", f"[MakerFastSync] Error en _sync_maker_resting_orders: {e_sync}", self.worker_id)
+            self.db.log("WARNING", f"[MakerFastSync] Error en _sync_maker_resting_orders: {e_sync or repr(e_sync)}", self.worker_id)
 
     async def _check_market_resolutions(self):
         """

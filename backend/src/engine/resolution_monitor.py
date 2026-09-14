@@ -301,7 +301,7 @@ class ResolutionMonitor:
                             redeem_executor = get_redeem_executor(self.db, self.worker_id)
                             redeem_result = await redeem_executor.redeem(
                                 condition_id=pos_condition_id,
-                                winning_outcome="YES",
+                                winning_outcome=leg_token,
                                 shares=float(pos.get("amount", 0) or 0),
                                 is_negrisk=is_negrisk,
                             )
