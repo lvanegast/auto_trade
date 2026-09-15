@@ -900,93 +900,125 @@ class TradingWorker:
                         maker_taker_coordinator.mark_cancelled(ord_info.order_id, "resting_order_ttl_expired")
                         self._close_cancelled_resting_position(ord_info.market_slug, "cancelled_resting_order_ttl_expired")
 
-                # 3. Consultar clob positions para detectar fills solo si hay órdenes resting
+                # 3. Consultar clob positions para detectar fills si hay órdenes resting
                 resting_now = maker_taker_coordinator.get_resting_only_orders(self.worker_id)
-                if not resting_now:
+                if resting_now:
+                    try:
+                        clob_data = await client.portfolio.get_clob_positions()
+                        live_order_ids = set()
+                        if isinstance(clob_data, list):
+                            for mpos in clob_data:
+                                orders_info = mpos.get("orders", {}) if isinstance(mpos, dict) else {}
+                                for lo in orders_info.get("liveOrders", []) if isinstance(orders_info, dict) else []:
+                                    if isinstance(lo, dict) and lo.get("id"):
+                                        live_order_ids.add(lo.get("id"))
+
+                        for ord_info in resting_now:
+                            if ord_info.order_id not in live_order_ids:
+                                exp_ts = ResolutionSniperFeeder._parse_expiration(ord_info.market_slug)
+                                if exp_ts and now_ts >= exp_ts:
+                                    # El mercado ya cerró: la orden fue purgada por expiración, no llenada
+                                    maker_taker_coordinator.mark_cancelled(ord_info.order_id, "market_expired_purged")
+                                    self._close_cancelled_resting_position(ord_info.market_slug, "cancelled_market_expired_purged")
+                                    continue
+
+                                # La orden ya no está viva y el mercado sigue abierto: ¡SE LLENÓ!
+                                maker_taker_coordinator.mark_filled(ord_info.order_id)
+                                try:
+                                    if hasattr(self.db, "execute"):
+                                        self.db.execute(
+                                            "UPDATE trades SET status = 'COMPLETED' WHERE external_order_id = %s;",
+                                            (ord_info.order_id,),
+                                        )
+                                except Exception:
+                                    pass
+
+                                self.db.log(
+                                    "INFO",
+                                    f"🎯 [Fill Confirmado] Pata Maker {ord_info.leg_name} llenada on-chain en {ord_info.market_slug}",
+                                    self.worker_id,
+                                )
+
+                                try:
+                                    from src.telegram_bot import telegram_bot
+                                    if telegram_bot.enabled:
+                                        telegram_bot.send_fill_confirmed(
+                                            worker_id=self.worker_id,
+                                            market_slug=ord_info.market_slug,
+                                            token=ord_info.leg_name,
+                                            side=ord_info.side,
+                                            price=float(ord_info.price),
+                                            amount=ord_info.shares,
+                                            total_usd=float(ord_info.spend_amount),
+                                            order_id=ord_info.order_id,
+                                            latency_ms=None,
+                                            category="crypto",
+                                        )
+                                except Exception:
+                                    pass
+                    except Exception as e_clob:
+                        self.db.log("WARNING", f"[MakerFastSync] Error consultando CLOB positions: {e_clob or repr(e_clob)}", self.worker_id)
+
+                # 4. Evaluar pares y órdenes individuales para Hedge Taker Inmediato o Scratch Unwind
+                all_active = maker_taker_coordinator.get_active_orders(self.worker_id)
+                if not all_active:
                     return
 
-                try:
-                    clob_data = await client.portfolio.get_clob_positions()
-                    live_order_ids = set()
-                    if isinstance(clob_data, list):
-                        for mpos in clob_data:
-                            orders_info = mpos.get("orders", {}) if isinstance(mpos, dict) else {}
-                            for lo in orders_info.get("liveOrders", []) if isinstance(orders_info, dict) else []:
-                                if isinstance(lo, dict) and lo.get("id"):
-                                    live_order_ids.add(lo.get("id"))
+                from src.limitless_price_cache import get_limitless_executable_price, async_get_limitless_executable_price
 
-                    for ord_info in resting_now:
-                        if ord_info.order_id not in live_order_ids:
-                            exp_ts = ResolutionSniperFeeder._parse_expiration(ord_info.market_slug)
-                            if exp_ts and now_ts >= exp_ts:
-                                # El mercado ya cerró: la orden fue purgada por expiración, no llenada
-                                maker_taker_coordinator.mark_cancelled(ord_info.order_id, "market_expired_purged")
-                                self._close_cancelled_resting_position(ord_info.market_slug, "cancelled_market_expired_purged")
-                                continue
+                slugs = set(o.market_slug for o in all_active)
+                for slug in slugs:
+                    book = get_limitless_executable_price(slug)
+                    if not book:
+                        try:
+                            book = await async_get_limitless_executable_price(slug, validate_maker_spread=False)
+                        except Exception:
+                            book = None
+                    if book:
+                        yes_ask = book.get("yes_ask", 0.0)
+                        no_ask = book.get("no_ask", 0.0)
+                        yes_bid = book.get("yes_bid", 0.0)
+                        no_bid = book.get("no_bid", 0.0)
 
-                            # La orden ya no está viva y el mercado sigue abierto: ¡SE LLENÓ!
-                            maker_taker_coordinator.mark_filled(ord_info.order_id)
-                            try:
-                                if hasattr(self.db, "execute"):
-                                    self.db.execute(
-                                        "UPDATE trades SET status = 'COMPLETED' WHERE external_order_id = %s;",
-                                        (ord_info.order_id,),
-                                    )
-                            except Exception:
-                                pass
-
-                            self.db.log(
-                                "INFO",
-                                f"🎯 [Fill Confirmado] Pata Maker {ord_info.leg_name} llenada on-chain en {ord_info.market_slug}",
-                                self.worker_id,
+                        pair = maker_taker_coordinator.get_pair(slug)
+                        if pair and pair.status not in ("BOTH_FILLED", "HEDGED_FOK", "SCRATCHED", "CANCELLED"):
+                            status, action_sig, cancel_order_id = maker_taker_coordinator.evaluate_pair(
+                                slug,
+                                current_yes_ask=yes_ask,
+                                current_no_ask=no_ask,
+                                current_yes_bid=yes_bid,
+                                current_no_bid=no_bid,
+                                max_unhedged_wait_s=0.0,
                             )
+                            if cancel_order_id:
+                                try:
+                                    await order_client.cancel(cancel_order_id)
+                                    maker_taker_coordinator.mark_cancelled(cancel_order_id, "cancelled_for_hedge_or_scratch")
+                                except Exception:
+                                    pass
 
-                            try:
-                                from src.telegram_bot import telegram_bot
-                                if telegram_bot.enabled:
-                                    telegram_bot.send_fill_confirmed(
-                                        worker_id=self.worker_id,
-                                        market_slug=ord_info.market_slug,
-                                        token=ord_info.leg_name,
-                                        side=ord_info.side,
-                                        price=float(ord_info.price),
-                                        amount=ord_info.shares,
-                                        total_usd=float(ord_info.spend_amount),
-                                        order_id=ord_info.order_id,
-                                        latency_ms=None,
-                                        category="crypto",
-                                    )
-                            except Exception:
-                                pass
-
-                    # 4. Evaluar pares y órdenes individuales para Hedge Taker Inmediato o Scratch Unwind
-                    all_active = maker_taker_coordinator.get_active_orders(self.worker_id)
-                    slugs = set(o.market_slug for o in all_active)
-                    for slug in slugs:
-                        book = get_limitless_executable_price(slug)
-                        if book:
-                            yes_ask = book.get("yes_ask", 0.0)
-                            no_ask = book.get("no_ask", 0.0)
-                            yes_bid = book.get("yes_bid", 0.0)
-                            no_bid = book.get("no_bid", 0.0)
-
-                            pair = maker_taker_coordinator.get_pair(slug)
-                            if pair and pair.status not in ("BOTH_FILLED", "HEDGED_FOK", "SCRATCHED", "CANCELLED"):
-                                status, action_sig, cancel_order_id = maker_taker_coordinator.evaluate_pair(
-                                    slug,
-                                    current_yes_ask=yes_ask,
-                                    current_no_ask=no_ask,
-                                    current_yes_bid=yes_bid,
-                                    current_no_bid=no_bid,
-                                    max_unhedged_wait_s=0.0,
+                            if action_sig is not None:
+                                self.db.log(
+                                    "WARNING",
+                                    f"[{status}] Disparando orden FOK {action_sig.side} para {action_sig.symbol}: {action_sig.reason}",
+                                    self.worker_id,
                                 )
-                                if cancel_order_id:
-                                    try:
-                                        await order_client.cancel(cancel_order_id)
-                                        maker_taker_coordinator.mark_cancelled(cancel_order_id, "cancelled_for_hedge_or_scratch")
-                                    except Exception:
-                                        pass
-
+                                try:
+                                    await self._execute_order(action_sig)
+                                except Exception as e_fok:
+                                    self.db.log("ERROR", f"[{status} Error] Falló orden FOK: {e_fok}", self.worker_id)
+                        else:
+                            # Órdenes individuales sin par (Sequential Maker-Taker)
+                            unhedged = [o for o in all_active if o.market_slug == slug and o.status == "FILLED"]
+                            for f_ord in unhedged:
+                                hedge_ask = no_ask if f_ord.leg_name == "YES" else yes_ask
+                                own_bid = yes_bid if f_ord.leg_name == "YES" else no_bid
+                                status, action_sig = maker_taker_coordinator.evaluate_order(
+                                    f_ord.order_id,
+                                    current_hedge_ask=hedge_ask,
+                                    current_own_bid=own_bid,
+                                    max_total_cost=0.985,
+                                )
                                 if action_sig is not None:
                                     self.db.log(
                                         "WARNING",
@@ -997,38 +1029,14 @@ class TradingWorker:
                                         await self._execute_order(action_sig)
                                     except Exception as e_fok:
                                         self.db.log("ERROR", f"[{status} Error] Falló orden FOK: {e_fok}", self.worker_id)
-                            else:
-                                # Órdenes individuales sin par (Sequential Maker-Taker)
-                                unhedged = [o for o in all_active if o.market_slug == slug and o.status == "FILLED"]
-                                for f_ord in unhedged:
-                                    hedge_ask = no_ask if f_ord.leg_name == "YES" else yes_ask
-                                    own_bid = yes_bid if f_ord.leg_name == "YES" else no_bid
-                                    status, action_sig = maker_taker_coordinator.evaluate_order(
-                                        f_ord.order_id,
-                                        current_hedge_ask=hedge_ask,
-                                        current_own_bid=own_bid,
-                                        max_total_cost=0.985,
-                                    )
-                                    if action_sig is not None:
-                                        self.db.log(
-                                            "WARNING",
-                                            f"[{status}] Disparando orden FOK {action_sig.side} para {action_sig.symbol}: {action_sig.reason}",
-                                            self.worker_id,
-                                        )
-                                        try:
-                                            await self._execute_order(action_sig)
-                                        except Exception as e_fok:
-                                            self.db.log("ERROR", f"[{status} Error] Falló orden FOK: {e_fok}", self.worker_id)
-                                            if status == "TRIGGER_FOK_HEDGE":
-                                                self.db.log("CRITICAL", f"[EmergencyScratch] Cobertura falló. Vendiendo Pata 1 al bid ({own_bid}) para evitar exposición descalzada.", self.worker_id)
-                                                scratch_sig = maker_taker_coordinator.build_scratch_signal(f_ord, own_bid)
-                                                f_ord.status = "SCRATCHED"
-                                                try:
-                                                    await self._execute_order(scratch_sig)
-                                                except Exception as e_sc:
-                                                    self.db.log("CRITICAL", f"[EmergencyScratch Error] Falló venta de emergencia: {e_sc}", self.worker_id)
-                except Exception as e_clob:
-                    self.db.log("WARNING", f"[MakerFastSync] Error consultando CLOB positions: {e_clob or repr(e_clob)}", self.worker_id)
+                                        if status == "TRIGGER_FOK_HEDGE":
+                                            self.db.log("CRITICAL", f"[EmergencyScratch] Cobertura falló. Vendiendo Pata 1 al bid ({own_bid}) para evitar exposición descalzada.", self.worker_id)
+                                            scratch_sig = maker_taker_coordinator.build_scratch_signal(f_ord, own_bid)
+                                            f_ord.status = "SCRATCHED"
+                                            try:
+                                                await self._execute_order(scratch_sig)
+                                            except Exception as e_sc:
+                                                self.db.log("CRITICAL", f"[EmergencyScratch Error] Falló venta de emergencia: {e_sc}", self.worker_id)
         except Exception as e_sync:
             self.db.log("WARNING", f"[MakerFastSync] Error en _sync_maker_resting_orders: {e_sync or repr(e_sync)}", self.worker_id)
 
