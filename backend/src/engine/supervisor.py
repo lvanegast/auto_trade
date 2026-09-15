@@ -2099,8 +2099,11 @@ class TradingWorker:
                         )
                         
                         # GTC = limit maker post-only (0% fees). FOK = taker (fill or kill).
+                        num_contracts = float(spend_amount)
+                        actual_spend_usd = round(num_contracts * float(price), 4)
+
                         if is_gtc:
-                            # Para GTC, el SDK espera price (precio por share) + size (USDC).
+                            # Para GTC en Limitless SDK, 'size' es el número de contratos/shares.
                             # post_only=True rechaza la orden si cruzaria (asegura rol maker).
                             response = await order_client.create_order(
                                 token_id=str(token_id),
@@ -2108,17 +2111,21 @@ class TradingWorker:
                                 order_type=LimitlessOrderType.GTC,
                                 market_slug=market_slug,
                                 price=float(price),
-                                size=float(spend_amount),
+                                size=num_contracts,
                                 post_only=True,
                             )
                         else:
                             # We use FOK (Fill Or Kill) style execution for taker orders
-                            # Limitless SDK espera USDC para BUY, pero cantidad de shares para SELL
-                            fok_amount = (
-                                round(spend_amount / price, 6)
-                                if signal.side == "SELL" and price > 0
-                                else spend_amount
-                            )
+                            # Limitless SDK espera USDC para BUY (maker_amount = spend_amount),
+                            # pero cantidad de shares exactas para SELL (maker_amount = shares)
+                            if signal.side == "SELL":
+                                if getattr(signal, "amount", None) and signal.amount > 0:
+                                    fok_amount = round(float(signal.amount), 4)
+                                else:
+                                    fok_amount = round(spend_amount / price, 4) if price > 0 else 1.0
+                            else:
+                                fok_amount = spend_amount
+
                             response = await order_client.create_order(
                                 token_id=str(token_id),
                                 side=LimitlessSide.BUY if signal.side == "BUY" else LimitlessSide.SELL,
@@ -2151,8 +2158,8 @@ class TradingWorker:
                                     token_id=str(token_id),
                                     side=signal.side,
                                     price=float(price),
-                                    spend_amount=float(spend_amount),
-                                    shares=float(spend_amount / price) if price > 0 else 0.0,
+                                    spend_amount=actual_spend_usd,
+                                    shares=num_contracts,
                                     leg_name="YES" if "_YES" in signal.symbol else "NO",
                                     hedge_token_id="",
                                     hedge_leg_name="NO" if "_YES" in signal.symbol else "YES",
@@ -2203,12 +2210,14 @@ class TradingWorker:
                         _total_ms = ((_q_ms or 0) + (_s_ms or 0) + _exec_ms) if (_q_ms is not None) else None
                         
                         trade_status = "RESTING" if (is_gtc and self.feeder_type == "maker_two_leg") else "COMPLETED"
+                        trade_amount = num_contracts if is_gtc else (spend_amount / price if signal.side == "BUY" else spend_amount)
+                        trade_total = actual_spend_usd if is_gtc else spend_amount
                         self.db.save_trade(
                             symbol=pos_symbol,
                             side=signal.side,
                             price=price,
-                            amount=spend_amount / price if signal.side == "BUY" else spend_amount,
-                            total=spend_amount,
+                            amount=trade_amount,
+                            total=trade_total,
                             external_order_id=str(order_id),
                             status=trade_status,
                             worker_id=self.worker_id,
@@ -2230,8 +2239,8 @@ class TradingWorker:
                                         token=token,
                                         side=signal.side,
                                         price=float(price),
-                                        amount=spend_amount / price if signal.side == "BUY" else spend_amount,
-                                        total_usd=float(spend_amount),
+                                        amount=trade_amount,
+                                        total_usd=float(trade_total),
                                         order_id=str(order_id),
                                         latency_ms=_exec_ms,
                                         category="crypto" if ("crypto" in self.symbol.lower() or "up-or-down" in market_slug) else "sports"
@@ -2266,7 +2275,7 @@ class TradingWorker:
                         
                         if signal.side == "BUY":
                             if not getattr(signal, "position_id", None):
-                                pos_amount = (spend_amount / price) if (price > 0 and spend_amount > 0) else (requested_position_usd if requested_position_usd else 1.0)
+                                pos_amount = num_contracts if is_gtc else ((spend_amount / price) if (price > 0 and spend_amount > 0) else (requested_position_usd if requested_position_usd else 1.0))
                                 position_id = self.db.save_position(
                                     self.worker_id,
                                     pos_symbol,

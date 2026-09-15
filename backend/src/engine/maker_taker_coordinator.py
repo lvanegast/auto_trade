@@ -435,6 +435,7 @@ class MakerTakerCoordinator:
             symbol=scratch_symbol,
             side="SELL",
             price=price,
+            amount=contracts,
             reason=f"Scratch Unwind L1: SELL {order.leg_name} FOK @{price:.4f} due to adverse selection on L2",
             position_size_usd=spend_usd,
             position_id=None,
