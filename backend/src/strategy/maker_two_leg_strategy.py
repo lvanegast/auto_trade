@@ -61,6 +61,8 @@ class MakerTwoLegStrategy(BaseStrategy):
 
         if position_size_usd is not None:
             default_size = float(position_size_usd)
+            if leg_size_max_usd is None and default_size > self.leg_size_max_usd:
+                self.leg_size_max_usd = default_size
         else:
             default_size = float(os.getenv("MAKER_POSITION_SIZE_USD") or os.getenv("CRYPTO_MAKER_POSITION_SIZE_USD") or "0.35")
 
