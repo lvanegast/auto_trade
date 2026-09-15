@@ -103,6 +103,10 @@ class MakerTwoLegFeeder(BaseFeeder):
                     if "crypto" not in slug.lower() and "up-or-down" not in slug.lower():
                         continue
 
+                    # STRICT FILTER: Excluir permanentemente mercados ultra-rapidos de 5 minutos
+                    if "-5-min-" in slug.lower() or "-5min-" in slug.lower():
+                        continue
+
                     scanned += 1
 
                     # Volumen real transado (USD) — el indicador de "vivo".

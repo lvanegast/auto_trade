@@ -25,16 +25,16 @@ def test_maker_two_leg_emits_both_signals_simultaneously():
     )
 
     event = PriceUpdateEvent(
-        symbol="limitless_crypto_btc-up-or-down-5-min-9999",
+        symbol="limitless_crypto_btc-up-or-down-15-min-9999",
         price=0.50,
         bid=0.015,
         ask=0.065,  # YES bid = 0.015, ask = 0.065 -> NO bid = 1.0 - 0.065 = 0.935
-        chart_price="BTC 5m test",
+        chart_price="BTC 15m test",
     )
     event.bid_size = 500.0
     event.ask_size = 500.0
     event.market_volume = 1500.0
-    event.market_slug = "btc-up-or-down-5-min-9999"
+    event.market_slug = "btc-up-or-down-15-min-9999"
     event.expiration_timestamp = 2000000000.0  # Future expiration (far from TTL limit)
 
     sig1 = strategy.on_price_update(event)
@@ -45,7 +45,7 @@ def test_maker_two_leg_emits_both_signals_simultaneously():
     assert sig1.order_type == "GTC"
     assert sig1.price == 0.015
 
-    # Validar que la Pata 2 quedó en _pending_signals
+    # Validar que la Pata 2 quedo en _pending_signals
     assert len(strategy._pending_signals) == 1
     sig2 = strategy._pending_signals[0]
     assert "_NO" in sig2.symbol
@@ -55,6 +55,88 @@ def test_maker_two_leg_emits_both_signals_simultaneously():
 
     # Costo total combinado: 0.015 + 0.935 = 0.950 (5.0% de spread)
     assert round(sig1.price + sig2.price, 3) == 0.950
+
+
+def test_maker_two_leg_strictly_rejects_5min_markets():
+    """Valida que los mercados de 5 minutos son estrictamente rechazados."""
+    mock_db = MagicMock()
+    strategy = MakerTwoLegStrategy(
+        db=mock_db,
+        worker_id="worker_6",
+        symbol="CRYPTO_MAKER",
+    )
+
+    for slug in ["btc-up-or-down-5-min-12345", "eth-up-or-down-5min-999"]:
+        event = PriceUpdateEvent(
+            symbol=f"limitless_crypto_{slug}",
+            price=0.50,
+            bid=0.48,
+            ask=0.52,
+        )
+        event.bid_size = 500.0
+        event.ask_size = 500.0
+        event.market_slug = slug
+        sig = strategy.on_price_update(event)
+        assert sig is None
+        assert strategy._diag.get("5min_filtered", 0) > 0
+
+
+def test_maker_two_leg_avellaneda_stoikov_inventory_skew():
+    """Valida que el modelo Avellaneda-Stoikov sesga las cotizaciones segun el inventario q."""
+    mock_db = MagicMock()
+    strategy = MakerTwoLegStrategy(
+        db=mock_db,
+        worker_id="worker_6",
+        symbol="CRYPTO_MAKER",
+        min_edge_pct=0.02,
+        position_size_usd=1.0,
+        observation_only=False,
+        sequential_mode=False,
+        inventory_gamma=0.02,
+        inventory_soft_cap=2.0,
+    )
+
+    slug = "btc-up-or-down-15-min-as-test"
+    # Estado inicial q = 0
+    assert strategy.get_net_inventory(slug) == 0.0
+
+    # Simular que tenemos 1 contrato YES de inventario (q = +1.0)
+    strategy.update_inventory(slug, "yes", 1.0)
+    assert strategy.get_net_inventory(slug) == 1.0
+
+    event = PriceUpdateEvent(
+        symbol=f"limitless_crypto_{slug}",
+        price=0.50,
+        bid=0.47,
+        ask=0.53,
+    )
+    event.bid_size = 500.0
+    event.ask_size = 500.0
+    event.market_volume = 1500.0
+    event.market_slug = slug
+    event.expiration_timestamp = 2000000000.0
+
+    sig_yes = strategy.on_price_update(event)
+    assert sig_yes is not None
+    # Con q = +1.0, FV = 0.50, r = 0.50 - 0.02*1 = 0.48
+    # YES bid se sesga a la baja: r - half_spread = 0.48 - 0.015 = 0.465
+    assert sig_yes.price < 0.47  # Menor que el bid original porque estamos sobre-cargados de YES
+
+    # NO bid en pending_signals se sesga al alza para atraer contraparte:
+    sig_no = strategy._pending_signals[0]
+    # (1 - r) - half_spread = (1 - 0.48) - 0.015 = 0.505 > (1 - 0.53) = 0.47
+    assert sig_no.price > 0.47
+
+    # Simular que alcanzamos el soft cap (q = +2.0): solo cotiza REDUCE_ONLY (solo NO)
+    strategy._pending_signals.clear()
+    strategy._last_signal_time.clear()
+    strategy.update_inventory(slug, "yes", 1.0)  # q = 2.0
+    assert strategy.get_net_inventory(slug) == 2.0
+
+    sig_reduce = strategy.on_price_update(event)
+    assert sig_reduce is not None
+    assert "_NO" in sig_reduce.symbol  # Solo cotiza NO para reducir el exceso de YES
+    assert len(strategy._pending_signals) == 0  # No cotiza YES en absoluto
 
 
 def test_maker_two_leg_sequential_mode():
@@ -71,16 +153,16 @@ def test_maker_two_leg_sequential_mode():
     )
 
     event = PriceUpdateEvent(
-        symbol="limitless_crypto_btc-up-or-down-5-min-9999",
+        symbol="limitless_crypto_btc-up-or-down-15-min-9999",
         price=0.50,
         bid=0.48,
         ask=0.52,
-        chart_price="BTC 5m test",
+        chart_price="BTC 15m test",
     )
     event.bid_size = 500.0
     event.ask_size = 500.0
     event.market_volume = 1500.0
-    event.market_slug = "btc-up-or-down-5-min-9999"
+    event.market_slug = "btc-up-or-down-15-min-9999"
     event.expiration_timestamp = 2000000000.0
 
     sig = strategy.on_price_update(event)

@@ -38,6 +38,9 @@ class MakerTwoLegStrategy(BaseStrategy):
         observation_only: bool = True,
         min_market_volume_usd: float = 5.0,  # volumen real transado mínimo para considerar el mercado "vivo"
         sequential_mode: bool = None,
+        inventory_gamma: float = 0.015,
+        inventory_soft_cap: float = 3.0,
+        inventory_hard_cap: float = 5.0,
     ):
         super().__init__(symbol)
         self.min_edge_pct = float(os.getenv("MAKER_MIN_EDGE_PCT", str(min_edge_pct if min_edge_pct is not None else 0.025)))
@@ -56,7 +59,14 @@ class MakerTwoLegStrategy(BaseStrategy):
         if sequential_mode is not None:
             self.sequential_mode = sequential_mode
         else:
-            self.sequential_mode = os.getenv("MAKER_SEQUENTIAL_MODE", "true").lower() in ("true", "1", "yes")
+            self.sequential_mode = os.getenv("MAKER_SEQUENTIAL_MODE", "false").lower() in ("true", "1", "yes")
+
+        # Parametros Avellaneda-Stoikov (poly-maker)
+        self.inventory_gamma = float(os.getenv("MAKER_INVENTORY_GAMMA", str(inventory_gamma)))
+        self.inventory_soft_cap = float(os.getenv("MAKER_INVENTORY_SOFT_CAP", str(inventory_soft_cap)))
+        self.inventory_hard_cap = float(os.getenv("MAKER_INVENTORY_HARD_CAP", str(inventory_hard_cap)))
+        # Inventario neto local por mercado: {slug: {"yes": float, "no": float}}
+        self._inventory: dict = {}
 
         # Estado de pares en curso: {slug: {"leg1": str, "leg2": str, "filled": [..]}}
         self._active_pairs: dict = {}
@@ -87,6 +97,19 @@ class MakerTwoLegStrategy(BaseStrategy):
             "liquidity_filtered": 0, "cooldown": 0, "opportunities": 0,
         }
 
+    def get_net_inventory(self, slug: str) -> float:
+        """Retorna el inventario neto q = YES - NO para el slug."""
+        pos = self._inventory.get(slug, {"yes": 0.0, "no": 0.0})
+        return pos.get("yes", 0.0) - pos.get("no", 0.0)
+
+    def update_inventory(self, slug: str, leg: str, qty: float):
+        """Actualiza el inventario local tras confirmacion de fill."""
+        if slug not in self._inventory:
+            self._inventory[slug] = {"yes": 0.0, "no": 0.0}
+        leg_key = leg.lower()
+        if leg_key in self._inventory[slug]:
+            self._inventory[slug][leg_key] += qty
+
     def on_price_update(self, event: PriceUpdateEvent) -> SignalEvent | None:
         super().on_price_update(event)
 
@@ -104,6 +127,11 @@ class MakerTwoLegStrategy(BaseStrategy):
         else:
             slug = symbol
 
+        # STRICT FILTER: Excluir permanentemente mercados ultra-rapidos de 5 minutos
+        if "-5-min-" in slug.lower() or "-5min-" in slug.lower():
+            self._diag["5min_filtered"] = self._diag.get("5min_filtered", 0) + 1
+            return None
+
         # FILTRO DE ACTIVOS: Por defecto permite TODOS los criptoactivos ("ALL").
         # Si el usuario configura MAKER_ALLOWED_ASSETS en .env, restringe a esa lista.
         allowed_assets_raw = os.getenv("MAKER_ALLOWED_ASSETS", "ALL").strip()
@@ -119,10 +147,9 @@ class MakerTwoLegStrategy(BaseStrategy):
                 self._diag["asset_filtered"] = self._diag.get("asset_filtered", 0) + 1
                 return None
 
-        # FILTRO DE EXPIRACIÓN MÍNIMA POR TEMPORALIDAD:
-        # En 5m: mínimo 75s (margen suficiente para orden resting de 45s + cobertura FOK)
-        # En 15m: mínimo 120s
-        # En otros: mínimo 180s
+        # FILTRO DE EXPIRACION MINIMA POR TEMPORALIDAD:
+        # En 15m: minimo 120s
+        # En otros (1h, daily, etc.): minimo 180s
         from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
         exp_ts = getattr(event, "expiration_timestamp", None)
         if not exp_ts:
@@ -130,9 +157,7 @@ class MakerTwoLegStrategy(BaseStrategy):
         now_ts = time.time()
         if exp_ts:
             seconds_left = exp_ts - now_ts
-            if "-5-min-" in slug.lower() or "-5min-" in slug.lower():
-                min_sec = float(os.getenv("MAKER_MIN_SECONDS_TO_EXPIRATION_5M", "75.0"))
-            elif "-15-min-" in slug.lower() or "-15min-" in slug.lower():
+            if "-15-min-" in slug.lower() or "-15min-" in slug.lower():
                 min_sec = float(os.getenv("MAKER_MIN_SECONDS_TO_EXPIRATION_15M", "120.0"))
             else:
                 min_sec = float(os.getenv("MAKER_MIN_SECONDS_TO_EXPIRATION", "180.0"))
@@ -172,13 +197,39 @@ class MakerTwoLegStrategy(BaseStrategy):
             self._diag["no_book"] += 1
             return None
 
-        # Book maker pasivo:
-        # Colocamos la postura al bid, pero asegurándonos de estar estrictamente 1 tick (0.001)
-        # por debajo del ask para evitar que Limitless rechace con "Post-only order would execute immediately"
-        cost_yes = round(min(yes_bid, max(yes_ask - 0.001, 0.001)), 3)
-        # Para NO en mercado binario: el ask de NO es (1.0 - yes_bid)
-        cost_no_max = max((1.0 - yes_bid) - 0.001, 0.001)
-        cost_no = round(min(1.0 - yes_ask, cost_no_max), 3)
+        # MODELO AVELLANEDA-STOIKOV ADAPTADO A CONTRATOS BINARIOS (poly-maker):
+        bid_size = float(getattr(event, "bid_size", 0.0) or 0.0)
+        ask_size = float(getattr(event, "ask_size", 0.0) or 0.0)
+
+        # 1. Fair Value (Microprice ponderado por profundidad del libro, con fallback a midpoint)
+        if (bid_size + ask_size) > 0:
+            fair_value = (yes_bid * ask_size + yes_ask * bid_size) / (bid_size + ask_size)
+        else:
+            fair_value = (yes_bid + yes_ask) / 2.0
+
+        # 2. Inventario neto q = YES - NO
+        q = self.get_net_inventory(slug)
+
+        # 3. Precio de reserva r(q) = FV - gamma * q
+        # Si q > 0 (exceso de YES), r baja -> bajamos bid YES y subimos bid NO (atrae vendedores de NO)
+        # Si q < 0 (exceso de NO), r sube -> subimos bid YES y bajamos bid NO (atrae vendedores de YES)
+        r = fair_value - (self.inventory_gamma * q)
+        r = max(0.01, min(0.99, r))
+
+        # 4. Half-spread delta
+        half_spread = max(self.min_edge_pct / 2.0, 0.015)
+
+        # 5. Cotizaciones de compra pasiva (Bids Post-Only estrictamente < Ask contrario):
+        # En q == 0 cotizamos a las puntas de compra naturales (yes_bid y no_bid = 1 - yes_ask)
+        # En q != 0 el sesgo de Avellaneda-Stoikov ajusta asimetricamente
+        if abs(q) < 0.001:
+            cost_yes = round(min(yes_bid, max(yes_ask - 0.001, 0.001)), 3)
+            cost_no_max = max((1.0 - yes_bid) - 0.001, 0.001)
+            cost_no = round(min(1.0 - yes_ask, cost_no_max), 3)
+        else:
+            cost_yes = round(max(0.001, min(r - half_spread, yes_ask - 0.001)), 3)
+            cost_no = round(max(0.001, min((1.0 - r) - half_spread, (1.0 - yes_bid) - 0.001)), 3)
+
         if cost_no <= 0 or cost_yes <= 0:
             self._diag["no_book"] += 1
             return None
@@ -187,6 +238,14 @@ class MakerTwoLegStrategy(BaseStrategy):
         maker_edge = round(1.0 - total_maker_cost, 4)
         if maker_edge < 0:
             return None
+
+        # Regime Machine: Capping de Inventario (REDUCE_ONLY)
+        quote_yes = True
+        quote_no = True
+        if q >= self.inventory_soft_cap:
+            quote_yes = False  # Exceso de YES: no cotizar YES, solo completar con NO
+        elif q <= -self.inventory_soft_cap:
+            quote_no = False   # Exceso de NO: no cotizar NO, solo completar con YES
 
         # Filtro de mercado "vivo": el volumen real transado es la única prueba
         # de que las 2 patas se pueden llenar. Un book con millones de shares
@@ -285,13 +344,19 @@ class MakerTwoLegStrategy(BaseStrategy):
                 if self.db:
                     self.db.log(
                         "INFO",
-                        f"[Maker 2-Leg OBS] {slug[:40]} | YES@bid={cost_yes:.4f} NO@bid={cost_no:.4f} "
-                        f"Cost={total_maker_cost:.4f} | Edge(spread)={maker_edge:.2%} | Net={net_edge:.2%}",
+                        f"[Two-Sided AS Maker OBS] {slug[:40]} | YES@bid={cost_yes:.4f} NO@bid={cost_no:.4f} "
+                        f"Cost={total_maker_cost:.4f} | FV={fair_value:.3f} r={r:.3f} q={q:.1f} | "
+                        f"Edge(spread)={maker_edge:.2%} | Net={net_edge:.2%}",
                         self.worker_id,
                     )
                 try:
                     from src.telegram_bot import telegram_bot
-                    legs_detail = f"• YES @ {cost_yes:.4f} (prof: ${yes_depth:.2f})\n• NO @ {cost_no:.4f} (prof: ${no_depth:.2f})\n• Costo total: ${total_maker_cost:.4f}"
+                    legs_detail = (
+                        f"• YES @ {cost_yes:.4f} (prof: ${yes_depth:.2f})\n"
+                        f"• NO @ {cost_no:.4f} (prof: ${no_depth:.2f})\n"
+                        f"• FV: {fair_value:.3f} | r(q): {r:.3f} (q={q:.1f})\n"
+                        f"• Costo total par: ${total_maker_cost:.4f}"
+                    )
                     telegram_bot.send_opportunity(
                         event=f"Crypto Maker 2-Leg: {slug[:40]}",
                         edge=net_edge * 100,
@@ -320,9 +385,7 @@ class MakerTwoLegStrategy(BaseStrategy):
         usd_leg_no = round(leg_size_usd, 4)
 
         if self.sequential_mode:
-            # MODO SECUENCIAL MAKER-TAKER (Cero riesgo de 2 patas pasivas descalzadas):
-            # Colocamos SOLO UNA pata como Maker GTC al libro.
-            # Preferimos la pata más cercana a 0.50 o con mayor profundidad.
+            # MODO SECUENCIAL MAKER-TAKER (Legacy fallback):
             pick_yes = abs(cost_yes - 0.50) <= abs(cost_no - 0.50)
             chosen_leg = "YES" if pick_yes else "NO"
             chosen_cost = cost_yes if pick_yes else cost_no
@@ -353,47 +416,71 @@ class MakerTwoLegStrategy(BaseStrategy):
                 order_type="GTC",
             )
 
-        # MODO SIMULTÁNEO (Clásico):
-        reason_yes = (
-            f"Maker 2-Leg [1/2]: BUY YES GTC @{cost_yes:.4f} | "
-            f"Cost total par: {total_maker_cost:.4f} | Edge(spread): {maker_edge:.2%}"
-        )
-        reason_no = (
-            f"Maker 2-Leg [2/2]: BUY NO GTC @{cost_no:.4f} | "
-            f"Cost total par: {total_maker_cost:.4f} | Edge(spread): {maker_edge:.2%}"
-        )
+        # MODO BILATERAL AVELLANEDA-STOIKOV (poly-maker):
+        if not quote_yes and not quote_no:
+            return None
 
-        # Leg 2 se encola y se ejecuta con FillGuard (si una pata falla → recovery/emergency sell)
-        leg2_signal = SignalEvent(
-            symbol=f"{event_id}_NO",
-            side="BUY",
-            price=cost_no,
-            reason=reason_no,
-            position_size_usd=usd_leg_no,
-            position_id=None,
-            order_type="GTC",
-        )
-        self._pending_signals.append(leg2_signal)
-
-        # Track del par para seguimiento de fills
-        self._active_pairs[slug] = {"filled": [], "cost": total_maker_cost}
-
-        self.successful_pairs += 1
-        if self.db:
-            self.db.log(
-                "INFO",
-                f"💎 Par Maker Detectado | YES@bid {cost_yes:.4f} + NO@bid {cost_no:.4f} = {total_maker_cost:.4f} | "
-                f"Edge(spread) {maker_edge:.2%} | Pairs: {self.successful_pairs}/{self.total_pairs_sent}",
-                self.worker_id,
+        if quote_yes and quote_no:
+            reason_yes = (
+                f"Two-Sided AS Maker [1/2]: BUY YES GTC @{cost_yes:.4f} (FV={fair_value:.3f}, r={r:.3f}, q={q:.1f}) | "
+                f"Cost total par: {total_maker_cost:.4f} | Edge(spread): {maker_edge:.2%}"
+            )
+            reason_no = (
+                f"Two-Sided AS Maker [2/2]: BUY NO GTC @{cost_no:.4f} (FV={fair_value:.3f}, r={r:.3f}, q={q:.1f}) | "
+                f"Cost total par: {total_maker_cost:.4f} | Edge(spread): {maker_edge:.2%}"
             )
 
-        # Return Leg 1 (YES)
-        return SignalEvent(
-            symbol=f"{event_id}_YES",
-            side="BUY",
-            price=cost_yes,
-            reason=reason_yes,
-            position_size_usd=usd_leg_yes,
-            position_id=None,
-            order_type="GTC",
-        )
+            leg2_signal = SignalEvent(
+                symbol=f"{event_id}_NO",
+                side="BUY",
+                price=cost_no,
+                reason=reason_no,
+                position_size_usd=usd_leg_no,
+                position_id=None,
+                order_type="GTC",
+            )
+            self._pending_signals.append(leg2_signal)
+            self._active_pairs[slug] = {"filled": [], "cost": total_maker_cost}
+
+            self.successful_pairs += 1
+            if self.db:
+                self.db.log(
+                    "INFO",
+                    f"💎 [Two-Sided AS Maker] Quotes colocados | YES@bid {cost_yes:.4f} + NO@bid {cost_no:.4f} = {total_maker_cost:.4f} | "
+                    f"FV={fair_value:.3f} r={r:.3f} q={q:.1f} | Edge(spread) {maker_edge:.2%} | Pairs: {self.successful_pairs}/{self.total_pairs_sent}",
+                    self.worker_id,
+                )
+
+            return SignalEvent(
+                symbol=f"{event_id}_YES",
+                side="BUY",
+                price=cost_yes,
+                reason=reason_yes,
+                position_size_usd=usd_leg_yes,
+                position_id=None,
+                order_type="GTC",
+            )
+        elif quote_yes and not quote_no:
+            # REDUCE_ONLY: Solo cotizar YES para balancear q < -soft_cap
+            reason_yes = f"Two-Sided AS Maker [REDUCE_ONLY]: BUY YES GTC @{cost_yes:.4f} para rebalancear q={q:.1f}"
+            return SignalEvent(
+                symbol=f"{event_id}_YES",
+                side="BUY",
+                price=cost_yes,
+                reason=reason_yes,
+                position_size_usd=usd_leg_yes,
+                position_id=None,
+                order_type="GTC",
+            )
+        elif quote_no and not quote_yes:
+            # REDUCE_ONLY: Solo cotizar NO para balancear q > soft_cap
+            reason_no = f"Two-Sided AS Maker [REDUCE_ONLY]: BUY NO GTC @{cost_no:.4f} para rebalancear q={q:.1f}"
+            return SignalEvent(
+                symbol=f"{event_id}_NO",
+                side="BUY",
+                price=cost_no,
+                reason=reason_no,
+                position_size_usd=usd_leg_no,
+                position_id=None,
+                order_type="GTC",
+            )

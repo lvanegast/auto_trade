@@ -988,7 +988,7 @@ class TradingWorker:
                                 current_no_ask=no_ask,
                                 current_yes_bid=yes_bid,
                                 current_no_bid=no_bid,
-                                max_unhedged_wait_s=0.0,
+                                max_unhedged_wait_s=float(os.getenv("MAKER_UNHEDGED_WAIT_SECONDS", "15.0")),
                             )
                             if cancel_order_id:
                                 try:
