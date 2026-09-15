@@ -460,8 +460,10 @@ def test_maker_two_leg_blocks_different_market_when_one_is_active():
     maker_taker_coordinator.mark_cancelled("btc_ord_1", "test_cleanup")
 
 
-def test_maker_micro_position_sizing_defaults():
+def test_maker_micro_position_sizing_defaults(monkeypatch):
     """Valida que el dimensionamiento por defecto sea micro-lotes ($0.20 a $0.50, default $0.35)."""
+    for k in ["MAKER_LEG_MIN_USD", "CRYPTO_LEG_MIN_USD", "MAKER_LEG_MAX_USD", "CRYPTO_LEG_MAX_USD", "MAKER_POSITION_SIZE_USD", "CRYPTO_MAKER_POSITION_SIZE_USD"]:
+        monkeypatch.delenv(k, raising=False)
     mock_db = MagicMock()
     strategy = MakerTwoLegStrategy(
         db=mock_db,

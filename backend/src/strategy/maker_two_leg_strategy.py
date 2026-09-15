@@ -29,10 +29,10 @@ class MakerTwoLegStrategy(BaseStrategy):
     def __init__(
         self,
         symbol: str,
-        min_edge_pct: float = 0.02,      # edge maker mínimo = spread mínimo (2%)
-        position_size_usd: float = 1.0,  # monto USD por leg (fijo, min 1 / max 3)
-        leg_size_min_usd: float = 1.0,   # mínimo por leg
-        leg_size_max_usd: float = 3.0,   # máximo por leg
+        min_edge_pct: float = None,      # edge maker mínimo = spread mínimo (2%)
+        position_size_usd: float = None, # monto USD por leg (fijo, min 0.20 / max 0.50)
+        leg_size_min_usd: float = None,  # mínimo por leg
+        leg_size_max_usd: float = None,  # máximo por leg
         db=None,
         worker_id: str = "worker_6",
         observation_only: bool = True,
@@ -43,11 +43,27 @@ class MakerTwoLegStrategy(BaseStrategy):
         inventory_hard_cap: float = 5.0,
     ):
         super().__init__(symbol)
-        self.min_edge_pct = float(os.getenv("MAKER_MIN_EDGE_PCT", str(min_edge_pct if min_edge_pct is not None else 0.025)))
+        if min_edge_pct is not None:
+            self.min_edge_pct = float(min_edge_pct)
+        else:
+            self.min_edge_pct = float(os.getenv("MAKER_MIN_EDGE_PCT") or os.getenv("CRYPTO_MAKER_EDGE_PCT") or "0.025")
         self.max_edge_pct = float(os.getenv("MAKER_MAX_EDGE_PCT", "0.065"))
-        self.leg_size_min_usd = float(os.getenv("MAKER_LEG_MIN_USD") or os.getenv("CRYPTO_LEG_MIN_USD") or str(leg_size_min_usd if leg_size_min_usd is not None and leg_size_min_usd != 1.0 else 0.20))
-        self.leg_size_max_usd = float(os.getenv("MAKER_LEG_MAX_USD") or os.getenv("CRYPTO_LEG_MAX_USD") or str(leg_size_max_usd if leg_size_max_usd is not None and leg_size_max_usd != 3.0 else 0.50))
-        default_size = float(os.getenv("MAKER_POSITION_SIZE_USD") or os.getenv("CRYPTO_MAKER_POSITION_SIZE_USD") or str(position_size_usd if position_size_usd is not None and position_size_usd != 1.0 else 0.35))
+
+        if leg_size_min_usd is not None:
+            self.leg_size_min_usd = float(leg_size_min_usd)
+        else:
+            self.leg_size_min_usd = float(os.getenv("MAKER_LEG_MIN_USD") or os.getenv("CRYPTO_LEG_MIN_USD") or "0.20")
+
+        if leg_size_max_usd is not None:
+            self.leg_size_max_usd = float(leg_size_max_usd)
+        else:
+            self.leg_size_max_usd = float(os.getenv("MAKER_LEG_MAX_USD") or os.getenv("CRYPTO_LEG_MAX_USD") or "0.50")
+
+        if position_size_usd is not None:
+            default_size = float(position_size_usd)
+        else:
+            default_size = float(os.getenv("MAKER_POSITION_SIZE_USD") or os.getenv("CRYPTO_MAKER_POSITION_SIZE_USD") or "0.35")
+
         # Presupuesto por leg micro-dimensionado, limitado a [min, max]
         self.position_size_usd = max(
             self.leg_size_min_usd,
