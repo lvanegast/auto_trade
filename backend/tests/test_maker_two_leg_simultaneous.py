@@ -458,3 +458,71 @@ def test_maker_two_leg_blocks_different_market_when_one_is_active():
 
     # Limpiar orden para no ensuciar otros tests
     maker_taker_coordinator.mark_cancelled("btc_ord_1", "test_cleanup")
+
+
+def test_maker_micro_position_sizing_defaults():
+    """Valida que el dimensionamiento por defecto sea micro-lotes ($0.20 a $0.50, default $0.35)."""
+    mock_db = MagicMock()
+    strategy = MakerTwoLegStrategy(
+        db=mock_db,
+        worker_id="worker_6",
+        symbol="CRYPTO_MAKER",
+    )
+    assert strategy.leg_size_min_usd == 0.20
+    assert strategy.leg_size_max_usd == 0.50
+    assert strategy.position_size_usd == 0.35
+
+
+@pytest.mark.asyncio
+async def test_auto_redeem_clob_portfolio_claims_winning_contract():
+    """Valida que auto_redeem_clob_portfolio escanea la cartera y ejecuta redeem para contratos ganadores."""
+    from src.engine.redeem_executor import RedeemExecutor, RedeemResult
+
+    mock_db = MagicMock()
+    executor = RedeemExecutor(db=mock_db, worker_id="worker_6")
+
+    # Mock client and CLOB data
+    fake_market = {
+        "slug": "btc-up-or-down-15-min-9999",
+        "status": "RESOLVED",
+        "conditionId": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        "winningOutcomeIndex": 0,  # YES won
+    }
+    fake_item = {
+        "market": fake_market,
+        "tokensBalance": {"yes": "1000000", "no": "0"},  # 1.0 YES held
+    }
+
+    mock_client = AsyncMock()
+    mock_client.portfolio.get_clob_positions = AsyncMock(return_value=[fake_item])
+
+    with patch.dict("os.environ", {
+        "LIMITLESS_API_KEY": "fake_key",
+        "LIMITLESS_API_SECRET": "fake_sec",
+        "LIMITLESS_PRIVATE_KEY": "fake_priv",
+    }), patch("limitless_sdk.Client") as MockClientClass, \
+       patch.object(executor, "redeem", new_callable=AsyncMock) as mock_redeem:
+
+        mock_redeem.return_value = RedeemResult(
+            success=True,
+            market_slug="btc-up-or-down-15-min-9999",
+            condition_id="0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            winning_outcome="YES",
+            shares_redeemed=1.0,
+            usdc_received=1.0,
+            tx_hash="0xtesthash123",
+        )
+
+        MockClientClass.return_value.__aenter__.return_value = mock_client
+
+        results = await executor.auto_redeem_clob_portfolio()
+
+        assert len(results) == 1
+        assert results[0].success is True
+        assert results[0].winning_outcome == "YES"
+        mock_redeem.assert_awaited_once_with(
+            condition_id="0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            winning_outcome="YES",
+            shares=1.0,
+            is_negrisk=False,
+        )

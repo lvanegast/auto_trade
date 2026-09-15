@@ -45,13 +45,14 @@ class MakerTwoLegStrategy(BaseStrategy):
         super().__init__(symbol)
         self.min_edge_pct = float(os.getenv("MAKER_MIN_EDGE_PCT", str(min_edge_pct if min_edge_pct is not None else 0.025)))
         self.max_edge_pct = float(os.getenv("MAKER_MAX_EDGE_PCT", "0.065"))
-        # Presupuesto por leg fijo, limitado a [min, max]
+        self.leg_size_min_usd = float(os.getenv("MAKER_LEG_MIN_USD") or os.getenv("CRYPTO_LEG_MIN_USD") or str(leg_size_min_usd if leg_size_min_usd is not None and leg_size_min_usd != 1.0 else 0.20))
+        self.leg_size_max_usd = float(os.getenv("MAKER_LEG_MAX_USD") or os.getenv("CRYPTO_LEG_MAX_USD") or str(leg_size_max_usd if leg_size_max_usd is not None and leg_size_max_usd != 3.0 else 0.50))
+        default_size = float(os.getenv("MAKER_POSITION_SIZE_USD") or os.getenv("CRYPTO_MAKER_POSITION_SIZE_USD") or str(position_size_usd if position_size_usd is not None and position_size_usd != 1.0 else 0.35))
+        # Presupuesto por leg micro-dimensionado, limitado a [min, max]
         self.position_size_usd = max(
-            leg_size_min_usd,
-            min(position_size_usd, leg_size_max_usd),
+            self.leg_size_min_usd,
+            min(default_size, self.leg_size_max_usd),
         )
-        self.leg_size_min_usd = leg_size_min_usd
-        self.leg_size_max_usd = leg_size_max_usd
         self.db = db
         self.worker_id = worker_id
         self.observation_only = observation_only

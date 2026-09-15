@@ -337,6 +337,143 @@ class RedeemExecutor:
                 error=f"On-chain redeem error: {e}",
             )
 
+    async def auto_redeem_clob_portfolio(self) -> List[RedeemResult]:
+        """
+        Escanea directamente la cartera CLOB en Limitless (ground-truth).
+        Para cualquier mercado resuelto donde tengamos tokens ganadores > 0:
+        ejecuta el redeem on-chain y alerta por Telegram.
+        """
+        results: List[RedeemResult] = []
+        api_key = os.getenv("LIMITLESS_API_KEY")
+        api_secret = os.getenv("LIMITLESS_API_SECRET")
+        private_key = os.getenv("LIMITLESS_PRIVATE_KEY")
+
+        if not api_key or not api_secret or not private_key:
+            return results
+
+        try:
+            from limitless_sdk import Client as LimitlessClient, HMACCredentials
+            async with LimitlessClient(
+                "https://api.limitless.exchange",
+                hmac_credentials=HMACCredentials(token_id=api_key, secret=api_secret),
+            ) as client:
+                clob_data = await client.portfolio.get_clob_positions()
+                if not isinstance(clob_data, list):
+                    return results
+
+                for item in clob_data:
+                    if not isinstance(item, dict):
+                        continue
+                    market = item.get("market") or {}
+                    status = market.get("status")
+                    if status != "RESOLVED":
+                        continue
+
+                    market_slug = market.get("slug", "")
+                    condition_id = market.get("conditionId") or market.get("condition_id")
+                    if not condition_id:
+                        continue
+
+                    tokens_bal = item.get("tokensBalance") or {}
+                    raw_yes = float(tokens_bal.get("yes", 0) or 0)
+                    raw_no = float(tokens_bal.get("no", 0) or 0)
+
+                    yes_shares = raw_yes / 1e6 if raw_yes >= 1000 else raw_yes
+                    no_shares = raw_no / 1e6 if raw_no >= 1000 else raw_no
+
+                    if yes_shares <= 0.001 and no_shares <= 0.001:
+                        continue
+
+                    # Determinar ganador
+                    winning_idx = market.get("winningOutcomeIndex")
+                    if winning_idx is None:
+                        winning_idx = market.get("winning_outcome_index")
+
+                    is_negrisk = market.get("marketType") == "group" or market.get("market_type") == "group"
+                    winning_outcome = None
+                    if winning_idx is not None:
+                        winning_outcome = "YES" if winning_idx == 0 else "NO"
+                    else:
+                        try:
+                            from limitless_sdk.markets import MarketFetcher
+                            fetcher = MarketFetcher(client.http)
+                            m_detail = await fetcher.get_market(market_slug)
+                            w_idx = getattr(m_detail, "winning_outcome_index", None)
+                            if w_idx is not None:
+                                winning_outcome = "YES" if w_idx == 0 else "NO"
+                        except Exception:
+                            pass
+
+                    if not winning_outcome:
+                        continue
+
+                    winning_shares = yes_shares if winning_outcome == "YES" else no_shares
+                    if winning_shares <= 0.001:
+                        continue
+
+                    self.db.log(
+                        "INFO",
+                        f"[AutoRedeem] 🎯 Detectado contrato ganador en {market_slug}: {winning_shares:.2f} {winning_outcome}. Ejecutando redeem on-chain...",
+                        self.worker_id,
+                    )
+
+                    res = await self.redeem(
+                        condition_id=condition_id,
+                        winning_outcome=winning_outcome,
+                        shares=winning_shares,
+                        is_negrisk=is_negrisk,
+                    )
+                    res.market_slug = market_slug
+                    results.append(res)
+
+                    if res.success:
+                        self.db.log(
+                            "INFO",
+                            f"[AutoRedeem] ✅ Redeem exitoso para {market_slug}: tx={res.tx_hash}, {winning_shares:.2f} USDC recibidos",
+                            self.worker_id,
+                        )
+                        # Notificar Telegram
+                        try:
+                            from src.telegram_bot import telegram_bot
+                            if telegram_bot.enabled:
+                                cat = "crypto" if ("up-or-down" in market_slug or "crypto" in market_slug.lower()) else "sports"
+                                telegram_bot.send_payout_received(
+                                    worker_id=self.worker_id,
+                                    market_slug=market_slug,
+                                    token=winning_outcome,
+                                    amount_won=winning_shares,
+                                    payout_usd=winning_shares * 1.0,
+                                    cost_usd=winning_shares * 0.50,
+                                    net_profit_usd=winning_shares * 0.50,
+                                    tx_hash=res.tx_hash,
+                                    category=cat,
+                                )
+                        except Exception as e_tg:
+                            print(f"[AutoRedeem TG Error] {e_tg}")
+
+                        # Actualizar en BD local si existía alguna posición
+                        try:
+                            if hasattr(self.db, "get_open_positions") and hasattr(self.db, "mark_position_redeemed"):
+                                positions = self.db.get_open_positions(worker_id=self.worker_id) or []
+                                for p in positions:
+                                    if market_slug in p.get("symbol", ""):
+                                        self.db.mark_position_redeemed(p["id"])
+                                        self.db.close_position(
+                                            p["id"], 1.0, exit_reason="AutoRedeem OnChain", worker_id=self.worker_id
+                                        )
+                        except Exception:
+                            pass
+                    else:
+                        self.db.log(
+                            "CRITICAL",
+                            f"[AutoRedeem] ❌ Falló redeem on-chain para {market_slug}: {res.error}",
+                            self.worker_id,
+                        )
+        except Exception as e:
+            self.db.log("WARNING", f"[AutoRedeem] Error escaneando clob_positions: {e}", self.worker_id)
+
+        return results
+
 
 # Singleton
 _redeem_executor: Optional[RedeemExecutor] = None
