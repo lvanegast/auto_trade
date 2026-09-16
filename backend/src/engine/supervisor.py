@@ -631,16 +631,17 @@ class TradingWorker:
                         await self._resolve_expired_positions_simulated()
                         await self._check_market_resolutions()
 
-                        # Auto-Redeem directo de CLOB portfolio (cada 60s)
-                        now_sync = time.time()
-                        if now_sync - getattr(self, "_last_clob_auto_redeem", 0.0) > 60.0:
-                            self._last_clob_auto_redeem = now_sync
-                            try:
-                                from src.engine.redeem_executor import get_redeem_executor
-                                redeemer = get_redeem_executor(self.db, self.worker_id)
-                                await redeemer.auto_redeem_clob_portfolio()
-                            except Exception as e_ar:
-                                self.db.log("WARNING", f"[AutoRedeem] Error en auto_redeem_clob_portfolio: {e_ar}", self.worker_id)
+                        # Auto-Redeem directo de CLOB portfolio (cada 60s, solo en worker_6 para evitar llamadas concurrentes redundantes)
+                        if self.worker_id == "worker_6":
+                            now_sync = time.time()
+                            if now_sync - getattr(self, "_last_clob_auto_redeem", 0.0) > 60.0:
+                                self._last_clob_auto_redeem = now_sync
+                                try:
+                                    from src.engine.redeem_executor import get_redeem_executor
+                                    redeemer = get_redeem_executor(self.db, self.worker_id)
+                                    await redeemer.auto_redeem_clob_portfolio()
+                                except Exception as e_ar:
+                                    self.db.log("WARNING", f"[AutoRedeem] Error en auto_redeem_clob_portfolio: {e_ar}", self.worker_id)
                 except Exception as e:
                     print(f"[Sync Error] Error en sincronización periódica: {e}")
 
