@@ -825,6 +825,7 @@ class TradingWorker:
         """Monitorea órdenes Maker resting de Worker 6: adverse selection, expiración y fills."""
         try:
             from src.engine.maker_taker_coordinator import maker_taker_coordinator
+            from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
             active_orders = maker_taker_coordinator.get_active_orders(self.worker_id)
             if not active_orders:
                 return
