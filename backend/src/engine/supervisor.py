@@ -3024,7 +3024,7 @@ class TradingEngine:
             w4_enabled = os.getenv("WORKER4_ENABLED", "true").lower() == "true"
             if w4_enabled:
                 worker4 = TradingWorker("worker_4", "Limitless Sports (2 Opciones)", "SPORTS", "limitless_sports", self.db)
-                worker4.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_4", outcomes_count=None, observation_only=False)
+                worker4.strategy = SportsArbitrageStrategy("SPORTS", min_edge_pct=sports_edge, position_size_usd=sports_size, db=self.db, worker_id="worker_4", outcomes_count=None, observation_only=True)
                 self.workers["worker_4"] = worker4
 
             # Worker 5: Oráculo HFT de Referencia Binance Spot (0 Latency Feed)
