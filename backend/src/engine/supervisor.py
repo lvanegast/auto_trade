@@ -840,7 +840,7 @@ class TradingWorker:
 
             async with LimitlessClient("https://api.limitless.exchange", hmac_credentials=HMACCredentials(token_id=api_key, secret=api_secret)) as client:
                 order_client = client.new_order_client(private_key)
-
+                now_ts = time.time()
                 resting_orders = maker_taker_coordinator.get_resting_only_orders(self.worker_id)
 
                 # 1. Chequeo de Adverse Selection (Binance Oráculo)
