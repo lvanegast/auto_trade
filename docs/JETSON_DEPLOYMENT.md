@@ -11,10 +11,10 @@ Este documento describe la arquitectura, configuración, despliegue y flujo de C
 * **Arquitectura:** ARM64 (`aarch64`)
 * **Sistema Operativo:** Ubuntu 18.04.6 LTS (Bionic Beaver)
 * **Kernel & BSP:** Linux4Tegra `4.9.337-tegra` (L4T R32.7.6)
-* **Red Local (LAN):** `192.168.10.10` (MAC: `d0:37:45:b0:f0:57`, DHCP dinámico / asignación NVIDIA)
-  * **Puerto 8080:** FastAPI Backend & Dashboard Web (`http://192.168.10.10:8080`)
+* **Red Local (LAN):** `192.168.10.23` (DHCP dinámico en red DORA1; asignaciones previas: `.10`, `.21`; MAC Ethernet: `00:04:4b:eb:b0:90`)
+  * **Puerto 8080:** FastAPI Backend & Dashboard Web (`http://192.168.10.23:8080`)
   * **Puerto 5432:** Base de datos PostgreSQL 16 Alpine
-  * **Puerto 22:** Acceso SSH administrativo (`lvant@192.168.10.10`)
+  * **Puerto 22:** Acceso SSH administrativo (`lvant@192.168.10.23`)
 
 ---
 
