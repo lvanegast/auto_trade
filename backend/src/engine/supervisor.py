@@ -908,7 +908,20 @@ class TradingWorker:
                                     self._close_cancelled_resting_position(ord_info.market_slug, "cancelled_market_expired_purged")
                                     continue
 
-                                # La orden ya no está viva y el mercado sigue abierto: ¡SE LLENÓ!
+                                # Período de gracia: órdenes recién enviadas (<12s) pueden no estar indexadas aún en liveOrders
+                                if (now_ts - ord_info.created_at) < 12.0:
+                                    continue
+
+                                # Doble verificación on-chain: solo confirmar fill si realmente hay tokens en la billetera
+                                tokens = market_tokens_map.get(ord_info.market_slug, {})
+                                leg_token_balance = float(tokens.get(ord_info.leg_name.lower()) or 0.0)
+                                if leg_token_balance <= 0.0:
+                                    # La orden no está viva y no hay tokens: fue rechazada/cancelada por el exchange, NO llenada
+                                    maker_taker_coordinator.mark_cancelled(ord_info.order_id, "exchange_cancelled_zero_balance")
+                                    self._close_cancelled_resting_position(ord_info.market_slug, "cancelled_zero_balance")
+                                    continue
+
+                                # La orden ya no está viva, el mercado sigue abierto y tenemos tokens: ¡SE LLENÓ!
                                 maker_taker_coordinator.mark_filled(ord_info.order_id)
                                 try:
                                     if hasattr(self.db, "execute"):
