@@ -84,12 +84,12 @@ class ResolutionSniperFeeder(BaseFeeder):
         import re
 
         patterns = [
-            (r"-(\d+)-min-(\d+)$", 60),
-            (r"-(\d+)-hour-(\d+)$", 3600),
-            (r"-hourly-(\d+)$", 3600),
-            (r"-daily-(\d+)$", 86400),
-            (r"-weekly-(\d+)$", 604800),
-            (r"-(\d+)-day-(\d+)$", 86400),
+            (r"-(\d+)-min(?:-p)?-(\d+)$", 60),
+            (r"-(\d+)-hour(?:-p)?-(\d+)$", 3600),
+            (r"-hourly(?:-p)?-(\d+)$", 3600),
+            (r"-daily(?:-p)?-(\d+)$", 86400),
+            (r"-weekly(?:-p)?-(\d+)$", 604800),
+            (r"-(\d+)-day(?:-p)?-(\d+)$", 86400),
         ]
         for pat, mult in patterns:
             m = re.search(pat, slug)

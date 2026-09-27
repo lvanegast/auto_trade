@@ -153,6 +153,24 @@ class MakerTwoLegFeeder(BaseFeeder):
                     event.market_slug = slug
                     event.title = title
                     event.market_volume = market_volume
+
+                    exp_raw = (
+                        getattr(m, "expirationTimestamp", None)
+                        or getattr(m, "expiration_timestamp", None)
+                        or (m.get("expirationTimestamp") if isinstance(m, dict) else None)
+                        or (m.get("expiration_timestamp") if isinstance(m, dict) else None)
+                        or (m.get("endDate") if isinstance(m, dict) else None)
+                    )
+                    if exp_raw:
+                        try:
+                            val = float(exp_raw)
+                            event.expiration_timestamp = val / 1000.0 if val > 1e12 else val
+                        except (ValueError, TypeError):
+                            pass
+                    if not getattr(event, "expiration_timestamp", None):
+                        from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
+                        event.expiration_timestamp = ResolutionSniperFeeder._parse_expiration(slug)
+
                     await self.queue.put(event)
 
                     # Delay entre markets para no saturar la API
