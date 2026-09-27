@@ -146,9 +146,9 @@ class MakerTwoLegStrategy(BaseStrategy):
         else:
             slug = symbol
 
-        # STRICT FILTER: Excluir permanentemente mercados ultra-rapidos de 5 minutos
-        if "-5-min-" in slug.lower() or "-5min-" in slug.lower():
-            self._diag["5min_filtered"] = self._diag.get("5min_filtered", 0) + 1
+        # STRICT FILTER: Excluir permanentemente mercados ultra-rapidos de 5 minutos y mercados semanales
+        if "-5-min-" in slug.lower() or "-5min-" in slug.lower() or "-weekly-" in slug.lower() or "-weekly" in slug.lower():
+            self._diag["weekly_filtered"] = self._diag.get("weekly_filtered", 0) + 1
             return None
 
         # FILTRO DE ACTIVOS: Por defecto permite TODOS los criptoactivos ("ALL").
@@ -230,6 +230,13 @@ class MakerTwoLegStrategy(BaseStrategy):
         else:
             fair_value = (yes_bid + yes_ask) / 2.0
 
+        # SKEW FILTER: Solo mercados con probabilidad disputada (flujo bidireccional saludable)
+        # Excluir mercados donde un resultado ya esta prácticamente decidido (< 0.20 o > 0.80)
+        # para evitar asimetría tóxica (riesgo extremo a cambio de centavos sin contraparte en la otra pata).
+        if fair_value < 0.20 or fair_value > 0.80:
+            self._diag["skew_filtered"] = self._diag.get("skew_filtered", 0) + 1
+            return None
+
         # 2. Inventario neto q = YES - NO
         q = self.get_net_inventory(slug)
 
@@ -261,6 +268,11 @@ class MakerTwoLegStrategy(BaseStrategy):
 
         if cost_no <= 0 or cost_yes <= 0:
             self._diag["no_book"] += 1
+            return None
+
+        # BOUNDS: Excluir posturas con precios extremos en cualquiera de las patas (ej. YES@0.97 / NO@0.01)
+        if cost_yes < 0.15 or cost_yes > 0.85 or cost_no < 0.15 or cost_no > 0.85:
+            self._diag["skew_filtered"] = self._diag.get("skew_filtered", 0) + 1
             return None
 
         total_maker_cost = round(cost_yes + cost_no, 4)
