@@ -92,7 +92,10 @@ class ExecutionFrictionGuard:
             slippage_pct = info["slippage_pct"]
 
         commission_cost = position_size_usd * commission_pct
-        gas_cost = info["gas_fee_usd"]
+        if execution_role == "maker" and feeder_type in ("limitless", "limitless_sports", "polymarket"):
+            gas_cost = 0.0
+        else:
+            gas_cost = info["gas_fee_usd"]
         slippage_cost = position_size_usd * slippage_pct
         total_friction_usd = commission_cost + gas_cost + slippage_cost
         total_friction_pct = (total_friction_usd / position_size_usd) if position_size_usd > 0 else 0.0
@@ -169,8 +172,13 @@ class ExecutionFrictionGuard:
         )
 
         net_edge_pct = gross_edge_pct - friction_details["total_friction_pct"]
+        min_margin = (
+            float(os.getenv("MAKER_MIN_EDGE_PCT", "0.015"))
+            if execution_role == "maker"
+            else self.min_net_margin_pct
+        )
 
-        if net_edge_pct >= self.min_net_margin_pct:
+        if net_edge_pct >= min_margin:
             return (
                 True,
                 net_edge_pct,
@@ -188,7 +196,7 @@ class ExecutionFrictionGuard:
                 (
                     f"RECHAZADO [{execution_role.upper()}] | Edge Bruto: {gross_edge_pct:.2%} | "
                     f"Fricción Total: -{friction_details['total_friction_pct']:.2%} | "
-                    f"Net: {net_edge_pct:.2%} < {self.min_net_margin_pct:.2%}"
+                    f"Net: {net_edge_pct:.2%} < {min_margin:.2%}"
                 ),
                 friction_details,
             )

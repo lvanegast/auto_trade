@@ -208,6 +208,10 @@ class MakerTwoLegStrategy(BaseStrategy):
                     return None
 
         self._diag["markets_seen"] += 1
+        now_diag = time.time()
+        if not hasattr(self, "_last_diag_print") or (now_diag - self._last_diag_print > 60):
+            self._last_diag_print = now_diag
+            print(f"[{self.worker_id} Maker Diag] {self._diag}")
 
         # Extraer book real (el feeder ya trae bid/ask del orderbook ejecutable)
         yes_bid = float(getattr(event, "bid", 0.0) or 0.0)
@@ -250,6 +254,11 @@ class MakerTwoLegStrategy(BaseStrategy):
         if cost_no < (1.0 - yes_ask) and (yes_bid + (1.0 - yes_ask)) <= (1.0 - self.min_edge_pct):
             cost_no = round(min(1.0 - yes_ask, (1.0 - yes_bid) - 0.001), 3)
 
+        # Garantizar que el costo total de las 2 patas respete estrictamente el margen minimo (evitar desborde por redondeo)
+        max_allowed_cost = round(1.0 - self.min_edge_pct, 3)
+        if round(cost_yes + cost_no, 3) > max_allowed_cost:
+            cost_no = round(max(0.001, max_allowed_cost - cost_yes), 3)
+
         if cost_no <= 0 or cost_yes <= 0:
             self._diag["no_book"] += 1
             return None
@@ -287,9 +296,9 @@ class MakerTwoLegStrategy(BaseStrategy):
             self._diag["cooldown"] += 1
             return None
 
-        # Validar edge maker (spread) contra umbral mínimo Y MÁXIMO viable (ej. 2.5% a 6.5%)
-        # Spreads > 6.5% corresponden a libros desiertos/fantasmas donde nadie toma la contraparte.
-        if maker_edge < self.min_edge_pct or maker_edge > self.max_edge_pct:
+        # Validar edge maker (spread) contra umbral mínimo Y MÁXIMO viable (ej. 1.5% a 7.5%)
+        # Spreads > 7.5% corresponden a libros desiertos/fantasmas donde nadie toma la contraparte.
+        if maker_edge < (self.min_edge_pct - 0.0005) or maker_edge > self.max_edge_pct:
             self._diag["edge_filtered"] += 1
             return None
 
