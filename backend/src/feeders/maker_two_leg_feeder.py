@@ -17,9 +17,10 @@ from src.feeders.base import BaseFeeder
 from src.events import PriceUpdateEvent
 
 
-# Shared cache to prevent rate limiting
+# Shared cache to prevent rate limiting across workers
 _last_maker_scan_time = 0.0
 _maker_scan_lock = asyncio.Lock()
+_cached_maker_events = []
 
 
 class MakerTwoLegFeeder(BaseFeeder):
@@ -30,6 +31,7 @@ class MakerTwoLegFeeder(BaseFeeder):
             "5e76699e-8763-4c91-85de-3efeb064efec",  # Crypto only
         ]
         self.task = None
+        self._last_instance_scan = 0.0
 
     async def start(self):
         self.running = True
@@ -72,12 +74,26 @@ class MakerTwoLegFeeder(BaseFeeder):
             await http_client.close()
 
     async def _scan_markets(self):
-        global _last_maker_scan_time
+        global _last_maker_scan_time, _cached_maker_events
         now = time.time()
-        if now - _last_maker_scan_time < 5.0:
+        if now - self._last_instance_scan < self.poll_interval:
             return
+        self._last_instance_scan = now
+
+        # Si otro worker (ej. worker_1) ya escaneó hace <5s, reusar los eventos cacheados
+        if now - _last_maker_scan_time < 5.0 and _cached_maker_events:
+            for ev in _cached_maker_events:
+                await self.queue.put(ev)
+            return
+
         async with _maker_scan_lock:
+            # Doble comprobación tras entrar al lock
+            if now - _last_maker_scan_time < 5.0 and _cached_maker_events:
+                for ev in _cached_maker_events:
+                    await self.queue.put(ev)
+                return
             _last_maker_scan_time = now
+            new_events = []
             try:
                 from src.engine.latency_tracker import latency_tracker
                 from src.utils.limitless_api_helper import fetch_markets_safe
@@ -172,12 +188,14 @@ class MakerTwoLegFeeder(BaseFeeder):
                         event.expiration_timestamp = ResolutionSniperFeeder._parse_expiration(slug)
 
                     await self.queue.put(event)
+                    new_events.append(event)
 
                     # Delay entre markets para no saturar la API
                     await asyncio.sleep(0.05)
 
+                _cached_maker_events = new_events
                 print(f"[Maker 2-Leg] Scan completo: {len(markets)} markets, {scanned} crypto, "
-                      f"books emitidos OK")
+                      f"books emitidos OK ({len(new_events)} eventos cacheados)")
                 now_t = time.time()
                 if not hasattr(self, "_last_db_log_time") or (now_t - self._last_db_log_time > 900):
                     self._last_db_log_time = now_t
