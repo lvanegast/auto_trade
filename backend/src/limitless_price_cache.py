@@ -43,7 +43,7 @@ def _fetch_limitless_executable_price(slug: str, validate_maker_spread: bool = F
     try:
         url = f"https://api.limitless.exchange/markets/{slug}/orderbook"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with urllib.request.urlopen(req, timeout=3.5) as response:
             data = json.loads(response.read().decode("utf-8"))
 
             bids = data.get("bids", [])

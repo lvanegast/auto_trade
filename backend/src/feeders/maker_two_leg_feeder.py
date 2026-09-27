@@ -144,6 +144,29 @@ class MakerTwoLegFeeder(BaseFeeder):
                         except (TypeError, ValueError):
                             pass
 
+                    # Expiración: calcular antes de consultar el orderbook para no gastar llamadas en mercados muertos
+                    exp_raw = (
+                        getattr(m, "expirationTimestamp", None)
+                        or getattr(m, "expiration_timestamp", None)
+                        or (m.get("expirationTimestamp") if isinstance(m, dict) else None)
+                        or (m.get("expiration_timestamp") if isinstance(m, dict) else None)
+                        or (m.get("endDate") if isinstance(m, dict) else None)
+                    )
+                    exp_ts = None
+                    if exp_raw:
+                        try:
+                            val = float(exp_raw)
+                            exp_ts = val / 1000.0 if val > 1e12 else val
+                        except (ValueError, TypeError):
+                            pass
+                    if not exp_ts:
+                        from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
+                        exp_ts = ResolutionSniperFeeder._parse_expiration(slug)
+
+                    # Excluir mercados ya expirados o a menos de 120s de expirar
+                    if exp_ts and (exp_ts - time.time() < 120.0):
+                        continue
+
                     # Book real ejecutable (el spread ES nuestro edge de arbitraje, nunca bloquear spreads > 3.5%)
                     from src.limitless_price_cache import async_get_limitless_executable_price
                     book = await async_get_limitless_executable_price(slug, validate_maker_spread=False)
@@ -169,23 +192,7 @@ class MakerTwoLegFeeder(BaseFeeder):
                     event.market_slug = slug
                     event.title = title
                     event.market_volume = market_volume
-
-                    exp_raw = (
-                        getattr(m, "expirationTimestamp", None)
-                        or getattr(m, "expiration_timestamp", None)
-                        or (m.get("expirationTimestamp") if isinstance(m, dict) else None)
-                        or (m.get("expiration_timestamp") if isinstance(m, dict) else None)
-                        or (m.get("endDate") if isinstance(m, dict) else None)
-                    )
-                    if exp_raw:
-                        try:
-                            val = float(exp_raw)
-                            event.expiration_timestamp = val / 1000.0 if val > 1e12 else val
-                        except (ValueError, TypeError):
-                            pass
-                    if not getattr(event, "expiration_timestamp", None):
-                        from src.feeders.resolution_sniper_feeder import ResolutionSniperFeeder
-                        event.expiration_timestamp = ResolutionSniperFeeder._parse_expiration(slug)
+                    event.expiration_timestamp = exp_ts
 
                     await self.queue.put(event)
                     new_events.append(event)
