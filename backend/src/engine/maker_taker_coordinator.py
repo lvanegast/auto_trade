@@ -37,7 +37,7 @@ class RestingMakerOrder:
     hedge_token_id: str
     hedge_leg_name: str  # "NO" o "YES"
     hedge_max_price: float
-    max_total_cost: float = 0.98
+    max_total_cost: float = 0.985
     target_asset: Optional[str] = None  # "BTC", "ETH", etc.
     created_at: float = field(default_factory=time.time)
     expires_at: Optional[float] = None  # Timestamp de vencimiento del mercado

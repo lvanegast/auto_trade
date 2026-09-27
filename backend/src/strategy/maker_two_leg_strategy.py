@@ -46,8 +46,8 @@ class MakerTwoLegStrategy(BaseStrategy):
         if min_edge_pct is not None:
             self.min_edge_pct = float(min_edge_pct)
         else:
-            self.min_edge_pct = float(os.getenv("MAKER_MIN_EDGE_PCT") or os.getenv("CRYPTO_MAKER_EDGE_PCT") or "0.025")
-        self.max_edge_pct = float(os.getenv("MAKER_MAX_EDGE_PCT", "0.065"))
+            self.min_edge_pct = float(os.getenv("MAKER_MIN_EDGE_PCT") or os.getenv("CRYPTO_MAKER_EDGE_PCT") or "0.015")
+        self.max_edge_pct = float(os.getenv("MAKER_MAX_EDGE_PCT", "0.075"))
 
         if leg_size_min_usd is not None:
             self.leg_size_min_usd = float(leg_size_min_usd)
@@ -235,19 +235,20 @@ class MakerTwoLegStrategy(BaseStrategy):
         r = fair_value - (self.inventory_gamma * q)
         r = max(0.01, min(0.99, r))
 
-        # 4. Half-spread delta
-        half_spread = max(self.min_edge_pct / 2.0, 0.015)
+        # 4. Half-spread delta: objetivo competitivo según min_edge_pct (1.5% - 2.0% total edge)
+        half_spread = max(self.min_edge_pct / 2.0, 0.0075)
 
         # 5. Cotizaciones de compra pasiva (Bids Post-Only estrictamente < Ask contrario):
-        # En q == 0 cotizamos a las puntas de compra naturales (yes_bid y no_bid = 1 - yes_ask)
-        # En q != 0 el sesgo de Avellaneda-Stoikov ajusta asimetricamente
-        if abs(q) < 0.001:
-            cost_yes = round(min(yes_bid, max(yes_ask - 0.001, 0.001)), 3)
-            cost_no_max = max((1.0 - yes_bid) - 0.001, 0.001)
-            cost_no = round(min(1.0 - yes_ask, cost_no_max), 3)
-        else:
-            cost_yes = round(max(0.001, min(r - half_spread, yes_ask - 0.001)), 3)
-            cost_no = round(max(0.001, min((1.0 - r) - half_spread, (1.0 - yes_bid) - 0.001)), 3)
+        # Cotizamos usando precio de reserva r (Avellaneda-Stoikov) para posicionarnos
+        # como Mejor Postor (Top Bid) dentro del spread, asegurando prioridad en la cola.
+        cost_yes = round(max(0.001, min(r - half_spread, yes_ask - 0.001)), 3)
+        cost_no = round(max(0.001, min((1.0 - r) - half_spread, (1.0 - yes_bid) - 0.001)), 3)
+
+        # Si el bid natural existente está por encima y el par sigue siendo viable, unirse al mejor bid
+        if cost_yes < yes_bid and (yes_bid + (1.0 - yes_ask)) <= (1.0 - self.min_edge_pct):
+            cost_yes = round(min(yes_bid, yes_ask - 0.001), 3)
+        if cost_no < (1.0 - yes_ask) and (yes_bid + (1.0 - yes_ask)) <= (1.0 - self.min_edge_pct):
+            cost_no = round(min(1.0 - yes_ask, (1.0 - yes_bid) - 0.001), 3)
 
         if cost_no <= 0 or cost_yes <= 0:
             self._diag["no_book"] += 1

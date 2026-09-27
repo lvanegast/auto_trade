@@ -975,8 +975,9 @@ class TradingWorker:
                         self._close_cancelled_resting_position(ord_info.market_slug, "cancelled_market_near_expiration")
                         continue
 
-                    # Timeout de resting (45s sin fill)
-                    if (now_ts - ord_info.created_at) > 45.0:
+                    # Timeout de resting (configurable, default 180s = 3m sin fill)
+                    resting_ttl = float(os.getenv("MAKER_RESTING_TTL", "180.0"))
+                    if (now_ts - ord_info.created_at) > resting_ttl:
                         self.db.log(
                             "INFO",
                             f"[OrderTTL] Cancelando orden Maker {ord_info.order_id[:8]} en {ord_info.market_slug} por timeout de resting ({now_ts - ord_info.created_at:.0f}s sin fill)",
@@ -2210,6 +2211,7 @@ class TradingWorker:
                                     hedge_token_id="",
                                     hedge_leg_name="NO" if "_YES" in signal.symbol else "YES",
                                     hedge_max_price=float(1.0 - price),
+                                    max_total_cost=float(os.getenv("MAKER_MAX_TOTAL_COST", "0.985")),
                                     target_asset=target_asset,
                                 )
                                 maker_taker_coordinator.register_order(resting_ord)
