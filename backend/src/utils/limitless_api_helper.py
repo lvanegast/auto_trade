@@ -60,3 +60,48 @@ async def get_page_id_safe(http_client, path: str) -> Optional[str]:
         pass
 
     return known_id
+
+
+def patch_limitless_sdk():
+    """
+    Parchea MarketFetcher.get_market en limitless_sdk para sanitizar priceOracleMetadata
+    y evitar ValidationError cuando pythAddress o logo vienen como None desde la API.
+    """
+    try:
+        from limitless_sdk.markets import MarketFetcher
+        from limitless_sdk.types.markets import Market
+
+        orig_get_market = MarketFetcher.get_market
+
+        async def sanitized_get_market(self, slug: str) -> Market:
+            self._logger.debug("Fetching market (sanitized)", {"slug": slug})
+            try:
+                response_data = await self._http_client.get(f"/markets/{slug}")
+                if isinstance(response_data, dict):
+                    pom = response_data.get("priceOracleMetadata")
+                    if isinstance(pom, dict):
+                        if pom.get("pythAddress") is None:
+                            pom["pythAddress"] = ""
+                        if pom.get("logo") is None:
+                            pom["logo"] = ""
+                        if pom.get("symbol") is None:
+                            pom["symbol"] = ""
+                        if pom.get("name") is None:
+                            pom["name"] = ""
+                market = Market(**response_data)
+                market._http_client = self._http_client
+                if market.venue:
+                    self._venue_cache[slug] = market.venue
+                return market
+            except Exception as error:
+                self._logger.error("Failed to fetch market", error, {"slug": slug})
+                raise
+
+        MarketFetcher.get_market = sanitized_get_market
+        logger.info("[LimitlessApiHelper] MarketFetcher.get_market parcheado exitosamente contra schema changes")
+    except Exception as pe:
+        logger.warning(f"[LimitlessApiHelper] No se pudo parchear MarketFetcher: {pe}")
+
+
+# Aplicar automáticamente al importar el módulo
+patch_limitless_sdk()

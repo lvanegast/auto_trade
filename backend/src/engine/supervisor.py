@@ -13,6 +13,7 @@ _ld(os.path.join(_load_dir, ".env"), override=True)
 # Forzar aceleración a 5.0 segundos para evitar Rate Limits de Cloudflare en la API de Limitless
 os.environ["SPORTS_POLL_INTERVAL"] = "5.0"
 os.environ["ORACLE_POLL_INTERVAL"] = "5.0"
+import src.utils.limitless_api_helper  # Parche dinámico para SDK de Limitless
 from src.database import DatabaseManager
 from src.events import SignalEvent
 from src.strategy.lead_lag_arbitrage import LeadLagArbitrageStrategy
