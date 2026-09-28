@@ -923,7 +923,8 @@ class TradingWorker:
                                     continue
 
                                 # La orden ya no está viva, el mercado sigue abierto y tenemos tokens: ¡SE LLENÓ!
-                                maker_taker_coordinator.mark_filled(ord_info.order_id)
+                                actual_shares = round(leg_token_balance / 1e6, 6)
+                                maker_taker_coordinator.mark_filled(ord_info.order_id, filled_qty=actual_shares)
                                 try:
                                     if hasattr(self.db, "execute"):
                                         self.db.execute(
@@ -2168,9 +2169,27 @@ class TradingWorker:
                             # pero cantidad de shares exactas para SELL (maker_amount = shares)
                             if signal.side == "SELL":
                                 if getattr(signal, "amount", None) and signal.amount > 0:
-                                    fok_amount = round(float(signal.amount), 4)
+                                    fok_amount = float(signal.amount)
                                 else:
-                                    fok_amount = round(spend_amount / price, 4) if price > 0 else 1.0
+                                    fok_amount = (spend_amount / price) if price > 0 else 1.0
+
+                                # PROTECCIÓN ANTI-OVERSELL: Limitar al saldo real disponible en CLOB
+                                try:
+                                    clob_pos = await c.portfolio.get_clob_positions()
+                                    for cp in clob_pos:
+                                        if cp.get("market", {}).get("slug") == market_slug:
+                                            tb = cp.get("tokensBalance", {})
+                                            avail = float(tb.get(token_type.lower(), 0) or 0) / 1e6
+                                            if avail > 0:
+                                                fok_amount = min(fok_amount, avail)
+                                            break
+                                except Exception:
+                                    pass
+
+                                fok_amount = round(fok_amount, 4)
+                                if fok_amount <= 0.0001:
+                                    self.db.log("WARNING", f"[SELL Abortado] Saldo insuficiente de tokens ({fok_amount}) para {market_slug}", self.worker_id)
+                                    return
                             else:
                                 fok_amount = spend_amount
 
