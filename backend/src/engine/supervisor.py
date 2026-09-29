@@ -2236,6 +2236,27 @@ class TradingWorker:
                                 )
                                 maker_taker_coordinator.register_order(resting_ord)
 
+                                # CANCEL-ON-REPLACE: Cancelar cualquier orden previa de la misma pata en este mercado
+                                current_leg = resting_ord.leg_name
+                                for old_ord in list(maker_taker_coordinator.get_active_orders(self.worker_id)):
+                                    if old_ord.market_slug == market_slug and old_ord.leg_name == current_leg and old_ord.status == "RESTING" and old_ord.order_id != str(order_id):
+                                        try:
+                                            await order_client.cancel(old_ord.order_id)
+                                            maker_taker_coordinator.mark_cancelled(old_ord.order_id, "replaced_by_new_quote")
+                                            self._close_cancelled_resting_position(market_slug, "replaced_by_new_quote")
+                                        except Exception:
+                                            pass
+
+                                # SINGLE-MARKET EXCLUSIVITY: Cancelar órdenes descansando en otros mercados
+                                for old_ord in list(maker_taker_coordinator.get_active_orders(self.worker_id)):
+                                    if old_ord.market_slug != market_slug and old_ord.status == "RESTING":
+                                        try:
+                                            await order_client.cancel(old_ord.order_id)
+                                            maker_taker_coordinator.mark_cancelled(old_ord.order_id, "cancelled_market_switch")
+                                            self._close_cancelled_resting_position(old_ord.market_slug, "cancelled_market_switch")
+                                        except Exception:
+                                            pass
+
                                 # Registrar en par si ya existe la otra pata
                                 existing_active = [o for o in maker_taker_coordinator.get_active_orders(self.worker_id) if o.market_slug == market_slug and o.order_id != str(order_id)]
                                 if existing_active:

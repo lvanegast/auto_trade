@@ -253,7 +253,7 @@ class MakerTakerCoordinator:
         try:
             from src.strategy.lead_lag_arbitrage import BinanceTracker
             is_jump, jump_bps = BinanceTracker.detect_jump(
-                order.target_asset, window_seconds=0.5, threshold_bps=12.0
+                order.target_asset, window_seconds=0.5, threshold_bps=8.0
             )
             if is_jump:
                 reason = f"adverse_selection_jump_{order.target_asset}_{jump_bps:.1f}bps"

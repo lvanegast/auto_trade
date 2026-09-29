@@ -119,8 +119,17 @@ class MakerTwoLegFeeder(BaseFeeder):
                     if "crypto" not in slug.lower() and "up-or-down" not in slug.lower():
                         continue
 
-                    # STRICT FILTER: Excluir permanentemente mercados ultra-rapidos de 5 minutos y mercados semanales
-                    if "-5-min-" in slug.lower() or "-5min-" in slug.lower() or "-weekly-" in slug.lower() or "-weekly" in slug.lower():
+                    # STRICT FILTER: Permitir EXCLUSIVAMENTE contratos intradía de 15 minutos y 1 hora.
+                    # Prohibir mercados ultra-rápidos (5m), diarios (daily/24h) y semanales (weekly).
+                    slug_lower = slug.lower()
+                    if (
+                        "-5-min-" in slug_lower or "-5min-" in slug_lower or
+                        "-weekly-" in slug_lower or "-weekly" in slug_lower or
+                        "-daily-" in slug_lower or "-daily" in slug_lower
+                    ):
+                        continue
+                    is_intraday = any(x in slug_lower for x in ["-15-min-", "-15min-", "-hourly-", "-hourly", "-1-hour-", "-1h-"])
+                    if not is_intraday:
                         continue
 
                     scanned += 1

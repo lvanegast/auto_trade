@@ -146,9 +146,20 @@ class MakerTwoLegStrategy(BaseStrategy):
         else:
             slug = symbol
 
-        # STRICT FILTER: Excluir permanentemente mercados ultra-rapidos de 5 minutos y mercados semanales
-        if "-5-min-" in slug.lower() or "-5min-" in slug.lower() or "-weekly-" in slug.lower() or "-weekly" in slug.lower():
-            self._diag["weekly_filtered"] = self._diag.get("weekly_filtered", 0) + 1
+        # STRICT FILTER: Permitir EXCLUSIVAMENTE contratos intradía de 15 minutos y 1 hora.
+        # Prohibir mercados ultra-rápidos (5m), diarios (daily/24h) y semanales (weekly).
+        slug_lower = slug.lower()
+        if (
+            "-5-min-" in slug_lower or "-5min-" in slug_lower or
+            "-weekly-" in slug_lower or "-weekly" in slug_lower or
+            "-daily-" in slug_lower or "-daily" in slug_lower
+        ):
+            self._diag["non_intraday_filtered"] = self._diag.get("non_intraday_filtered", 0) + 1
+            return None
+
+        is_intraday = any(x in slug_lower for x in ["-15-min-", "-15min-", "-hourly-", "-hourly", "-1-hour-", "-1h-"])
+        if not is_intraday:
+            self._diag["non_intraday_filtered"] = self._diag.get("non_intraday_filtered", 0) + 1
             return None
 
         # FILTRO DE ACTIVOS: Por defecto permite TODOS los criptoactivos ("ALL").
@@ -184,15 +195,20 @@ class MakerTwoLegStrategy(BaseStrategy):
                 self._diag["near_expiration_filtered"] = self._diag.get("near_expiration_filtered", 0) + 1
                 return None
 
-        # BLOQUEO DE EXCLUSIÓN MUTUA DE MERCADO (Single-Market Exclusivity):
-        # Si ya hay una orden descansando o pendiente de cobertura en el coordinador,
-        # NUNCA abrir otro mercado. La siguiente orden solo puede ser del mismo mercado.
+        # BLOQUEO DE EXCLUSIÓN MUTUA DE MERCADO Y CONTROL DE POSTURA ÚNICA:
+        # 1. Si ya hay órdenes en otro mercado, NUNCA abrir un mercado nuevo.
+        # 2. Si ya hay un par (YES y NO) descansando en este mercado, NUNCA enviar órdenes adicionales (anti-spamming).
         from src.engine.maker_taker_coordinator import maker_taker_coordinator
         active_orders = maker_taker_coordinator.get_active_orders(self.worker_id)
         if active_orders:
             active_slugs = {o.market_slug for o in active_orders}
             if slug not in active_slugs:
                 self._diag["other_market_active"] = self._diag.get("other_market_active", 0) + 1
+                return None
+
+            resting_in_market = [o for o in active_orders if o.market_slug == slug and o.status == "RESTING"]
+            if len(resting_in_market) >= 2:
+                self._diag["pair_already_resting"] = self._diag.get("pair_already_resting", 0) + 1
                 return None
 
         # Si hay posiciones abiertas en base de datos sin resolver en otro mercado, tampoco entrar a un mercado nuevo
