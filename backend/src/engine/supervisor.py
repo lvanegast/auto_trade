@@ -960,9 +960,8 @@ class TradingWorker:
                     except Exception as e_clob:
                         self.db.log("WARNING", f"[MakerFastSync] Error consultando CLOB positions: {e_clob or repr(e_clob)}", self.worker_id)
 
-                # 2.5 Chequeo de expiración y TTL para órdenes que siguen descansando en el libro
                 for ord_info in list(maker_taker_coordinator.get_resting_only_orders(self.worker_id)):
-                    exp_ts = ResolutionSniperFeeder._parse_expiration(ord_info.market_slug)
+                    exp_ts = ord_info.expires_at or ResolutionSniperFeeder._parse_expiration(ord_info.market_slug)
                     if exp_ts and (exp_ts - now_ts) < 120.0:
                         self.db.log(
                             "WARNING",
@@ -2233,6 +2232,7 @@ class TradingWorker:
                                     hedge_max_price=float(1.0 - price),
                                     max_total_cost=float(os.getenv("MAKER_MAX_TOTAL_COST", "0.985")),
                                     target_asset=target_asset,
+                                    expires_at=getattr(signal, "expiration_timestamp", None),
                                 )
                                 maker_taker_coordinator.register_order(resting_ord)
 

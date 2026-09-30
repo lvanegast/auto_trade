@@ -496,6 +496,7 @@ class MakerTwoLegStrategy(BaseStrategy):
                 position_id=None,
                 order_type="GTC",
             )
+            leg2_signal.expiration_timestamp = exp_ts
             self._pending_signals.append(leg2_signal)
             self._active_pairs[slug] = {"filled": [], "cost": total_maker_cost}
 
@@ -508,7 +509,7 @@ class MakerTwoLegStrategy(BaseStrategy):
                     self.worker_id,
                 )
 
-            return SignalEvent(
+            leg1_signal = SignalEvent(
                 symbol=f"{event_id}_YES",
                 side="BUY",
                 price=cost_yes,
@@ -517,6 +518,8 @@ class MakerTwoLegStrategy(BaseStrategy):
                 position_id=None,
                 order_type="GTC",
             )
+            leg1_signal.expiration_timestamp = exp_ts
+            return leg1_signal
         elif quote_yes and not quote_no:
             # REDUCE_ONLY: Solo cotizar YES para balancear q < -soft_cap
             reason_yes = f"Two-Sided AS Maker [REDUCE_ONLY]: BUY YES GTC @{cost_yes:.4f} para rebalancear q={q:.1f}"
