@@ -643,6 +643,26 @@ class TradingWorker:
                                     await redeemer.auto_redeem_clob_portfolio()
                                 except Exception as e_ar:
                                     self.db.log("WARNING", f"[AutoRedeem] Error en auto_redeem_clob_portfolio: {e_ar}", self.worker_id)
+
+                                # Sincronización periódica automática del balance USDC on-chain en Base
+                                try:
+                                    from web3 import Web3
+                                    wallet_addr = os.getenv("LIMITLESS_WALLET_ADDRESS", "0x247868fF939D5E9791364cDD4C2Ee11f1Dc5c6Bd")
+                                    usdc_addr = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+                                    erc20_abi = [{"constant": True, "inputs": [{"name": "_owner", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "balance", "type": "uint256"}], "type": "function"}]
+                                    for rpc_url in ("https://mainnet.base.org", "https://base-mainnet.public.blastapi.io", "https://rpc.ankr.com/base"):
+                                        try:
+                                            w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 5}))
+                                            if w3.is_connected():
+                                                usdc_contract = w3.eth.contract(address=usdc_addr, abi=erc20_abi)
+                                                usdc_bal = usdc_contract.functions.balanceOf(wallet_addr).call() / 1e6
+                                                if usdc_bal > 0:
+                                                    self._update_db_portfolio(self.quote_asset, usdc_bal)
+                                                break
+                                        except Exception:
+                                            continue
+                                except Exception:
+                                    pass
                 except Exception as e:
                     print(f"[Sync Error] Error en sincronización periódica: {e}")
 
