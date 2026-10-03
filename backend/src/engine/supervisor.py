@@ -1378,27 +1378,75 @@ class TradingWorker:
                                 async def emergency_sell_filled(reason: str):
                                     self.db.log(
                                         "CRITICAL",
-                                        f"[FillGuard] EMERGENCY SELL: vendiendo {len(filled_legs)} "
-                                        f"pata(s) llenada(s). Razón: {reason}",
+                                        f"[FillGuard] RECOVERY INICIADO para {len(filled_legs)} "
+                                        f"pata(s). Razón: {reason}",
                                         self.worker_id,
                                     )
                                     for leg in filled_legs:
-                                        try:
-                                            sell_signal = SignalEvent(
-                                                symbol=leg.symbol,
-                                                side="SELL",
-                                                price=leg.price,
-                                                reason=f"Emergency sell: {reason}",
-                                                position_size_usd=getattr(leg, 'position_size_usd', None),
-                                            )
-                                            await self._execute_order(sell_signal)
-                                        except Exception as e_sell:
+                                        leg_order_id = getattr(leg, 'external_order_id', None)
+                                        is_resting = getattr(leg, 'is_resting', False) or (getattr(leg, 'order_type', '') == "GTC" and self.feeder_type == "maker_two_leg")
+
+                                        # Si la pata era una orden Maker en descanso (GTC / RESTING):
+                                        # NO vendemos tokens (¡no tenemos tokens todavía, la orden está en el libro!).
+                                        # Debemos CANCELAR la orden en Limitless inmediatamente para evitar que alguien la llene sin cobertura.
+                                        if is_resting and leg_order_id and str(leg_order_id) not in ("N/A", "None", ""):
                                             self.db.log(
-                                                "CRITICAL",
-                                                f"[FillGuard] Emergency sell FALLÓ para {leg.symbol}: {e_sell}. "
-                                                f"Posición expuesta sin cobertura.",
+                                                "WARNING",
+                                                f"[FillGuard] Pata {leg.symbol} es orden Maker descansando en el libro (order_id={leg_order_id}). "
+                                                f"Cancelando en Limitless inmediatamente para prevenir fill sin cobertura ({reason}).",
                                                 self.worker_id,
                                             )
+                                            try:
+                                                api_key = os.getenv("LIMITLESS_API_KEY")
+                                                api_secret = os.getenv("LIMITLESS_API_SECRET")
+                                                private_key = os.getenv("LIMITLESS_PRIVATE_KEY")
+                                                if api_key and api_secret and private_key:
+                                                    from limitless_sdk import Client as LimitlessClient, HMACCredentials
+                                                    async with LimitlessClient("https://api.limitless.exchange", hmac_credentials=HMACCredentials(token_id=api_key, secret=api_secret)) as limitless_c:
+                                                        order_client = limitless_c.new_order_client(private_key)
+                                                        await order_client.cancel(str(leg_order_id))
+                                                        self.db.log("INFO", f"[FillGuard] Orden Maker descansando {leg_order_id} cancelada en Limitless OK.", self.worker_id)
+                                                
+                                                from src.engine.maker_taker_coordinator import maker_taker_coordinator
+                                                maker_taker_coordinator.mark_cancelled(str(leg_order_id), f"fill_guard_{reason}")
+                                                
+                                                # Actualizar en BD a CANCELLED
+                                                try:
+                                                    conn = self.db._get_connection()
+                                                    with conn.cursor() as cur:
+                                                        cur.execute(
+                                                            "UPDATE trades SET status = 'CANCELLED' WHERE external_order_id = %s",
+                                                            (str(leg_order_id),)
+                                                        )
+                                                        conn.commit()
+                                                    self.db._return_connection(conn)
+                                                except Exception:
+                                                    pass
+                                                self._close_cancelled_resting_position(getattr(leg, "symbol", ""), f"fill_guard_{reason}")
+                                            except Exception as e_cancel:
+                                                self.db.log(
+                                                    "CRITICAL",
+                                                    f"[FillGuard] Falló al cancelar orden descansando {leg_order_id}: {e_cancel}.",
+                                                    self.worker_id,
+                                                )
+                                        else:
+                                            # Si la pata realmente fue un FILL confirmado o Taker FOK, vendemos para cortar exposición
+                                            try:
+                                                sell_signal = SignalEvent(
+                                                    symbol=leg.symbol,
+                                                    side="SELL",
+                                                    price=leg.price,
+                                                    reason=f"Emergency sell: {reason}",
+                                                    position_size_usd=getattr(leg, 'position_size_usd', None),
+                                                )
+                                                await self._execute_order(sell_signal)
+                                            except Exception as e_sell:
+                                                self.db.log(
+                                                    "CRITICAL",
+                                                    f"[FillGuard] Emergency sell FALLÓ para {leg.symbol}: {e_sell}. "
+                                                    f"Posición expuesta sin cobertura.",
+                                                    self.worker_id,
+                                                )
 
                                 # Execute pending signals (first already done)
                                 remaining = list(pending)
@@ -2139,7 +2187,7 @@ class TradingWorker:
                                             f"Insufficient liquidity for ${spend_amount:.2f} order.",
                                             self.worker_id,
                                         )
-                                        return
+                                        raise RuntimeError(f"rejected: slippage too high ({fill_result.slippage_pct:.2f}%) in OrderBookWalker for {market_slug}")
                                     
                                     # Reject if partial fill (not enough liquidity)
                                     if fill_result.partial_fill:
@@ -2149,7 +2197,7 @@ class TradingWorker:
                                             f"Only ${fill_result.total_cost:.2f} of ${spend_amount:.2f} would fill.",
                                             self.worker_id,
                                         )
-                                        return
+                                        raise RuntimeError(f"rejected: partial fill in OrderBookWalker for {market_slug}")
                             except Exception as obw_error:
                                 # FAIL-SAFE: If liquidity check fails, reject the order
                                 self.db.log(
@@ -2158,7 +2206,7 @@ class TradingWorker:
                                     f"Cannot verify liquidity for ${spend_amount:.2f} order.",
                                     self.worker_id,
                                 )
-                                return
+                                raise RuntimeError(f"rejected: liquidity check failed: {obw_error}")
                         
                         self.db.log(
                             "INFO",
@@ -2189,26 +2237,34 @@ class TradingWorker:
                             if signal.side == "SELL":
                                 if getattr(signal, "amount", None) and signal.amount > 0:
                                     fok_amount = float(signal.amount)
+                                elif getattr(signal, "position_size_usd", None) and signal.position_size_usd > 0:
+                                    fok_amount = float(signal.position_size_usd)
                                 else:
                                     fok_amount = (spend_amount / price) if price > 0 else 1.0
 
                                 # PROTECCIÓN ANTI-OVERSELL: Limitar al saldo real disponible en CLOB
                                 try:
-                                    clob_pos = await c.portfolio.get_clob_positions()
-                                    for cp in clob_pos:
-                                        if cp.get("market", {}).get("slug") == market_slug:
-                                            tb = cp.get("tokensBalance", {})
-                                            avail = float(tb.get(token_type.lower(), 0) or 0) / 1e6
-                                            if avail > 0:
-                                                fok_amount = min(fok_amount, avail)
-                                            break
-                                except Exception:
-                                    pass
+                                    clob_pos = await limitless_c.portfolio.get_clob_positions()
+                                    if isinstance(clob_pos, list):
+                                        for cp in clob_pos:
+                                            if isinstance(cp, dict) and cp.get("market", {}).get("slug") == market_slug:
+                                                tb = cp.get("tokensBalance", {})
+                                                avail = float(tb.get(token.lower(), 0) or 0) / 1e6
+                                                if avail > 0:
+                                                    fok_amount = min(fok_amount, avail)
+                                                else:
+                                                    self.db.log("WARNING", f"[SELL Abortado] Saldo disponible en CLOB para {token} en {market_slug} es 0.", self.worker_id)
+                                                    raise RuntimeError(f"rejected: zero token balance in CLOB for {token} in {market_slug}")
+                                                break
+                                except Exception as clob_err:
+                                    if "rejected:" in str(clob_err):
+                                        raise
+                                    self.db.log("WARNING", f"[SELL] Error consultando CLOB positions: {clob_err}", self.worker_id)
 
                                 fok_amount = round(fok_amount, 4)
                                 if fok_amount <= 0.0001:
                                     self.db.log("WARNING", f"[SELL Abortado] Saldo insuficiente de tokens ({fok_amount}) para {market_slug}", self.worker_id)
-                                    return
+                                    raise RuntimeError(f"rejected: insufficient tokens ({fok_amount}) for {market_slug}")
                             else:
                                 fok_amount = spend_amount
 
@@ -2221,6 +2277,8 @@ class TradingWorker:
                             )
                         
                         order_id = response.order.id if hasattr(response, "order") and response.order else "N/A"
+                        signal.external_order_id = str(order_id)
+                        signal.is_resting = (is_gtc and self.feeder_type == "maker_two_leg")
 
                         # GTC = limit maker post-only (0% fees). FOK = taker (fill or kill).
                         if is_gtc:
@@ -2407,7 +2465,7 @@ class TradingWorker:
                                 self.db.close_position(
                                     matched[0]["id"], price, signal.reason, worker_id=self.worker_id
                                 )
-                        return
+                        return str(order_id)
                 except Exception as e:
                     self.db.log(
                         "ERROR",

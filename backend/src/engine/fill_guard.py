@@ -309,8 +309,39 @@ class FillGuard:
         )
         
         for leg in filled_legs:
+            leg_order_id = getattr(leg, 'external_order_id', None) or getattr(leg, 'order_id', None)
+            is_resting = getattr(leg, 'is_resting', False) or (getattr(leg, 'order_type', '') == "GTC")
+
+            if is_resting and leg_order_id and str(leg_order_id) not in ("N/A", "None", ""):
+                self.db.log(
+                    "WARNING",
+                    f"[FillGuard] Pata {leg.symbol} es orden Maker descansando (order_id={leg_order_id}). "
+                    f"Cancelando en Limitless inmediatamente para prevenir fill sin cobertura ({reason}).",
+                    self.worker_id,
+                )
+                try:
+                    api_key = os.getenv("LIMITLESS_API_KEY")
+                    api_secret = os.getenv("LIMITLESS_API_SECRET")
+                    private_key = os.getenv("LIMITLESS_PRIVATE_KEY")
+                    if api_key and api_secret and private_key:
+                        from limitless_sdk import Client as LimitlessClient, HMACCredentials
+                        async with LimitlessClient("https://api.limitless.exchange", hmac_credentials=HMACCredentials(token_id=api_key, secret=api_secret)) as limitless_c:
+                            order_client = limitless_c.new_order_client(private_key)
+                            await order_client.cancel(str(leg_order_id))
+                            self.db.log("INFO", f"[FillGuard] Orden Maker descansando {leg_order_id} cancelada en Limitless OK.", self.worker_id)
+                    
+                    from src.engine.maker_taker_coordinator import maker_taker_coordinator
+                    maker_taker_coordinator.mark_cancelled(str(leg_order_id), f"fill_guard_{reason}")
+                    continue
+                except Exception as e_cancel:
+                    self.db.log(
+                        "CRITICAL",
+                        f"[FillGuard] Falló al cancelar orden descansando {leg_order_id}: {e_cancel}.",
+                        self.worker_id,
+                    )
+            
             try:
-                # Crear señal de venta
+                # Crear señal de venta para pata realmente ejecutada (Taker FOK)
                 from src.events import SignalEvent
                 sell_signal = SignalEvent(
                     symbol=leg.symbol,

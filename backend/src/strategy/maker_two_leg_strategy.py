@@ -268,14 +268,17 @@ class MakerTwoLegStrategy(BaseStrategy):
         # 5. Cotizaciones de compra pasiva (Bids Post-Only estrictamente < Ask contrario):
         # Cotizamos usando precio de reserva r (Avellaneda-Stoikov) para posicionarnos
         # como Mejor Postor (Top Bid) dentro del spread, asegurando prioridad en la cola.
-        cost_yes = round(max(0.001, min(r - half_spread, yes_ask - 0.001)), 3)
-        cost_no = round(max(0.001, min((1.0 - r) - half_spread, (1.0 - yes_bid) - 0.001)), 3)
+        # Buffer de seguridad de 2 ticks (0.002) por debajo del ask para garantizar que post_only=True
+        # NUNCA cruce el book ni sea rechazado con HTTP 400 por movimiento del mercado entre patas.
+        cost_yes = round(max(0.001, min(r - half_spread, yes_ask - 0.002)), 3)
+        no_ask_ref = round(1.0 - yes_bid, 4)
+        cost_no = round(max(0.001, min((1.0 - r) - half_spread, no_ask_ref - 0.002)), 3)
 
         # Si el bid natural existente está por encima y el par sigue siendo viable, unirse al mejor bid
         if cost_yes < yes_bid and (yes_bid + (1.0 - yes_ask)) <= (1.0 - self.min_edge_pct):
-            cost_yes = round(min(yes_bid, yes_ask - 0.001), 3)
+            cost_yes = round(min(yes_bid, yes_ask - 0.002), 3)
         if cost_no < (1.0 - yes_ask) and (yes_bid + (1.0 - yes_ask)) <= (1.0 - self.min_edge_pct):
-            cost_no = round(min(1.0 - yes_ask, (1.0 - yes_bid) - 0.001), 3)
+            cost_no = round(min(1.0 - yes_ask, no_ask_ref - 0.002), 3)
 
         # Garantizar que el costo total de las 2 patas respete estrictamente el margen minimo (evitar desborde por redondeo)
         max_allowed_cost = round(1.0 - self.min_edge_pct, 3)
