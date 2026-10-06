@@ -35,6 +35,7 @@ There is **no test suite, linter, formatter, or typecheck** configured. Do not a
 - **Worker profiles**: Set `WORKER_PROFILE_MODE` to `pure_arbitrage` (6 workers), `crypto_hft_volatile` (4 workers), or default (env-driven).
 - **IG Feeder threading**: Lightstreamer runs in a separate thread; uses `asyncio.run_coroutine_threadsafe()` to push events into the asyncio Queue.
 - **Limitless WebSocket**: Set `LIMITLESS_USE_WEBSOCKET=true` to use WebSocket instead of polling for crypto workers (reduces latency, avoids Cloudflare rate limits).
+- **MAX_CONCURRENT_POSITIONS >= 2 (NUNCA 1)**: En arbitraje 1xN puro, cada evento requiere como mínimo 2 posiciones simultáneas en base de datos (Pata YES + Pata NO) o 3 (sports 3-way). Si se configura en 1, `SecurityGuard` aborta la segunda pata inmediatamente tras llenarse la primera, dejando al bot con una posición direccional desnuda y desastre de capital. Valor mínimo operativo: 2; recomendado: 4 para rotación fluida entre contratos.
 
 ## Architecture
 
