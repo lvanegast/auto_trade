@@ -1044,7 +1044,10 @@ class TradingWorker:
                         no_bid = book.get("no_bid", 0.0)
 
                         pair = maker_taker_coordinator.get_pair(slug)
-                        if pair and pair.status not in ("BOTH_FILLED", "HEDGED_FOK", "SCRATCHED", "CANCELLED"):
+                        if pair:
+                            if pair.status in ("BOTH_FILLED", "HEDGED_FOK", "SCRATCHED", "CANCELLED"):
+                                # Par completamente cubierto o finalizado: NO intentar scratch ni hedge adicional
+                                continue
                             status, action_sig, cancel_order_id = maker_taker_coordinator.evaluate_pair(
                                 slug,
                                 current_yes_ask=yes_ask,
@@ -1065,7 +1068,7 @@ class TradingWorker:
                                     "WARNING",
                                     f"[{status}] Disparando orden FOK {action_sig.side} para {action_sig.symbol}: {action_sig.reason}",
                                     self.worker_id,
-                                )
+                                    )
                                 try:
                                     await self._execute_order(action_sig)
                                 except Exception as e_fok:

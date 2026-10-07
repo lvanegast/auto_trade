@@ -37,10 +37,9 @@ class ResolutionMonitor:
             # Process resolved market
     """
 
-    # Class-level set: persiste entre instancias (se crea una instancia por ciclo
-    # de sync), evita alertas duplicadas por worker y entre workers.
-    # No se descartan slugs: el cap es tan alto que en la práctica es permanente,
-    # para que un mercado ya resuelto NUNCA vuelva a generar una alerta.
+    # Set scoped por (worker_id, market_slug): persiste entre instancias
+    # para evitar que un worker que detecta una resolución suprima el cierre
+    # de posiciones en otro worker con posiciones en ese mismo mercado.
     _already_resolved: set = set()
 
     def __init__(self, db, worker_id: str):
@@ -48,12 +47,9 @@ class ResolutionMonitor:
         self.worker_id = worker_id
 
     @classmethod
-    def _mark_resolved(cls, market_slug: str):
-        """Marca un market como resuelto. El set persiste para el proceso."""
-        cls._already_resolved.add(market_slug)
-        # Límite defensivo de memoria: 50k slugs (~MBs), muy por encima del
-        # volumen real diario. Antes este cap (1000→500) hacía que slugs viejos
-        # fueran re-detectados → mensajes de resolución duplicados.
+    def _mark_resolved(cls, worker_id: str, market_slug: str):
+        """Marca un market como resuelto para este worker específico."""
+        cls._already_resolved.add((worker_id, market_slug))
         if len(cls._already_resolved) > 50000:
             cls._already_resolved = set(list(cls._already_resolved)[-40000:])
 
@@ -158,16 +154,11 @@ class ResolutionMonitor:
         """
         Verifica si un mercado resolvió consultando la API de Limitless.
         """
-        if market_slug in self._already_resolved:
+        if (self.worker_id, market_slug) in self._already_resolved:
             return None
 
-        # Reservar el slug ANTES de la llamada de red (que hace `await` y cede
-        # el control del event loop). Si no reservamos aquí, dos workers pueden
-        # pasar el check de arriba casi al mismo tiempo — mientras el primero
-        # todavía espera la respuesta de la API — y ambos terminan alertando
-        # por Telegram el mismo evento. Si resulta que NO estaba resuelto, se
-        # libera más abajo para poder re-chequear en el siguiente ciclo.
-        self._mark_resolved(market_slug)
+        # Reservar el slug para este worker ANTES de la llamada de red
+        self._mark_resolved(self.worker_id, market_slug)
 
         from limitless_sdk.api import HttpClient
         from limitless_sdk.markets import MarketFetcher
@@ -190,7 +181,7 @@ class ResolutionMonitor:
                     m.result = market
                 
                 if not market:
-                    self._already_resolved.discard(market_slug)
+                    self._already_resolved.discard((self.worker_id, market_slug))
                     return None
 
                 status = getattr(market, "status", None)
@@ -206,13 +197,13 @@ class ResolutionMonitor:
                     if market.market_type == "group" and subs:
                         resolved_subs = [s for s in subs if getattr(s, "winning_outcome_index", None) is not None]
                         if not resolved_subs:
-                            self._already_resolved.discard(market_slug)
+                            self._already_resolved.discard((self.worker_id, market_slug))
                             return None
                         resolved_sub = resolved_subs[0]
                         winning_index = resolved_sub.winning_outcome_index
                         status = "RESOLVED"
                     else:
-                        self._already_resolved.discard(market_slug)
+                        self._already_resolved.discard((self.worker_id, market_slug))
                         return None
                 
                 # Determinar outcome ganador
@@ -252,8 +243,8 @@ class ResolutionMonitor:
                     f"[ResolutionMonitor] Mercado resuelto: {market_slug} → {winning_outcome}",
                     self.worker_id,
                 )
-                # Mark as resolved to prevent duplicate alerts (class-level, capped)
-                self._mark_resolved(market_slug)
+                # Mark as resolved to prevent duplicate alerts (scoped per worker)
+                self._mark_resolved(self.worker_id, market_slug)
                 db_event_id = (
                     opp_data.get("event_id", market_slug)
                     if isinstance(opp_data, dict)
