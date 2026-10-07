@@ -110,10 +110,14 @@ class TelegramBot:
         """Poll Telegram getUpdates for incoming commands."""
         while True:
             try:
-                result = self._api_get("getUpdates", {
-                    "offset": str(self._last_update_id + 1),
-                    "timeout": "10",
-                })
+                result = await asyncio.to_thread(
+                    self._api_get,
+                    "getUpdates",
+                    {
+                        "offset": str(self._last_update_id + 1),
+                        "timeout": "10",
+                    },
+                )
                 if result and result.get("ok"):
                     for update in result.get("result", []):
                         self._last_update_id = update["update_id"]
